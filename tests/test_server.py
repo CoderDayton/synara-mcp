@@ -19,7 +19,7 @@ def test_build_server_returns_fastmcp_instance(monkeypatch: pytest.MonkeyPatch) 
             raise NotImplementedError
 
     monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
-    settings = Settings(log_level="INFO", transport="stdio")
+    settings = Settings(log_level="INFO", transport="stdio", db_path=":memory:")
     mcp = build_server(settings)
     assert isinstance(mcp, FastMCP)
     assert mcp.name == "synara-mcp"

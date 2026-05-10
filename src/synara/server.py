@@ -8,6 +8,7 @@ tools/resources/prompts.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastmcp import FastMCP
 from simplevecdb import AsyncVectorDB
@@ -28,6 +29,8 @@ def build_server(settings: Settings) -> FastMCP:
             "`synara.features.*`. Version: " + __version__
         ),
     )
+    if settings.db_path != ":memory:":
+        Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
     db = AsyncVectorDB(settings.db_path)
     embedder = build_embedder(settings.embedding)
     # Eagerly load the local model (downloads on first run) so the first
