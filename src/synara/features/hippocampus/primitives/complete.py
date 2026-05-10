@@ -86,10 +86,14 @@ def attractor_step(
     """
     sims = X @ q
     m = float(sims.max())
-    score = m + (1.0 / beta) * float(np.log(np.exp(beta * (sims - m)).sum()))
-    w = np.exp(beta * (sims - m))
-    w /= w.sum()
-    x_tilde = (w[:, None] * X).sum(axis=0)
+    # Single softmax pass: reuse the shifted exp for both the
+    # log-sum-exp score and the attention weights, and contract via
+    # GEMV (w @ X) instead of broadcasting an (N, D) intermediate.
+    exp_shift = np.exp(beta * (sims - m))
+    total = float(exp_shift.sum())
+    score = m + (1.0 / beta) * float(np.log(total))
+    w = exp_shift / total
+    x_tilde = w @ X
     q_next = _normalize((1.0 - eta0) * q0 + eta0 * x_tilde)
     return q_next, score
 

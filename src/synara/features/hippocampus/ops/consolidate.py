@@ -63,8 +63,9 @@ def _replay_score(
 
 
 async def _nearest_schema(service: HippocampusService, text: str) -> tuple[int, float] | None:
-    if await service.semantic.count() == 0:
-        return None
+    # Caller is responsible for the upfront ``service.semantic.count()``
+    # check; skipping it here saves an O(N) DB roundtrip across the
+    # _absorb candidate loop.
     # Route through ``query_arg`` so the configured embed_fn produces the
     # query vector — using raw text would invoke simplevecdb's bundled
     # embedder, which can mismatch the stored vector dimension.

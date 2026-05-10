@@ -11,8 +11,10 @@ The pipeline is:
 
 from __future__ import annotations
 
-import math
+import asyncio
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from synara.core.errors import ValidationError
 
@@ -186,16 +188,15 @@ async def _apply_drift_to_vector(
     v_old = embeds.get(doc_id)
     if v_old is None:
         return
-    v_old_list = list(v_old)
-    if len(v_old_list) != len(cue):
+    v_old_arr = np.asarray(v_old, dtype=np.float64)
+    cue_arr = np.asarray(cue, dtype=np.float64)
+    if v_old_arr.shape != cue_arr.shape:
         return
-    blended = [
-        (1.0 - blend) * float(v_old_list[i]) + blend * float(cue[i]) for i in range(len(cue))
-    ]
-    norm = math.sqrt(sum(x * x for x in blended))
+    blended = (1.0 - blend) * v_old_arr + blend * cue_arr
+    norm = float(np.linalg.norm(blended))
     if norm <= 0.0:
         return
-    v_new = [x / norm for x in blended]
+    v_new = (blended / norm).tolist()
     await service.episodic.update_embedding(doc_id, v_new, source="reconsolidation")
 
 
@@ -207,30 +208,52 @@ async def _merge_hits(
     k: int,
     ep_filter: dict[str, Any] | None,
 ) -> list[_Hit]:
+    want_sem = mode in {"auto", "semantic", "hybrid"}
+    want_ep = mode in {"auto", "episodic", "hybrid"}
+    # Both legs are independent; run their count + search concurrently.
+    sem_count, ep_count = await asyncio.gather(
+        service.semantic.count() if want_sem else _zero(),
+        service.episodic.count() if want_ep else _zero(),
+    )
+    sem_hits_co = (
+        service.semantic.similarity_search(q, k=k) if want_sem and sem_count > 0 else _empty_hits()
+    )
+    ep_hits_co = (
+        service.episodic.similarity_search(q, k=k, filter=ep_filter)
+        if want_ep and ep_count > 0
+        else _empty_hits()
+    )
+    sem_hits, ep_hits = await asyncio.gather(sem_hits_co, ep_hits_co)
     merged: list[_Hit] = []
-    if mode in {"auto", "semantic", "hybrid"} and await service.semantic.count() > 0:
-        for doc, dist in await service.semantic.similarity_search(q, k=k):
-            merged.append(
-                (
-                    int(doc.metadata.get("id", -1)),
-                    doc.page_content,
-                    dict(doc.metadata),
-                    float(dist),
-                    "semantic",
-                )
+    for doc, dist in sem_hits:
+        merged.append(
+            (
+                int(doc.metadata.get("id", -1)),
+                doc.page_content,
+                dict(doc.metadata),
+                float(dist),
+                "semantic",
             )
-    if mode in {"auto", "episodic", "hybrid"} and await service.episodic.count() > 0:
-        for doc, dist in await service.episodic.similarity_search(q, k=k, filter=ep_filter):
-            merged.append(
-                (
-                    int(doc.metadata.get("id", -1)),
-                    doc.page_content,
-                    dict(doc.metadata),
-                    float(dist),
-                    "episodic",
-                )
+        )
+    for doc, dist in ep_hits:
+        merged.append(
+            (
+                int(doc.metadata.get("id", -1)),
+                doc.page_content,
+                dict(doc.metadata),
+                float(dist),
+                "episodic",
             )
+        )
     return merged
+
+
+async def _zero() -> int:
+    return 0
+
+
+async def _empty_hits() -> list[Any]:
+    return []
 
 
 async def _sr_rank_keys(
