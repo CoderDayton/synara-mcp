@@ -63,6 +63,15 @@ class HippocampusConfig:
     # cluster). Implements schema-fitting fast-track consolidation
     # (Tse et al. 2007). Smaller = stricter fit required.
     consolidate_absorb_distance: float = 0.4
+    # CA3 iterative pattern completion (modern Hopfield, Ramsauer 2020).
+    # ``recall_completion_iters > 0`` enables the iteration; each step
+    # softmax-recombines stored vectors at inverse-temperature
+    # ``recall_completion_beta`` and anchors the new query a fraction
+    # ``recall_completion_anchor`` toward the original. 0 = single-pass
+    # k-NN (the legacy behaviour).
+    recall_completion_iters: int = 0
+    recall_completion_beta: float = 8.0
+    recall_completion_anchor: float = 0.6
 
 
 def now_seconds() -> float:
@@ -199,6 +208,22 @@ class HippocampusService:
 
         ep_filter: dict[str, Any] | None = {"session_id": session_id} if session_id else None
         q = await self.query_arg(query)
+        # CA3 iterative pattern completion: refine the query by
+        # softmax-recombining its near-neighbours before the final
+        # search. Skipped when no embed_fn is configured (q is a string)
+        # or when iters == 0.
+        iters = self.config.recall_completion_iters
+        if iters > 0 and isinstance(q, list):
+            result = await _complete_mod.run(
+                self,
+                q,
+                ep_filter=ep_filter,
+                k_inner=max(k, 8),
+                iters=iters,
+                beta=self.config.recall_completion_beta,
+                eta0=self.config.recall_completion_anchor,
+            )
+            q = result.query
         merged: list[tuple[int, str, dict[str, Any], float, str]] = []
 
         if mode in {"auto", "semantic", "hybrid"} and await self.semantic.count() > 0:
@@ -316,6 +341,7 @@ class HippocampusService:
 # Late imports avoid a top-of-file cycle: the sub-modules need
 # UNCONSOLIDATED and now_seconds (bound above), and they only reference
 # HippocampusService through TYPE_CHECKING.
+from . import complete as _complete_mod  # noqa: E402
 from . import consolidate as _consolidate_mod  # noqa: E402
 from . import forget as _forget_mod  # noqa: E402
 from . import reflect as _reflect_mod  # noqa: E402

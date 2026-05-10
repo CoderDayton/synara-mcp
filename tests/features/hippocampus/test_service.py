@@ -18,6 +18,7 @@ import pytest_asyncio
 from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
+from synara.features.hippocampus.complete import attractor_step, completion_score
 from synara.features.hippocampus.consolidate import build_gist
 from synara.features.hippocampus.forget import memory_strength
 from synara.features.hippocampus.service import (
@@ -254,6 +255,68 @@ async def test_recall_appends_access_history(service: HippocampusService) -> Non
     rows = await service.episodic.get_documents({"session_id": "s1"})
     _, _, md = next(row for row in rows if row[0] == r["id"])
     assert len(md["access_history"]) >= 2
+
+
+def test_completion_score_increases_along_attractor_step() -> None:
+    """Modern Hopfield update is provably non-decreasing in the
+    log-sum-exp completion score when the anchor is fully released."""
+    rng = np.random.default_rng(0)
+    cluster = rng.standard_normal((6, 16)).astype(np.float64)
+    cluster /= np.linalg.norm(cluster, axis=1, keepdims=True)
+    # Off-cluster query: random direction near the cluster mean
+    centroid = cluster.mean(axis=0)
+    centroid /= np.linalg.norm(centroid)
+    q0 = centroid + 0.5 * rng.standard_normal(16)
+    q0 /= np.linalg.norm(q0)
+
+    s_before = completion_score(q0, cluster, beta=8.0)
+    q1, s_step = attractor_step(q0, cluster, beta=8.0, q0=q0, eta0=1.0)
+    s_after = completion_score(q1, cluster, beta=8.0)
+
+    # Score reported by the step matches recomputation at q0; the next
+    # iterate scores >= the previous (modulo numerical noise).
+    assert abs(s_step - s_before) < 1e-9
+    assert s_after >= s_before - 1e-9
+
+
+def test_completion_score_bounded_by_max_similarity() -> None:
+    """C(q) <= max_i <q, x_i> + log(N)/beta (log-sum-exp upper bound)."""
+    rng = np.random.default_rng(1)
+    X = rng.standard_normal((10, 8))
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    q = rng.standard_normal(8)
+    q /= np.linalg.norm(q)
+
+    sims = X @ q
+    score = completion_score(q, X, beta=8.0)
+    # log-sum-exp upper bound: max + (log N)/beta
+    assert score <= float(sims.max()) + math.log(len(X)) / 8.0 + 1e-9
+    assert score >= float(sims.max()) - 1e-9
+
+
+async def test_recall_with_completion_iters_returns_results() -> None:
+    """End-to-end: recall with completion_iters > 0 routes through the
+    Hopfield iteration and still returns valid hits."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = HippocampusConfig(
+            recall_completion_iters=2,
+            recall_completion_beta=8.0,
+            recall_completion_anchor=0.6,
+        )
+        svc = HippocampusService(db, config=cfg, embed_fn=_bucket_embed)
+        for i in range(4):
+            await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5, tags=["a"])
+        for i in range(4):
+            await svc.encode_episode(f"beta-{i}", "s1", salience=0.5, tags=["b"])
+        hits = await svc.recall(query="alpha-99", session_id="s1", k=3, mode="episodic")
+        assert hits, "iterative recall should return results"
+        # Bucket-embedder puts all alpha-* in one bucket; the refined
+        # query should pull alpha hits over beta hits.
+        top_texts = [h["content"] for h in hits]
+        assert any(t.startswith("alpha") for t in top_texts)
+    finally:
+        await db.close()
 
 
 def test_build_gist_with_only_headline() -> None:
