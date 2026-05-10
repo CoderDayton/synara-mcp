@@ -121,10 +121,12 @@ class HippocampusService:
             if self.config.sr_enabled
             else None
         )
-        # Plasticity graph + interaction event bus. Always constructed
-        # so introspection works; the reactor only auto-fires when
-        # ``self_learning_enabled`` is True.
+        # Plasticity graph + interaction event bus. Both are persistent
+        # (edges live in coll.edges, event log lives in coll.events) so
+        # the brain survives process restarts. The reactor only
+        # auto-fires when ``self_learning_enabled`` is True.
         self._plasticity: _Plasticity = _Plasticity(
+            collection=self.episodic,
             sr=self._sr,
             e_ltp_decay_seconds=self.config.e_ltp_decay_seconds,
             l_ltp_threshold_hits=self.config.l_ltp_threshold_hits,
@@ -135,6 +137,7 @@ class HippocampusService:
             time_compression=self.config.time_compression,
         )
         self._bus: _EventBus = _EventBus(
+            collection=self.episodic,
             policy=_Policy(
                 consolidate_after_novel_encodes=self.config.reactor_consolidate_after_novel,
                 consolidate_cooldown_seconds=self.config.reactor_consolidate_cooldown_seconds,
@@ -162,7 +165,7 @@ class HippocampusService:
             session_id=session_id,
             payload=dict(payload) if payload else {},
         )
-        self._bus.record(event)
+        await self._bus.record(event)
         if self.config.self_learning_enabled:
             await self._bus.react(event)
 
@@ -173,12 +176,12 @@ class HippocampusService:
 
     async def _reactor_dream(self, _event: Any) -> None:
         """Reactor callback: LTD pass over the plasticity graph."""
-        pruned = self._plasticity.ltd_pass(now=_now_real())
+        pruned = await self._plasticity.ltd_pass(now=_now_real())
         await self._emit("dream", session_id=None, payload={"pruned_edges": pruned})
 
-    def event_log(self) -> list[Any]:
+    async def event_log(self) -> list[Any]:
         """Return a snapshot of the recent interaction events (for inspection)."""
-        return self._bus.log()
+        return await self._bus.log()
 
     # ------------------------------------------------------------------ embed
     async def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None:
@@ -206,20 +209,21 @@ class HippocampusService:
 
     # ----------------------------------------------------------------- access
     async def bump_retrieval(self, doc_id: int, current: dict[str, Any]) -> None:
-        rc = int(current.get("retrieval_count", 0)) + 1
         now = now_seconds()
         history = list(current.get("access_history") or [])
         history.append(now)
-        # FIFO-evict the oldest access timestamps once we exceed the cap.
         cap = self.config.access_history_cap
         if cap > 0 and len(history) > cap:
             history = history[-cap:]
+        # Atomic delta on the counter so concurrent recalls cannot lose
+        # increments; the timestamp + history list are last-write-wins
+        # which is fine — losing a stale timestamp is bounded loss.
+        await self.episodic.increment_metadata(doc_id, {"retrieval_count": 1})
         await self.episodic.update_metadata(
             [
                 (
                     doc_id,
                     {
-                        "retrieval_count": rc,
                         "last_accessed": now,
                         "access_history": history,
                     },

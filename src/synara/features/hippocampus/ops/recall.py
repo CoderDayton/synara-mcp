@@ -102,7 +102,7 @@ async def run(
         for j in others:
             jrow = out_lookup.get(j)
             score = _cosine_score_from_distance(jrow["distance"]) if jrow is not None else 0.5
-            service._plasticity.reinforce(anchor_id, j, score=score, now=t)
+            await service._plasticity.reinforce(anchor_id, j, score=score, now=t)
         # Reconsolidation drift accounting: bumps drift_total in the
         # episode's metadata when the alpha is set. Vector rewrite is
         # deferred (see config note); this only records the bound.
@@ -146,22 +146,16 @@ async def _accrue_drift(
         await service.episodic.update_metadata([(int(row["id"]), {"last_reconsolidated_at": t})])
         return
     step = cfg.reconsolidation_alpha * score
-    new_drift = float(md.get("drift_total", 0.0)) + step
-    locked = new_drift >= cfg.reconsolidation_max_total_drift
+    projected = float(md.get("drift_total", 0.0)) + step
+    locked = projected >= cfg.reconsolidation_max_total_drift
+    # Atomic counter delta — concurrent recalls cannot lose drift.
+    # Lock flag is sticky-true so racing on it is safe (worst case the
+    # cap is briefly exceeded by one alpha-step, ~0.02).
+    await service.episodic.increment_metadata(int(row["id"]), {"drift_total": step})
+    md_update: dict[str, Any] = {"last_reconsolidated_at": t}
     if locked:
-        new_drift = cfg.reconsolidation_max_total_drift
-    await service.episodic.update_metadata(
-        [
-            (
-                int(row["id"]),
-                {
-                    "drift_total": float(new_drift),
-                    "drift_locked": bool(locked),
-                    "last_reconsolidated_at": t,
-                },
-            )
-        ]
-    )
+        md_update["drift_locked"] = True
+    await service.episodic.update_metadata([(int(row["id"]), md_update)])
 
 
 async def _merge_hits(
@@ -229,7 +223,7 @@ async def _sr_rank_keys(
     # Spreading activation over the plasticity graph (gated on hops > 0).
     spread: dict[int, float] = {}
     if cfg.spreading_activation_hops > 0 and cfg.spreading_activation_weight > 0.0:
-        spread = service._plasticity.spreading(
+        spread = await service._plasticity.spreading(
             anchor_id,
             [r[0] for r in episodic_hits],
             hops=cfg.spreading_activation_hops,

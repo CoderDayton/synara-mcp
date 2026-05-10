@@ -1,13 +1,7 @@
-"""Plasticity + event bus + reactor tests.
-
-These cover the new neuroplasticity layer (E-LTP/L-LTP/habit/savings/LTD,
-spreading activation, reconsolidation drift accounting), the
-``InteractionEvent`` bus, and the self-triggering reactor.
-"""
+"""Plasticity + event bus + reactor tests."""
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import math
 from collections.abc import AsyncIterator
@@ -47,10 +41,16 @@ async def service() -> AsyncIterator[HippocampusService]:
         await db.close()
 
 
-# ----- PlasticityGraph unit tests --------------------------------------
+@pytest_asyncio.fixture
+async def db() -> AsyncIterator[AsyncVectorDB]:
+    d = AsyncVectorDB(":memory:")
+    try:
+        yield d
+    finally:
+        await d.close()
 
 
-def _make_graph(**overrides: float | int) -> PlasticityGraph:
+def _make_graph(coll: object, **overrides: float | int) -> PlasticityGraph:
     base = {
         "e_ltp_decay_seconds": 7200.0,
         "l_ltp_threshold_hits": 3,
@@ -62,118 +62,188 @@ def _make_graph(**overrides: float | int) -> PlasticityGraph:
         "prune_floor": 1e-3,
     }
     base.update(overrides)
-    return PlasticityGraph(sr=None, **base)  # type: ignore[arg-type]
+    return PlasticityGraph(collection=coll, sr=None, **base)  # type: ignore[arg-type]
 
 
-def test_plasticity_e_ltp_bonus_decays_over_time() -> None:
-    g = _make_graph()
-    g.reinforce(1, 2, score=1.0, now=0.0)
-    bonus0 = g.edge_weight(1, 2)
-    # No reinforcement after E-LTP tau: bonus should decay by exp(-1).
-    g._edges[(1, 2)].bonus_set_at = 0.0
-    e = g._edges[(1, 2)]
-    e.bonus *= math.exp(-7200.0 / 7200.0)
-    assert e.bonus == pytest.approx(bonus0 / math.e, rel=1e-3)
+async def _seed_docs(coll: object, ids: list[int]) -> None:
+    """Insert placeholder docs so the edge FK constraint is satisfied."""
+    texts = [f"doc-{i}" for i in ids]
+    embeds = [[float(i % 7), float((i + 1) % 5), 0.0, 0.0] for i in ids]
+    await coll.add_texts(texts=texts, embeddings=embeds, ids=list(ids))  # type: ignore[attr-defined]
 
 
-def test_plasticity_l_ltp_threshold_folds_bonus_to_weight() -> None:
-    g = _make_graph()
-    # Three in-window reinforcements should consolidate into durable weight.
+# ----- PlasticityGraph unit tests --------------------------------------
+
+
+async def test_plasticity_e_ltp_bonus_decays_between_reinforcements(
+    db: AsyncVectorDB,
+) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _make_graph(coll)
+    await g.reinforce(1, 2, score=1.0, now=0.0)
+    s0 = await g.edge_state(1, 2)
+    assert s0 is not None
+    bonus0 = s0["bonus"]
+    # Reinforce again exactly tau_E later with zero score — that adds
+    # nothing but forces a decay-and-fold pass.
+    await g.reinforce(1, 2, score=0.0, now=7200.0)
+    s1 = await g.edge_state(1, 2)
+    assert s1 is not None
+    # First bonus (= 0.5) decayed by exp(-1); the zero-score event adds 0.
+    assert s1["bonus"] == pytest.approx(bonus0 / math.e, rel=1e-3)
+
+
+async def test_plasticity_l_ltp_threshold_folds_bonus_to_weight(
+    db: AsyncVectorDB,
+) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _make_graph(coll)
     for k in range(3):
-        g.reinforce(1, 2, score=1.0, now=float(k))  # all within tau
-    e = g._edges[(1, 2)]
-    assert e.weight > 0.0
-    assert e.bonus == 0.0
-    assert e.hits_in_window == 0
+        await g.reinforce(1, 2, score=1.0, now=float(k))
+    s = await g.edge_state(1, 2)
+    assert s is not None
+    assert s["weight"] > 0.0
+    assert s["bonus"] == 0.0
+    assert s["hits_in_window"] == 0
 
 
-def test_plasticity_habit_latches_after_threshold() -> None:
-    g = _make_graph(habit_threshold_hits=4)
+async def test_plasticity_habit_latches_after_threshold(db: AsyncVectorDB) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _make_graph(coll, habit_threshold_hits=4)
     for k in range(5):
-        g.reinforce(1, 2, score=0.5, now=float(k))
-    assert g.is_habit(1, 2)
+        await g.reinforce(1, 2, score=0.5, now=float(k))
+    assert await g.is_habit(1, 2)
 
 
-def test_plasticity_habit_savings_amplifies_post_lapse_relearn() -> None:
-    g = _make_graph(habit_threshold_hits=3, l_ltp_threshold_hits=2)
+async def test_plasticity_habit_savings_amplifies_post_lapse_relearn(
+    db: AsyncVectorDB,
+) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _make_graph(coll, habit_threshold_hits=3, l_ltp_threshold_hits=2)
     # Build habit fast (3 hits to latch).
     for k in range(3):
-        g.reinforce(1, 2, score=1.0, now=float(k))
-    # Long disuse to drop bonus.
-    g.reinforce(1, 2, score=1.0, now=10_000.0)
-    # The post-habit reinforcement gets the savings multiplier.
-    e = g._edges[(1, 2)]
-    # Either still in bonus or already folded; total accumulated should
-    # exceed what a non-habit edge would have at the same step.
-    g2 = _make_graph(habit_threshold_hits=999, l_ltp_threshold_hits=2)
+        await g.reinforce(1, 2, score=1.0, now=float(k))
+    # Long disuse to drop bonus, then one more reinforcement with savings.
+    await g.reinforce(1, 2, score=1.0, now=10_000.0)
+    s = await g.edge_state(1, 2)
+    assert s is not None
+    # Compare against a graph with the habit threshold out of reach.
+    coll2 = db.collection("ep2")
+    await _seed_docs(coll2, [1, 2])
+    g2 = _make_graph(coll2, habit_threshold_hits=999, l_ltp_threshold_hits=2)
     for k in range(3):
-        g2.reinforce(1, 2, score=1.0, now=float(k))
-    g2.reinforce(1, 2, score=1.0, now=10_000.0)
-    e2 = g2._edges[(1, 2)]
-    assert (e.weight + e.bonus) > (e2.weight + e2.bonus)
+        await g2.reinforce(1, 2, score=1.0, now=float(k))
+    await g2.reinforce(1, 2, score=1.0, now=10_000.0)
+    s2 = await g2.edge_state(1, 2)
+    assert s2 is not None
+    assert (s["weight"] + s["bonus"]) > (s2["weight"] + s2["bonus"])
 
 
-def test_plasticity_ltd_decays_non_habit_faster_than_habit() -> None:
-    g = _make_graph(habit_threshold_hits=3, l_ltp_threshold_hits=1, ltd_decay_per_idle_day=0.5)
+async def test_plasticity_ltd_decays_non_habit_faster_than_habit(
+    db: AsyncVectorDB,
+) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2, 3, 4])
+    g = _make_graph(
+        coll,
+        habit_threshold_hits=3,
+        l_ltp_threshold_hits=1,
+        ltd_decay_per_idle_day=0.5,
+    )
     for k in range(3):
-        g.reinforce(1, 2, score=1.0, now=float(k))
-    # Plant a non-habit edge (different pair).
-    g.reinforce(3, 4, score=1.0, now=0.0)
-    g.reinforce(3, 4, score=1.0, now=1.0)  # weight after 1 fold-in (l=1 threshold)
-    assert g.is_habit(1, 2)
-    assert not g.is_habit(3, 4)
-    w_h_before = g._edges[(1, 2)].weight
-    w_n_before = g._edges[(3, 4)].weight
-    assert w_h_before > 0
-    assert w_n_before > 0
+        await g.reinforce(1, 2, score=1.0, now=float(k))
+    await g.reinforce(3, 4, score=1.0, now=0.0)
+    await g.reinforce(3, 4, score=1.0, now=1.0)
+    assert await g.is_habit(1, 2)
+    assert not await g.is_habit(3, 4)
+    s_h_before = await g.edge_state(1, 2)
+    s_n_before = await g.edge_state(3, 4)
+    assert s_h_before is not None
+    assert s_n_before is not None
+    assert s_h_before["weight"] > 0
+    assert s_n_before["weight"] > 0
     # 1 real day idle (* 24 compression = 24 compressed days).
-    g.ltd_pass(now=86400.0 + 10.0)
-    w_h_after = g._edges.get((1, 2), None)
-    w_n_after = g._edges.get((3, 4), None)
-    # Habit edge survives; non-habit either drops further or is pruned.
-    assert w_h_after is not None
-    if w_n_after is not None:
-        # Non-habit's relative decay must exceed habit's.
-        rel_h = w_h_after.weight / w_h_before
-        rel_n = w_n_after.weight / w_n_before
+    await g.ltd_pass(now=86400.0 + 10.0)
+    s_h_after = await g.edge_state(1, 2)
+    s_n_after = await g.edge_state(3, 4)
+    assert s_h_after is not None
+    if s_n_after is not None:
+        rel_h = s_h_after["weight"] / s_h_before["weight"]
+        rel_n = s_n_after["weight"] / s_n_before["weight"]
         assert rel_n < rel_h
-    # Either way the habit retains far more strength than the non-habit.
 
 
-def test_plasticity_prune_floor_removes_weak_non_habits() -> None:
-    g = _make_graph(habit_threshold_hits=99, l_ltp_threshold_hits=1, ltd_decay_per_idle_day=0.99)
-    g.reinforce(5, 6, score=1.0, now=0.0)
-    g.reinforce(5, 6, score=1.0, now=0.5)
-    assert (5, 6) in g._edges
-    pruned = g.ltd_pass(now=86400.0 * 30.0)
+async def test_plasticity_prune_floor_removes_weak_non_habits(db: AsyncVectorDB) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [5, 6])
+    g = _make_graph(
+        coll,
+        habit_threshold_hits=99,
+        l_ltp_threshold_hits=1,
+        ltd_decay_per_idle_day=0.99,
+    )
+    await g.reinforce(5, 6, score=1.0, now=0.0)
+    await g.reinforce(5, 6, score=1.0, now=0.5)
+    assert await g.edge_state(5, 6) is not None
+    pruned = await g.ltd_pass(now=86400.0 * 30.0)
     assert pruned >= 1
-    assert (5, 6) not in g._edges
+    assert await g.edge_state(5, 6) is None
 
 
-def test_plasticity_habit_edge_persists_at_zero_weight() -> None:
-    g = _make_graph(habit_threshold_hits=3, l_ltp_threshold_hits=1, ltd_decay_per_idle_day=0.99)
+async def test_plasticity_habit_edge_persists_at_zero_weight(db: AsyncVectorDB) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [7, 8])
+    g = _make_graph(
+        coll,
+        habit_threshold_hits=3,
+        l_ltp_threshold_hits=1,
+        ltd_decay_per_idle_day=0.99,
+    )
     for k in range(3):
-        g.reinforce(7, 8, score=1.0, now=float(k))
-    assert g.is_habit(7, 8)
-    g.ltd_pass(now=86400.0 * 365.0)
+        await g.reinforce(7, 8, score=1.0, now=float(k))
+    assert await g.is_habit(7, 8)
+    await g.ltd_pass(now=86400.0 * 365.0)
     # Habit edge retained even if weight collapses to zero.
-    assert (7, 8) in g._edges
+    assert await g.edge_state(7, 8) is not None
 
 
-def test_plasticity_spreading_returns_zero_when_disabled() -> None:
-    g = _make_graph()
-    g.reinforce(1, 2, score=1.0, now=0.0)
-    out = g.spreading(1, [2, 3], hops=0, gamma=0.5)
+async def test_plasticity_spreading_returns_zero_when_disabled(db: AsyncVectorDB) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _make_graph(coll)
+    await g.reinforce(1, 2, score=1.0, now=0.0)
+    out = await g.spreading(1, [2, 3], hops=0, gamma=0.5)
     assert out == {2: 0.0, 3: 0.0}
 
 
-def test_plasticity_spreading_one_hop_picks_up_durable_neighbour() -> None:
-    g = _make_graph(l_ltp_threshold_hits=1)
-    g.reinforce(1, 2, score=1.0, now=0.0)
-    g.reinforce(1, 2, score=1.0, now=1.0)  # consolidates to weight
-    out = g.spreading(1, [2, 3], hops=1, gamma=0.5)
+async def test_plasticity_spreading_one_hop_picks_up_durable_neighbour(
+    db: AsyncVectorDB,
+) -> None:
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2, 3])
+    g = _make_graph(coll, l_ltp_threshold_hits=1)
+    await g.reinforce(1, 2, score=1.0, now=0.0)
+    await g.reinforce(1, 2, score=1.0, now=1.0)  # consolidates to weight
+    out = await g.spreading(1, [2, 3], hops=1, gamma=0.5)
     assert out[2] > 0.0
     assert out[3] == 0.0
+
+
+async def test_plasticity_persists_across_graph_instances(db: AsyncVectorDB) -> None:
+    """A second PlasticityGraph over the same collection sees stored edges."""
+    coll = db.collection("ep")
+    await _seed_docs(coll, [11, 12])
+    g = _make_graph(coll, l_ltp_threshold_hits=1)
+    for k in range(2):
+        await g.reinforce(11, 12, score=1.0, now=float(k))
+    g2 = _make_graph(coll, l_ltp_threshold_hits=1)
+    s = await g2.edge_state(11, 12)
+    assert s is not None
+    assert s["weight"] > 0
 
 
 # ----- EventBus / TriggerPolicy unit tests -----------------------------
@@ -194,10 +264,10 @@ def test_trigger_policy_consolidate_respects_cooldown() -> None:
     assert p.consolidate_due(s, now=200.0)
 
 
-def test_event_bus_records_and_caps_log() -> None:
+async def test_event_bus_records_and_caps_log() -> None:
     bus = EventBus(log_capacity=3)
     for i in range(5):
-        bus.record(
+        await bus.record(
             InteractionEvent(
                 kind="encode",
                 timestamp=float(i),
@@ -205,14 +275,14 @@ def test_event_bus_records_and_caps_log() -> None:
                 payload={"deduped": False},
             )
         )
-    log = bus.log()
+    log = await bus.log()
     assert len(log) == 3
     assert [e.timestamp for e in log] == [2.0, 3.0, 4.0]
     assert bus.state.total_events == 5
     assert bus.state.novel_encodes_since_consolidate == 5
 
 
-def test_event_bus_react_skips_reactor_kinds() -> None:
+async def test_event_bus_react_skips_reactor_kinds() -> None:
     bus = EventBus()
     fired: list[str] = []
 
@@ -228,24 +298,22 @@ def test_event_bus_react_skips_reactor_kinds() -> None:
     bus.policy.consolidate_cooldown_seconds = 0.0
     bus.policy.dream_after_events = 1
     bus.policy.dream_after_idle_seconds = 0.0
-    # Encoding event should fire follow-ups; consolidate event should not.
     e_user = InteractionEvent(
         kind="encode",
         timestamp=10.0,
         session_id=None,
         payload={"deduped": False},
     )
-    bus.record(e_user)
-    asyncio.run(bus.react(e_user))
+    await bus.record(e_user)
+    await bus.react(e_user)
     e_reactor = InteractionEvent(
         kind="consolidate",
         timestamp=11.0,
         session_id=None,
         payload={},
     )
-    bus.record(e_reactor)
-    asyncio.run(bus.react(e_reactor))
-    # 'c' and possibly 'd' from user event; reactor event must not double-trigger.
+    await bus.record(e_reactor)
+    await bus.react(e_reactor)
     assert "c" in fired
     assert fired.count("c") == 1
 
@@ -256,7 +324,7 @@ def test_event_bus_react_skips_reactor_kinds() -> None:
 async def test_service_emits_event_per_op(service: HippocampusService) -> None:
     await service.encode_episode("hello", "s1")
     await service.recall("hello", session_id="s1", k=3)
-    log = service.event_log()
+    log = await service.event_log()
     kinds = [e.kind for e in log]
     assert "encode" in kinds
     assert "recall" in kinds
@@ -268,11 +336,9 @@ async def test_service_records_plasticity_after_co_recall(
     await service.encode_episode("alpha", "s1")
     await service.encode_episode("beta", "s1")
     await service.encode_episode("gamma", "s1")
-    # Two recalls in the same session pull more than one episodic hit so
-    # the anchor->other reinforcement fires.
     await service.recall("alpha", session_id="s1", k=3)
     await service.recall("alpha", session_id="s1", k=3)
-    stats = service._plasticity.stats()
+    stats = await service._plasticity.stats()
     assert stats["edges"] >= 1.0
 
 
@@ -286,8 +352,8 @@ async def test_reactor_consolidate_fires_after_threshold() -> None:
         svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
         for i in range(4):
             await svc.encode_episode(f"item-{i}", "s1")
-        # The 4th encode trips the policy; reactor runs consolidate.
-        kinds = [e.kind for e in svc.event_log()]
+        log = await svc.event_log()
+        kinds = [e.kind for e in log]
         assert kinds.count("consolidate") >= 1
     finally:
         await db.close()
@@ -300,7 +366,8 @@ async def test_self_learning_disabled_skips_reactor() -> None:
         svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
         for i in range(5):
             await svc.encode_episode(f"item-{i}", "s1")
-        kinds = [e.kind for e in svc.event_log()]
+        log = await svc.event_log()
+        kinds = [e.kind for e in log]
         assert "consolidate" not in kinds
     finally:
         await db.close()
@@ -314,7 +381,6 @@ async def test_surprise_salience_boosts_when_enabled() -> None:
         r = await svc.encode_episode("anything", "s1", salience=0.4)
         rows = await svc.episodic.get_documents({"id": r["id"]}, limit=1)
         _, _, md = rows[0]
-        # First episode in an empty store has no neighbour; floor=0 forces boost.
         assert float(md["salience"]) >= 0.7 - 1e-6
     finally:
         await db.close()

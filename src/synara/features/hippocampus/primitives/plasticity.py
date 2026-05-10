@@ -1,81 +1,53 @@
-"""Per-edge plasticity layer over the successor representation.
+"""Per-edge plasticity (E-LTP / L-LTP / habit / LTD) over the SR.
 
-Sits on top of ``SuccessorRepresentation`` and tracks E-LTP / L-LTP /
-habit / LTD dynamics on directed edges ``(i, j)``. Existing SR rows
-``M[i, j]`` continue to be the discounted-closure ranking signal; this
-layer adds a separate durable weight ``W[i, j]`` and a transient bonus
-``b[i, j]`` that together encode the reinforcement history.
+Edges are persisted to ``coll.edges`` with kind ``"plasticity"``. The
+durable weight ``W[i,j]`` (column ``weight``) and transient bonus
+``b[i,j]`` (column ``bonus``) accrue from reinforcement events; lifetime
+hits live in column ``hits`` and ``ever_habit`` is derived as
+``hits >= habit_threshold_hits``. Window state (``bonus_set_at``,
+``hits_in_window``) lives in the metadata blob.
 
-State per edge ``(i, j)``
--------------------------
-- ``weight``       L-LTP-consolidated durable strength (real number ``>= 0``).
-- ``bonus``        Transient E-LTP amplification (decays with
-                   ``e_ltp_decay_seconds`` real wall-clock).
-- ``bonus_set_at`` Wall-clock of the most recent reinforcement that
-                   updated the bonus.
-- ``hits_in_window``  Reinforcements observed inside the current E-LTP
-                      window (zeroed on transition to durable weight).
-- ``total_hits``   Lifetime reinforcement count (monotone non-decreasing).
-- ``ever_habit``   Latched once ``total_hits >= habit_threshold_hits``;
-                   never cleared. Drives slower LTD and faster relearn.
-- ``last_touch``   Wall-clock of most recent reinforcement.
+Reinforce ``(i, j)`` with score ``s ∈ [0, 1]`` at time ``t``::
 
-Math
-----
-Reinforcement of ``(i, j)`` with score ``s in [0, 1]`` at time ``t``:
+    elapsed  = max(0, t - bonus_set_at)
+    bonus   *= exp(-elapsed / tau_E)               # E-LTP decay
+    n        = (n + 1) if elapsed <= tau_E else 1  # window
+    gain     = s * (sigma if ever_habit else 1)    # savings boost
+    bonus   += 0.5 * gain
+    if n >= theta_L:                                # L-LTP fold
+        weight += bonus; bonus, n = 0, 0
+    hits += 1
 
-    elapsed = max(0, t - bonus_set_at)
-    bonus  *= exp(-elapsed / tau_E)                    # E-LTP decay
-    n      = (n + 1) if elapsed <= tau_E else 1        # window count
-    gain   = s * (sigma if ever_habit else 1)          # savings boost
-    bonus += 0.5 * gain
-    if n >= theta_L:                                    # L-LTP transition
-        weight += bonus
-        bonus, n = 0.0, 0
-    total_hits += 1
-    if total_hits >= theta_H: ever_habit = True
-
-LTD over real-elapsed ``dt`` seconds (compressed by ``time_compression``):
+LTD over real-elapsed ``dt`` (``time_compression`` accelerates it)::
 
     idle_days = dt * C / 86400
     mu        = mu_habit if ever_habit else 1
     weight   *= (1 - lambda * mu) ** idle_days
 
-Edges with ``weight < prune_floor`` and not ``ever_habit`` are removed.
-``ever_habit`` edges persist even at zero weight so the savings flag
-survives long disuse (Ebbinghaus savings).
+Edges with ``weight < prune_floor`` and not ``ever_habit`` are deleted.
+Habits persist at zero weight so the savings flag survives long disuse.
 """
 
 from __future__ import annotations
 
+import asyncio
 import math
-from collections import defaultdict
-from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from .successor import SuccessorRepresentation
 
+if TYPE_CHECKING:
+    from simplevecdb import AsyncVectorCollection
 
-@dataclass(slots=True)
-class _Edge:
-    weight: float = 0.0
-    bonus: float = 0.0
-    bonus_set_at: float = -math.inf
-    hits_in_window: int = 0
-    total_hits: int = 0
-    ever_habit: bool = False
-    last_touch: float = -math.inf
+DEFAULT_KIND = "plasticity"
 
 
 class PlasticityGraph:
-    """E-LTP / L-LTP / habit / LTD layer over a ``SuccessorRepresentation``.
-
-    Composition (not inheritance): SR keeps its TD(0) closure semantics;
-    this class owns the durable-weight + transient-bonus state. Both can
-    be queried jointly via :meth:`boost`.
-    """
+    """Async plasticity layer over a persistent edge table."""
 
     def __init__(
         self,
+        collection: AsyncVectorCollection,
         sr: SuccessorRepresentation | None,
         *,
         e_ltp_decay_seconds: float,
@@ -86,6 +58,7 @@ class PlasticityGraph:
         ltd_decay_per_idle_day: float,
         time_compression: float,
         prune_floor: float = 1e-3,
+        kind: str = DEFAULT_KIND,
     ) -> None:
         if e_ltp_decay_seconds <= 0:
             raise ValueError("e_ltp_decay_seconds must be positive")
@@ -101,7 +74,9 @@ class PlasticityGraph:
             raise ValueError("ltd_decay_per_idle_day must be in [0, 1]")
         if time_compression <= 0:
             raise ValueError("time_compression must be positive")
+        self._coll = collection
         self._sr = sr
+        self.kind = kind
         self.e_ltp_decay_seconds = float(e_ltp_decay_seconds)
         self.l_ltp_threshold_hits = int(l_ltp_threshold_hits)
         self.habit_threshold_hits = int(habit_threshold_hits)
@@ -110,111 +85,156 @@ class PlasticityGraph:
         self.ltd_decay_per_idle_day = float(ltd_decay_per_idle_day)
         self.time_compression = float(time_compression)
         self.prune_floor = float(prune_floor)
-        self._edges: dict[tuple[int, int], _Edge] = {}
-        # Outgoing-neighbour index for O(deg) spreading activation.
-        self._out: dict[int, set[int]] = defaultdict(set)
 
-    # ----------------------------------------------------------- mutate
-    def reinforce(self, i: int, j: int, *, score: float, now: float) -> None:
-        """Apply one reinforcement event to edge ``(i, j)``.
+    async def _upsert(
+        self,
+        src: int,
+        dst: int,
+        *,
+        weight: float,
+        bonus: float,
+        hits: int,
+        metadata: dict[str, Any],
+    ) -> None:
+        # AsyncVectorCollection doesn't expose upsert; reach the sync
+        # namespace via to_thread. Catalog serialises on its RLock.
+        await asyncio.to_thread(
+            self._coll._collection.edges.upsert,
+            src,
+            dst,
+            kind=self.kind,
+            weight=weight,
+            bonus=bonus,
+            hits=hits,
+            metadata=metadata,
+        )
 
-        ``score`` should be in ``[0, 1]`` (a recall confidence or a
-        normalised co-activation strength). Self-loops are silently
-        ignored.
-        """
+    async def _read_one(self, i: int, j: int) -> Any | None:
+        edges = await self._coll.get_edges(src=i, dst=j, kind=self.kind, limit=1)
+        return edges[0] if edges else None
+
+    async def reinforce(self, i: int, j: int, *, score: float, now: float) -> None:
+        """Apply one reinforcement event to edge ``(i, j)``."""
         if i == j:
             return
-        if not 0.0 <= score <= 1.0:
-            score = max(0.0, min(1.0, float(score)))
-        key = (i, j)
-        e = self._edges.get(key)
+        score = max(0.0, min(1.0, float(score)))
+        e = await self._read_one(i, j)
         if e is None:
-            e = _Edge()
-            self._edges[key] = e
-            self._out[i].add(j)
-        # 1. Decay transient bonus by REAL wall-clock since last set.
-        if math.isfinite(e.bonus_set_at):
-            elapsed = max(0.0, now - e.bonus_set_at)
+            cur_w, cur_b, cur_hits = 0.0, 0.0, 0
+            md_in: dict[str, Any] = {}
+        else:
+            cur_w, cur_b, cur_hits = float(e.weight), float(e.bonus), int(e.hits)
+            md_in = dict(e.metadata or {})
+        bonus_set_at = float(md_in.get("bonus_set_at", float("-inf")))
+        hits_in_window = int(md_in.get("hits_in_window", 0))
+        if math.isfinite(bonus_set_at):
+            elapsed = max(0.0, now - bonus_set_at)
             if elapsed > 0:
-                e.bonus *= math.exp(-elapsed / self.e_ltp_decay_seconds)
+                cur_b *= math.exp(-elapsed / self.e_ltp_decay_seconds)
         else:
             elapsed = math.inf
-        # 2. In-window vs reset.
         if elapsed <= self.e_ltp_decay_seconds:
-            e.hits_in_window += 1
+            hits_in_window += 1
         else:
-            e.hits_in_window = 1
-        # 3. Score-weighted increment, with savings if ever-habit.
-        gain = score * (self.habit_savings_factor if e.ever_habit else 1.0)
-        e.bonus += 0.5 * gain
-        e.bonus_set_at = now
-        # 4. L-LTP fold-in.
-        if e.hits_in_window >= self.l_ltp_threshold_hits:
-            e.weight += e.bonus
-            e.bonus = 0.0
-            e.hits_in_window = 0
-        # 5. Lifetime / habit latch.
-        e.total_hits += 1
-        if e.total_hits >= self.habit_threshold_hits:
-            e.ever_habit = True
-        e.last_touch = now
+            hits_in_window = 1
+        ever_habit = cur_hits >= self.habit_threshold_hits
+        gain = score * (self.habit_savings_factor if ever_habit else 1.0)
+        cur_b += 0.5 * gain
+        if hits_in_window >= self.l_ltp_threshold_hits:
+            cur_w += cur_b
+            cur_b = 0.0
+            hits_in_window = 0
+        await self._upsert(
+            i,
+            j,
+            weight=cur_w,
+            bonus=cur_b,
+            hits=cur_hits + 1,
+            metadata={
+                "hits_in_window": hits_in_window,
+                "bonus_set_at": now,
+                "last_touch_virt": now,
+            },
+        )
 
-    def ltd_pass(self, *, now: float) -> int:
-        """Decay weights for non-recently-touched edges; prune dead ones.
-
-        Returns the number of edges removed (always non-habits — habit
-        edges are *never* removed even when weight hits zero, so the
-        savings flag survives indefinite disuse).
-        """
+    async def ltd_pass(self, *, now: float) -> int:
+        """Decay weights for non-recently-touched edges; prune dead ones."""
         rate = self.ltd_decay_per_idle_day
         if rate <= 0.0:
             return 0
-        prune: list[tuple[int, int]] = []
-        for key, e in self._edges.items():
-            if not math.isfinite(e.last_touch):
+        edges = await self._coll.get_edges(kind=self.kind)
+        pruned = 0
+        for e in edges:
+            md = dict(e.metadata or {})
+            last_touch = float(md.get("last_touch_virt", float(e.last_touch)))
+            if not math.isfinite(last_touch):
                 continue
-            idle_real = max(0.0, now - e.last_touch)
+            idle_real = max(0.0, now - last_touch)
             idle_days = idle_real * self.time_compression / 86400.0
-            mu = self.habit_ltd_multiplier if e.ever_habit else 1.0
+            ever_habit = int(e.hits) >= self.habit_threshold_hits
+            mu = self.habit_ltd_multiplier if ever_habit else 1.0
             decay_per_day = rate * mu
             if decay_per_day >= 1.0:
-                e.weight = 0.0
+                new_w = 0.0
             else:
-                e.weight *= max(0.0, 1.0 - decay_per_day) ** idle_days
-            # Bonus is transient: same wall-clock decay as reinforce-time.
-            if math.isfinite(e.bonus_set_at):
-                e.bonus *= math.exp(-max(0.0, now - e.bonus_set_at) / self.e_ltp_decay_seconds)
-            if e.weight < self.prune_floor and not e.ever_habit:
-                prune.append(key)
-        for key in prune:
-            i, _j = key
-            self._edges.pop(key, None)
-            self._out[i].discard(_j)
-            if not self._out[i]:
-                self._out.pop(i, None)
-        return len(prune)
+                new_w = float(e.weight) * max(0.0, 1.0 - decay_per_day) ** idle_days
+            bonus_set_at = float(md.get("bonus_set_at", float("-inf")))
+            new_b = float(e.bonus)
+            if math.isfinite(bonus_set_at):
+                new_b *= math.exp(-max(0.0, now - bonus_set_at) / self.e_ltp_decay_seconds)
+            if new_w < self.prune_floor and not ever_habit:
+                await self._coll.delete_edge(int(e.src_id), int(e.dst_id), kind=self.kind)
+                pruned += 1
+            else:
+                await self._coll.update_edge(
+                    int(e.src_id),
+                    int(e.dst_id),
+                    kind=self.kind,
+                    weight=new_w,
+                    bonus=new_b,
+                    metadata={**md, "last_touch_virt": last_touch},
+                )
+        return pruned
 
-    # ------------------------------------------------------------- read
-    def edge_weight(self, i: int, j: int) -> float:
+    async def edge_weight(self, i: int, j: int) -> float:
         """Combined durable + transient strength for the directed edge."""
-        e = self._edges.get((i, j))
+        e = await self._read_one(i, j)
         if e is None:
             return 0.0
-        return e.weight + e.bonus
+        return float(e.weight) + float(e.bonus)
 
-    def is_habit(self, i: int, j: int) -> bool:
-        e = self._edges.get((i, j))
-        return bool(e and e.ever_habit)
+    async def is_habit(self, i: int, j: int) -> bool:
+        e = await self._read_one(i, j)
+        if e is None:
+            return False
+        return int(e.hits) >= self.habit_threshold_hits
 
-    def boost(self, anchor: int, ids: list[int]) -> dict[int, float]:
+    async def edge_state(self, i: int, j: int) -> dict[str, Any] | None:
+        """Full edge state for tests/introspection."""
+        e = await self._read_one(i, j)
+        if e is None:
+            return None
+        md = dict(e.metadata or {})
+        return {
+            "weight": float(e.weight),
+            "bonus": float(e.bonus),
+            "hits": int(e.hits),
+            "last_touch": float(md.get("last_touch_virt", float(e.last_touch))),
+            "hits_in_window": int(md.get("hits_in_window", 0)),
+            "bonus_set_at": float(md.get("bonus_set_at", float("-inf"))),
+            "ever_habit": int(e.hits) >= self.habit_threshold_hits,
+        }
+
+    async def boost(self, anchor: int, ids: list[int]) -> dict[int, float]:
         """Return ``{j: SR[a,j] + W[a,j] + b[a,j]}`` for each j in ``ids``."""
         sr_part = self._sr.boost(anchor, ids) if self._sr is not None else {}
-        out: dict[int, float] = {}
-        for j in ids:
-            out[j] = sr_part.get(j, 0.0) + self.edge_weight(anchor, j)
-        return out
+        if not ids:
+            return {}
+        edges = await self._coll.get_edges(src=anchor, kind=self.kind)
+        edge_map = {int(e.dst_id): float(e.weight) + float(e.bonus) for e in edges}
+        return {j: sr_part.get(j, 0.0) + edge_map.get(j, 0.0) for j in ids}
 
-    def spreading(
+    async def spreading(
         self,
         anchor: int,
         targets: list[int],
@@ -222,31 +242,26 @@ class PlasticityGraph:
         hops: int,
         gamma: float,
     ) -> dict[int, float]:
-        """Bounded-hop max-product BFS over durable weights.
-
-        For each ``j in targets`` returns the best chain activation
-        ``gamma^d * prod(W on path)`` from ``anchor`` to ``j`` over
-        paths of length ``<= hops``. Returns 0 for ids unreachable
-        within ``hops`` or when ``hops <= 0`` / ``gamma <= 0``.
-        """
+        """Bounded-hop max-product BFS over durable weights."""
         if hops <= 0 or gamma <= 0.0 or not targets:
-            return {j: 0.0 for j in targets}
+            return dict.fromkeys(targets, 0.0)
         target_set = set(targets)
-        # frontier: id -> best activation so far
         best: dict[int, float] = {anchor: 1.0}
         frontier: dict[int, float] = {anchor: 1.0}
         for _ in range(hops):
             next_frontier: dict[int, float] = {}
             for k, ak in frontier.items():
-                for j in self._out.get(k, ()):
-                    e = self._edges.get((k, j))
-                    if e is None or e.weight <= 0.0:
+                edges = await self._coll.get_edges(src=k, kind=self.kind)
+                for e in edges:
+                    w = float(e.weight)
+                    if w <= 0.0:
                         continue
-                    contrib = ak * gamma * e.weight
+                    contrib = ak * gamma * w
                     if contrib <= 0.0:
                         continue
-                    if contrib > next_frontier.get(j, 0.0):
-                        next_frontier[j] = contrib
+                    dst = int(e.dst_id)
+                    if contrib > next_frontier.get(dst, 0.0):
+                        next_frontier[dst] = contrib
             for j, v in next_frontier.items():
                 if v > best.get(j, 0.0):
                     best[j] = v
@@ -255,20 +270,15 @@ class PlasticityGraph:
                 break
         return {j: float(best.get(j, 0.0)) for j in targets if j != anchor or anchor in target_set}
 
-    # --------------------------------------------------- introspection
-    def stats(self) -> dict[str, float]:
-        if not self._edges:
+    async def stats(self) -> dict[str, float]:
+        edges = await self._coll.get_edges(kind=self.kind)
+        if not edges:
             return {"edges": 0.0, "habits": 0.0, "max_total_hits": 0.0, "max_weight": 0.0}
-        habits = 0
-        max_total = 0
-        max_w = 0.0
-        for e in self._edges.values():
-            if e.ever_habit:
-                habits += 1
-            max_total = max(max_total, e.total_hits)
-            max_w = max(max_w, e.weight)
+        habits = sum(1 for e in edges if int(e.hits) >= self.habit_threshold_hits)
+        max_total = max(int(e.hits) for e in edges)
+        max_w = max(float(e.weight) for e in edges)
         return {
-            "edges": float(len(self._edges)),
+            "edges": float(len(edges)),
             "habits": float(habits),
             "max_total_hits": float(max_total),
             "max_weight": float(max_w),

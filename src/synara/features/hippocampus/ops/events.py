@@ -1,42 +1,38 @@
 """Interaction events and the self-triggering reactor.
 
 Every public op on ``HippocampusService`` emits an
-:class:`InteractionEvent` after its main work completes. The bus stores
-a bounded log and consults a :class:`TriggerPolicy` on each emit; any
-matched trigger runs synchronously, so the user-facing call returns
-*after* any auto-consolidate / auto-dream side effects have already
-landed. There is no background thread - the system "self-learns"
-reactively, on the next inbound op.
+:class:`InteractionEvent` after its main work completes. Events are
+appended to the persistent ``coll.events`` change feed so cross-process
+subscribers and post-mortem inspection both see the same log; the
+in-memory :class:`ReactorState` is just hot-path bookkeeping for the
+:class:`TriggerPolicy` and is rebuilt from defaults on restart.
 
 Reactor invariants
 ------------------
 * Reactor callbacks for ``consolidate`` / ``dream`` are themselves
-  service ops that emit their own events. ``react()`` therefore *skips*
-  trigger evaluation when the originating event is itself a reactor
-  output. This makes the call graph a tree of depth at most 2:
+  service ops that emit their own events. ``react()`` skips trigger
+  evaluation when the originating event is itself a reactor output, so
+  the call graph is a tree of depth at most 2:
 
       user_call (encode|recall|forget|reflect)
           -> emit -> react -> [consolidate? dream?]
                               -> emit (no further react)
 
-  No recursion on the reactor side, by construction.
-
-* Events are append-only. The log is a bounded ring (``log_capacity``);
-  callers wanting full history should externalise it.
-
-* Triggers are *deterministic functions of the public state*
-  (``ReactorState``). They are independently testable and contain no
-  RL / learning - the "self-learning" emerges from the *side effects*
-  the triggers schedule, not from the trigger logic itself.
+* Triggers are deterministic functions of public state
+  (``ReactorState``) and contain no learning — the "self-learning"
+  emerges from the *side effects* the triggers schedule.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from simplevecdb import AsyncVectorCollection
 
 EventKind = Literal[
     "encode",
@@ -50,14 +46,7 @@ EventKind = Literal[
 
 @dataclass(frozen=True, slots=True)
 class InteractionEvent:
-    """One observable interaction with the memory service.
-
-    ``kind``       which op produced this event
-    ``timestamp``  wall-clock seconds (real)
-    ``session_id`` namespace if applicable; None for global ops
-    ``payload``    op-specific data: ids, counts, scores - kept small
-                   (this object is logged in a bounded ring)
-    """
+    """One observable interaction with the memory service."""
 
     kind: EventKind
     timestamp: float
@@ -79,13 +68,7 @@ class ReactorState:
 
 @dataclass(slots=True)
 class TriggerPolicy:
-    """When to schedule consolidate / dream as side effects.
-
-    Defaults are conservative enough that a small test run (a handful
-    of encodes/recalls in fast succession) does not trip them. Real
-    deployments tune ``consolidate_after_novel_encodes`` down toward
-    ~16 and ``dream_after_idle_seconds`` toward ~600 (10 min).
-    """
+    """When to schedule consolidate / dream as side effects."""
 
     consolidate_after_novel_encodes: int = 32
     consolidate_cooldown_seconds: float = 60.0
@@ -112,30 +95,83 @@ class TriggerPolicy:
 
 _REACTOR_KINDS: frozenset[EventKind] = frozenset({"consolidate", "dream"})
 
+# Persistent event-log entries get this kind prefix to avoid colliding
+# with simplevecdb's own internal events (edge_upsert, rebuild, etc.).
+EVENT_KIND_PREFIX = "hippocampus."
+
+
+def _event_kind(kind: str) -> str:
+    return f"{EVENT_KIND_PREFIX}{kind}"
+
 
 class EventBus:
-    """Bounded event log + reactor for self-triggered follow-ups."""
+    """Persistent event log + reactor for self-triggered follow-ups.
+
+    ``record()`` is async because it appends to the underlying
+    ``coll.events`` table. When no collection is supplied, the bus
+    becomes a thin in-memory shim (used by unit tests for the policy).
+    """
 
     def __init__(
         self,
         *,
+        collection: AsyncVectorCollection | None = None,
         policy: TriggerPolicy | None = None,
         log_capacity: int = 1024,
     ) -> None:
         if log_capacity <= 0:
             raise ValueError("log_capacity must be positive")
+        self._coll = collection
         self.policy = policy or TriggerPolicy()
         self.state = ReactorState()
-        self._log: deque[InteractionEvent] = deque(maxlen=log_capacity)
+        self.log_capacity = int(log_capacity)
         self.on_consolidate: Callable[[InteractionEvent], Awaitable[None]] | None = None
         self.on_dream: Callable[[InteractionEvent], Awaitable[None]] | None = None
+        # In-memory fallback when no collection is wired (test paths).
+        self._mem_log: list[InteractionEvent] = []
+        # Throttle prune calls so we don't hit SQL on every record().
+        self._records_since_prune = 0
+        self._prune_every = max(64, log_capacity // 4)
 
-    def log(self) -> list[InteractionEvent]:
-        return list(self._log)
+    async def log(self) -> list[InteractionEvent]:
+        """Snapshot of the most recent events (up to ``log_capacity``)."""
+        if self._coll is None:
+            return list(self._mem_log)
+        rows = await self._coll.read_events(limit=self.log_capacity)
+        kept: list[InteractionEvent] = []
+        for r in rows:
+            if not r.kind.startswith(EVENT_KIND_PREFIX):
+                continue
+            payload = dict(r.payload or {})
+            session_id = payload.pop("__session_id", None)
+            kept.append(
+                InteractionEvent(
+                    kind=r.kind[len(EVENT_KIND_PREFIX) :],
+                    timestamp=float(r.ts),
+                    session_id=session_id,
+                    payload=payload,
+                )
+            )
+        return kept[-self.log_capacity :]
 
-    def record(self, event: InteractionEvent) -> None:
+    async def record(self, event: InteractionEvent) -> None:
         """Append the event and update reactor state counters."""
-        self._log.append(event)
+        if self._coll is not None:
+            payload = dict(event.payload)
+            if event.session_id is not None:
+                payload["__session_id"] = event.session_id
+            await asyncio.to_thread(
+                self._coll._collection.events.append,
+                _event_kind(event.kind),
+                payload=payload,
+            )
+            self._records_since_prune += 1
+            if self._records_since_prune >= self._prune_every:
+                await self._maybe_prune()
+        else:
+            self._mem_log.append(event)
+            if len(self._mem_log) > self.log_capacity:
+                del self._mem_log[: len(self._mem_log) - self.log_capacity]
         st = self.state
         st.last_event_at = event.timestamp
         st.total_events += 1
@@ -149,13 +185,23 @@ class EventBus:
             st.last_dream_at = event.timestamp
             st.events_since_dream = 0
 
-    async def react(self, event: InteractionEvent) -> list[str]:
-        """Run any due reactor callbacks. Returns triggered action names.
+    async def _maybe_prune(self) -> None:
+        """Keep the persistent log bounded to ``log_capacity`` entries."""
+        if self._coll is None:
+            return
+        last_seq = await self._coll.last_event_seq()
+        cutoff = last_seq - self.log_capacity
+        if cutoff <= 0:
+            self._records_since_prune = 0
+            return
+        await asyncio.to_thread(
+            self._coll._collection.events.prune,
+            before_seq=cutoff,
+        )
+        self._records_since_prune = 0
 
-        No-op when the originating event is itself a reactor output,
-        which prevents recursion (see module docstring for the call
-        graph guarantee).
-        """
+    async def react(self, event: InteractionEvent) -> list[str]:
+        """Run any due reactor callbacks. Returns triggered action names."""
         if event.kind in _REACTOR_KINDS:
             return []
         triggered: list[str] = []
