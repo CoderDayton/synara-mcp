@@ -92,10 +92,76 @@ async def run(
     if service._sr is not None and observed_episodic:
         t = now_seconds()
         anchor_sid, anchor_id = observed_episodic[0]
-        service._sr.observe_recall_set(
-            anchor_sid, anchor_id, [j for _, j in observed_episodic[1:]], t
-        )
+        others = [j for _, j in observed_episodic[1:]]
+        service._sr.observe_recall_set(anchor_sid, anchor_id, others, t)
+        # Plasticity layer: reinforce anchor->each-other edge with the
+        # cosine-similarity score (1 - distance, clipped). Co-recall is
+        # the brain's bread-and-butter Hebbian event.
+        out_lookup = {row["id"]: row for row in out}
+        anchor_row = out_lookup.get(anchor_id)
+        for j in others:
+            jrow = out_lookup.get(j)
+            score = _cosine_score_from_distance(jrow["distance"]) if jrow is not None else 0.5
+            service._plasticity.reinforce(anchor_id, j, score=score, now=t)
+        # Reconsolidation drift accounting: bumps drift_total in the
+        # episode's metadata when the alpha is set. Vector rewrite is
+        # deferred (see config note); this only records the bound.
+        if service.config.reconsolidation_alpha > 0.0 and anchor_row is not None:
+            await _accrue_drift(service, anchor_row, t=t)
     return out
+
+
+def _cosine_score_from_distance(dist: float | None) -> float:
+    """Map cosine distance (in [0, 2]) to a similarity-like score in [0, 1]."""
+    if dist is None:
+        return 0.5
+    s = 1.0 - 0.5 * float(dist)
+    return max(0.0, min(1.0, s))
+
+
+async def _accrue_drift(
+    service: HippocampusService,
+    row: dict[str, Any],
+    *,
+    t: float,
+) -> None:
+    """Record one reconsolidation drift step in the episode's metadata.
+
+    Drift bound: cosine-distance from the original embedding is
+    bounded above by the cumulative blend ``sum(alpha * score)``.
+    Once it crosses ``reconsolidation_max_total_drift`` the episode is
+    marked ``drift_locked`` and further drift is rejected. ``min_score``
+    gates accumulation to avoid drifting on noisy recalls.
+    """
+    cfg = service.config
+    md = row.get("metadata") or {}
+    if md.get("drift_locked"):
+        return
+    score = _cosine_score_from_distance(row.get("distance"))
+    if score < cfg.reconsolidation_min_score:
+        return
+    last = float(md.get("last_reconsolidated_at", 0.0))
+    if last > 0.0 and (t - last) > cfg.reconsolidation_window_seconds:
+        # Outside the window for this episode; reset the recall clock.
+        await service.episodic.update_metadata([(int(row["id"]), {"last_reconsolidated_at": t})])
+        return
+    step = cfg.reconsolidation_alpha * score
+    new_drift = float(md.get("drift_total", 0.0)) + step
+    locked = new_drift >= cfg.reconsolidation_max_total_drift
+    if locked:
+        new_drift = cfg.reconsolidation_max_total_drift
+    await service.episodic.update_metadata(
+        [
+            (
+                int(row["id"]),
+                {
+                    "drift_total": float(new_drift),
+                    "drift_locked": bool(locked),
+                    "last_reconsolidated_at": t,
+                },
+            )
+        ]
+    )
 
 
 async def _merge_hits(
@@ -147,20 +213,36 @@ async def _sr_rank_keys(
     between this call and the sort, and avoids cross-source key
     collisions.
     """
-    if service._sr is None or not merged:
-        return {}
-    ep_count = await service.episodic.count()
-    omega = service._sr.omega(ep_count)
-    if omega <= 0.0:
+    if not merged:
         return {}
     episodic_hits = [(doc_id, dist) for doc_id, _, _, dist, src in merged if src == "episodic"]
     if not episodic_hits:
         return {}
     anchor_id = min(episodic_hits, key=lambda r: r[1])[0]
-    boost = service._sr.boost(anchor_id, [r[0] for r in episodic_hits])
+    ep_count = await service.episodic.count()
+    cfg = service.config
+    # SR omega-weighted boost (existing behaviour).
+    omega = service._sr.omega(ep_count) if service._sr is not None else 0.0
+    sr_boost: dict[int, float] = {}
+    if service._sr is not None and omega > 0.0:
+        sr_boost = service._sr.boost(anchor_id, [r[0] for r in episodic_hits])
+    # Spreading activation over the plasticity graph (gated on hops > 0).
+    spread: dict[int, float] = {}
+    if cfg.spreading_activation_hops > 0 and cfg.spreading_activation_weight > 0.0:
+        spread = service._plasticity.spreading(
+            anchor_id,
+            [r[0] for r in episodic_hits],
+            hops=cfg.spreading_activation_hops,
+            gamma=cfg.spreading_activation_decay,
+        )
+    if omega <= 0.0 and not spread:
+        return {}
     keys: dict[tuple[int, str], float] = {}
+    sa_w = float(cfg.spreading_activation_weight)
     for doc_id, _, _, dist, src in merged:
         if src != "episodic":
             continue
-        keys[(doc_id, src)] = (1.0 - omega) * dist - omega * boost.get(doc_id, 0.0)
+        rank = (1.0 - omega) * dist - omega * sr_boost.get(doc_id, 0.0)
+        rank -= sa_w * float(spread.get(doc_id, 0.0))
+        keys[(doc_id, src)] = rank
     return keys

@@ -73,6 +73,7 @@ async def run(
     if dedup_hit is not None:
         return dedup_hit
 
+    salience = await _maybe_surprise_boost(service, new_emb, session_id, salience)
     encoded_at = now_seconds()
     segments = split_into_segments(
         content,
@@ -98,6 +99,30 @@ async def run(
         salience=salience,
         encoded_at=encoded_at,
     )
+
+
+async def _maybe_surprise_boost(
+    service: HippocampusService,
+    new_emb: list[float] | None,
+    session_id: str,
+    salience: float,
+) -> float:
+    """Apply prediction-error-style salience boost when the new episode is
+    far in cosine distance from anything else in this namespace.
+
+    Defaults to a no-op (``surprise_salience_boost == 0``); the floor and
+    boost are both runtime-tunable via ``HippocampusConfig``.
+    """
+    cfg = service.config
+    if cfg.surprise_salience_boost <= 0.0 or new_emb is None:
+        return salience
+    nearest = await service.episodic.similarity_search(
+        new_emb, k=1, filter={"session_id": session_id}
+    )
+    d_star = 1.0 if not nearest else float(nearest[0][1])
+    if d_star >= cfg.surprise_distance_floor:
+        return min(1.0, salience + cfg.surprise_salience_boost)
+    return salience
 
 
 async def _dedup_jaccard(

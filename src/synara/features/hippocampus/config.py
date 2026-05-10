@@ -77,3 +77,104 @@ class HippocampusConfig:
     # ``sr_omega_max``. 1.0 = needs as many edges as episodes before
     # full plateau. Lower = trust SR sooner.
     sr_cold_start_ratio: float = 1.0
+
+    # ----- Neuroplasticity timescales -----
+    # Master switch for the event-bus reactor + plasticity tracking.
+    # When True the service emits ``InteractionEvent`` records per op
+    # and runs the reactor (auto-consolidate / auto-dream) inside the
+    # originating call. Plasticity bookkeeping (E-LTP/L-LTP/habits) runs
+    # whenever this is True; behavioural effects (reconsolidation drift,
+    # spreading activation, surprise salience, age/retrieval gates) are
+    # individually gated below and default to OFF so they never alter
+    # observed behaviour without explicit opt-in.
+    self_learning_enabled: bool = True
+
+    # ``time_compression`` shifts the felt pace of SLOW processes
+    # (forgetting, schema age, LTD) without retuning each constant.
+    # 1.0 = real-time; 24.0 (default) = 1 real day per app hour.
+    # FAST-plasticity fields (E-LTP, reconsolidation window) deliberately
+    # bypass compression and use real wall-clock so a bursty 100-turn
+    # session does not race past transient plasticity in seconds.
+    # Habit / L-LTP triggers use interaction count and are
+    # compression-invariant.
+    time_compression: float = 24.0
+
+    # Early-LTP: a recall briefly amplifies the edge to its co-activated
+    # neighbours; the bonus decays with this tau (REAL wall-clock,
+    # uncompressed) unless reinforced. E-LTP literature: 1-3h, midpoint ~2h.
+    e_ltp_decay_seconds: float = 7200.0
+    # Late-LTP: an edge reinforced ``l_ltp_threshold_hits`` times inside
+    # the E-LTP window flips to durable (slow-decay) state. Real L-LTP
+    # needs protein synthesis and persists for days.
+    l_ltp_threshold_hits: int = 3
+
+    # Reconsolidation window (REAL wall-clock, uncompressed): after a
+    # successful recall the episode is labile this long; further recalls
+    # in-window may nudge the stored embedding toward the query.
+    # Real window ~6h (Nader 2000); 6h compressed 24x lands at ~15 min
+    # of conversation, which is a sensible "still in the same chat" gate.
+    reconsolidation_window_seconds: float = 21600.0
+    # Per-recall blend factor for reconsolidation drift accounting.
+    # When > 0, recall accumulates per-episode drift in metadata
+    # (``drift_total`` / ``drift_locked``) but does NOT yet mutate the
+    # stored vector - simplevecdb's collection API exposes no embedding
+    # update primitive, so true vector rewrite needs a delete+re-add
+    # path with foreign-key fixups (deferred). Defaults to 0 (off).
+    reconsolidation_alpha: float = 0.0
+    # Hard cap on cumulative drift (1 - cosine(v_original, v_current))
+    # before reconsolidation is locked out for this episode.
+    reconsolidation_max_total_drift: float = 0.15
+    # Novelty gate: only nudge when the recall's success score
+    # (cosine to query) clears this floor, so noisy recalls don't drift
+    # the memory toward unrelated queries.
+    reconsolidation_min_score: float = 0.4
+
+    # Habit threshold: once an edge accumulates this many reinforcements
+    # (Lally 2010 median = 66 days, here count-based and
+    # compression-invariant) it counts as a habit. Habits are NOT immune
+    # to LTD - real habits decay with disuse, just much more slowly,
+    # and they relearn faster (Ebbinghaus savings).
+    habit_threshold_hits: int = 66
+    # Per-real-idle-day LTD applied to non-habit edges during
+    # ``memory_dream``/consolidate offline passes.
+    ltd_decay_per_idle_day: float = 0.02
+    # Habit edges decay at this fraction of the normal LTD rate.
+    # 0.18 ~= a habit losing strength about 5x slower than a fresh edge,
+    # so a habit fades over months rather than weeks of disuse.
+    habit_ltd_multiplier: float = 0.18
+    # Savings: once an edge has EVER crossed ``habit_threshold_hits``
+    # (even if it has since decayed below it), future reinforcements
+    # accumulate at this multiplier - a lapsed habit comes back faster
+    # than a fresh one is built.
+    habit_savings_factor: float = 3.0
+
+    # Spreading activation on recall: BFS this many hops on the
+    # plasticity-weight graph from the cosine anchor, attenuating by
+    # ``decay`` per hop. 0 = disabled (safe default; ranking unchanged).
+    spreading_activation_hops: int = 0
+    spreading_activation_decay: float = 0.5
+    # Mixing weight of the spreading-activation contribution into the
+    # final rank key (added on top of the SR omega-weighted boost).
+    spreading_activation_weight: float = 0.2
+
+    # Schema-eligibility gates for systems consolidation. An episode is
+    # absorbed into a schema only once both are met. 0 disables the gate
+    # (default - existing tests assume immediate consolidation).
+    consolidate_min_age_seconds: float = 0.0
+    consolidate_min_retrievals: int = 0
+
+    # Surprise-modulated encoding: when a new episode's nearest-neighbour
+    # cosine distance exceeds the floor, salience is boosted by
+    # ``surprise_salience_boost`` (capped at 1.0). Defaults to 0 (off);
+    # set boost > 0 to mirror prediction-error-driven plasticity.
+    surprise_distance_floor: float = 0.6
+    surprise_salience_boost: float = 0.0
+
+    # Reactor policy thresholds (only consulted when
+    # ``self_learning_enabled``). Defaults are conservative enough that
+    # small test runs do not auto-trigger consolidate or dream.
+    reactor_consolidate_after_novel: int = 32
+    reactor_consolidate_cooldown_seconds: float = 60.0
+    reactor_dream_after_events: int = 128
+    reactor_dream_after_idle_seconds: float = 1800.0
+    reactor_event_log_capacity: int = 1024

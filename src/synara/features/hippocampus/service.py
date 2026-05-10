@@ -37,6 +37,11 @@ from typing import Any
 from simplevecdb import AsyncVectorDB
 
 from .config import HippocampusConfig
+from .ops.events import EventBus as _EventBus
+from .ops.events import InteractionEvent as _Event
+from .ops.events import TriggerPolicy as _Policy
+from .ops.events import now_seconds as _now_real
+from .primitives.plasticity import PlasticityGraph as _Plasticity
 from .primitives.separate import DGProjector as _DGProjector
 from .primitives.successor import SuccessorRepresentation as _SR
 
@@ -116,6 +121,64 @@ class HippocampusService:
             if self.config.sr_enabled
             else None
         )
+        # Plasticity graph + interaction event bus. Always constructed
+        # so introspection works; the reactor only auto-fires when
+        # ``self_learning_enabled`` is True.
+        self._plasticity: _Plasticity = _Plasticity(
+            sr=self._sr,
+            e_ltp_decay_seconds=self.config.e_ltp_decay_seconds,
+            l_ltp_threshold_hits=self.config.l_ltp_threshold_hits,
+            habit_threshold_hits=self.config.habit_threshold_hits,
+            habit_ltd_multiplier=self.config.habit_ltd_multiplier,
+            habit_savings_factor=self.config.habit_savings_factor,
+            ltd_decay_per_idle_day=self.config.ltd_decay_per_idle_day,
+            time_compression=self.config.time_compression,
+        )
+        self._bus: _EventBus = _EventBus(
+            policy=_Policy(
+                consolidate_after_novel_encodes=self.config.reactor_consolidate_after_novel,
+                consolidate_cooldown_seconds=self.config.reactor_consolidate_cooldown_seconds,
+                dream_after_events=self.config.reactor_dream_after_events,
+                dream_after_idle_seconds=self.config.reactor_dream_after_idle_seconds,
+            ),
+            log_capacity=self.config.reactor_event_log_capacity,
+        )
+        if self.config.self_learning_enabled:
+            self._bus.on_consolidate = self._reactor_consolidate
+            self._bus.on_dream = self._reactor_dream
+
+    # -------------------------------------------- event emission / reactor
+    async def _emit(
+        self,
+        kind: str,
+        *,
+        session_id: str | None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Record an interaction event and run any due reactor follow-ups."""
+        event = _Event(
+            kind=kind,  # type: ignore[arg-type]
+            timestamp=_now_real(),
+            session_id=session_id,
+            payload=dict(payload) if payload else {},
+        )
+        self._bus.record(event)
+        if self.config.self_learning_enabled:
+            await self._bus.react(event)
+
+    async def _reactor_consolidate(self, _event: Any) -> None:
+        """Reactor callback: cluster pending episodes globally."""
+        await _consolidate_mod.run(self, session_id=None, n_clusters=None, min_cluster_size=None)
+        await self._emit("consolidate", session_id=None, payload={"trigger": "reactor"})
+
+    async def _reactor_dream(self, _event: Any) -> None:
+        """Reactor callback: LTD pass over the plasticity graph."""
+        pruned = self._plasticity.ltd_pass(now=_now_real())
+        await self._emit("dream", session_id=None, payload={"pruned_edges": pruned})
+
+    def event_log(self) -> list[Any]:
+        """Return a snapshot of the recent interaction events (for inspection)."""
+        return self._bus.log()
 
     # ------------------------------------------------------------------ embed
     async def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None:
@@ -213,13 +276,19 @@ class HippocampusService:
         tags: Sequence[str] | None = None,
         salience: float = 0.5,
     ) -> dict[str, Any]:
-        return await _encode_mod.run(
+        result = await _encode_mod.run(
             self,
             content=content,
             session_id=session_id,
             tags=tags,
             salience=salience,
         )
+        await self._emit(
+            "encode",
+            session_id=session_id,
+            payload={"id": result.get("id"), "deduped": bool(result.get("deduped"))},
+        )
+        return result
 
     async def recall(
         self,
@@ -229,13 +298,19 @@ class HippocampusService:
         k: int = 8,
         mode: str = "auto",
     ) -> list[dict[str, Any]]:
-        return await _recall_mod.run(
+        result = await _recall_mod.run(
             self,
             query=query,
             session_id=session_id,
             k=k,
             mode=mode,
         )
+        await self._emit(
+            "recall",
+            session_id=session_id,
+            payload={"hits": len(result), "mode": mode},
+        )
+        return result
 
     async def consolidate(
         self,
@@ -244,12 +319,18 @@ class HippocampusService:
         n_clusters: int | None = None,
         min_cluster_size: int | None = None,
     ) -> list[dict[str, Any]]:
-        return await _consolidate_mod.run(
+        result = await _consolidate_mod.run(
             self,
             session_id=session_id,
             n_clusters=n_clusters,
             min_cluster_size=min_cluster_size,
         )
+        await self._emit(
+            "consolidate",
+            session_id=session_id,
+            payload={"schemas_formed": len(result), "trigger": "user"},
+        )
+        return result
 
     async def forget(
         self,
@@ -259,13 +340,19 @@ class HippocampusService:
         dry_run: bool = True,
         max_scan: int = 1000,
     ) -> dict[str, Any]:
-        return await _forget_mod.run(
+        result = await _forget_mod.run(
             self,
             strength_floor=strength_floor,
             decay_tau_seconds=decay_tau_seconds,
             dry_run=dry_run,
             max_scan=max_scan,
         )
+        await self._emit(
+            "forget",
+            session_id=None,
+            payload={"removed": int(result.get("removed", 0)), "dry_run": dry_run},
+        )
+        return result
 
     async def reflect(
         self,
@@ -274,7 +361,16 @@ class HippocampusService:
         query: str | None = None,
         k: int = 5,
     ) -> dict[str, Any]:
-        return await _reflect_mod.run(self, session_id=session_id, query=query, k=k)
+        result = await _reflect_mod.run(self, session_id=session_id, query=query, k=k)
+        await self._emit(
+            "reflect",
+            session_id=session_id,
+            payload={
+                "schemas": len(result.get("schemas") or []),
+                "episodes": len(result.get("recent_episodes") or []),
+            },
+        )
+        return result
 
 
 # Late imports avoid a top-of-file cycle: each sub-module needs

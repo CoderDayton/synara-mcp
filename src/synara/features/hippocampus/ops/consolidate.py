@@ -172,7 +172,23 @@ async def run(
         flt["session_id"] = session_id
 
     candidates = await service.episodic.get_documents(flt)
-    floor = min_cluster_size or service.config.consolidate_min_cluster
+    # Schema-eligibility gates: skip episodes too young or too rarely
+    # retrieved. Mirrors the day-to-week ramp of HC->cortex handover.
+    # Defaults are 0/0 (no gate) so existing call patterns work.
+    cfg = service.config
+    now_for_gate = now_seconds()
+    if cfg.consolidate_min_age_seconds > 0 or cfg.consolidate_min_retrievals > 0:
+        eligible: list[tuple[int, str, dict[str, Any]]] = []
+        for ep_id, text, md in candidates:
+            age = now_for_gate - float(md.get("encoded_at", now_for_gate))
+            rc = int(md.get("retrieval_count", 0))
+            if age < cfg.consolidate_min_age_seconds:
+                continue
+            if rc < cfg.consolidate_min_retrievals:
+                continue
+            eligible.append((ep_id, text, md))
+        candidates = eligible
+    floor = min_cluster_size or cfg.consolidate_min_cluster
     if len(candidates) < floor:
         return []
 
