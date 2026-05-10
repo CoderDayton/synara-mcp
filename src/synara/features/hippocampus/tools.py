@@ -24,7 +24,7 @@ _SID = (
 
 
 async def _ensure_warmed(embedder: Embedder | None, ctx: Context) -> None:
-    """Lazy embedder warmup with progress reporting on first call."""
+    """Warmup embedder with progress reporting on first call."""
     if embedder is None:
         return
     await embedder.warmup_async(ctx)

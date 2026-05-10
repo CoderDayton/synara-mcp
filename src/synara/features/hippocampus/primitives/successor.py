@@ -51,11 +51,10 @@ class SuccessorRepresentation:
         self._total_edges: float = 0.0
 
     def observe(self, session_id: str, ep_id: int, t: float) -> None:
-        """Record episode ``ep_id`` accessed at time ``t`` in session.
+        """Record episode access at time t in session.
 
-        Co-occurrences with all in-window prior accesses (excluding the
-        same id) are folded into ``T`` and propagated through ``M`` via a
-        TD(0) update.
+        Co-occurrences with in-window prior accesses (excluding self)
+        fold into T and propagate through M via TD(0).
         """
         win = self._sessions.setdefault(session_id, _Window())
         cutoff = t - self.window_seconds
@@ -74,14 +73,10 @@ class SuccessorRepresentation:
         other_ids: list[int],
         t: float,
     ) -> None:
-        """Anchor-style co-occurrence: fold one edge ``anchor -> j`` for
-        each ``j != anchor`` in ``other_ids``. The anchor enters the
-        in-session recall window so a *future* recall in the same
-        session creates an ``anchor -> next_anchor`` chain edge as well.
+        """Anchor-style co-occurrence: anchor -> each j in other_ids.
 
-        This avoids the ``n*(n-1)/2`` edge inflation that would arise if
-        every result in a single recall observed every other result at
-        the same wall-clock timestamp.
+        Anchor enters the in-session window for future chain edges.
+        Avoids n*(n-1)/2 edge inflation from pairwise co-occurrence.
         """
         win = self._sessions.setdefault(session_id, _Window())
         cutoff = t - self.window_seconds
@@ -122,13 +117,13 @@ class SuccessorRepresentation:
                 Mi[k] = new_val
 
     def boost(self, anchor_id: int, ep_ids: list[int]) -> dict[int, float]:
-        """Return ``{ep_id: M[anchor_id, ep_id]}`` for re-ranking."""
+        """Return SR boost scores {ep_id: M[anchor_id, ep_id]} for re-ranking."""
         Mi = self._M.get(anchor_id, {})
         return {j: float(Mi.get(j, 0.0)) for j in ep_ids}
 
     def omega(self, episode_count: int) -> float:
-        """Cold-start ramp: 0 until edges/episodes >= ``cold_start_ratio``,
-        then linearly approaches ``omega_max`` as more edges accumulate."""
+        """Cold-start ramp: 0 until edges/episodes >= cold_start_ratio,
+        then linearly approaches omega_max as edges accumulate."""
         if episode_count <= 0 or self.omega_max <= 0.0:
             return 0.0
         denom = max(1.0, float(episode_count) * self.cold_start_ratio)

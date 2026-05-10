@@ -38,13 +38,11 @@ def memory_strength(
     now: float,
     d: float = 0.5,
 ) -> float:
-    """Power-law (Wickelgren/Wixted) memory strength.
+    """Compute power-law (Wickelgren/Wixted) memory strength.
 
-    ``access_times`` should include the encoding event plus every
-    retrieval event. With one access at the present moment, returns the
-    salience verbatim; with one access at age ``a`` and exponent ``d``,
-    returns ``salience * (1 + a)^(-d)`` — a strictly slower decay than
-    the exponential ``salience * exp(-a/tau)`` for ``a >> 1``.
+    access_times: encoding + all retrieval events.
+    Returns salience * sum_k (1 + age_k)^(-d). Decays slower than
+    exponential for large ages.
     """
     if d <= 0.0:
         raise ValidationError("d must be positive")
@@ -58,13 +56,10 @@ def memory_strength(
 
 
 def _access_times_from_meta(md: dict[str, Any], *, fallback_now: float) -> list[float]:
-    """Build an access-time list from episode metadata.
+    """Extract access-time list from episode metadata.
 
-    Newer episodes carry an explicit ``access_history``; older ones
-    (encoded before this field existed) fall back to ``[encoded_at]``
-    plus ``last_accessed`` repeated ``retrieval_count`` times — a coarse
-    approximation that still gives the activation function the right
-    qualitative shape.
+    Newer: explicit access_history. Older: [encoded_at] + last_accessed
+    repeated retrieval_count times (coarse approximation).
     """
     history = md.get("access_history")
     if isinstance(history, list) and history:

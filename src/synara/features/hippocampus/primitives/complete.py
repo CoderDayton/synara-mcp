@@ -42,11 +42,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 @dataclass(frozen=True, slots=True)
 class CompletionResult:
-    """Output of one CA3 iteration sequence.
+    """Result of one CA3 completion run.
 
-    ``query``        refined unit-norm query (D,)
-    ``scores``       per-step log-sum-exp completion scores, in order
-    ``converged``    True if the score delta fell below ``eps``
+    query: refined unit-norm query (D,).
+    scores: per-step log-sum-exp scores, in order.
+    converged: True if score delta fell below eps.
     """
 
     query: list[float]
@@ -60,10 +60,9 @@ def _normalize(v: np.ndarray) -> np.ndarray:
 
 
 def completion_score(q: np.ndarray, X: np.ndarray, *, beta: float) -> float:
-    """Inner completion score: (1/beta) * log sum_i exp(beta * <q, x_i>).
+    """Compute inner completion score: (1/beta) * log sum_i exp(beta * <q, x_i>).
 
-    Numerically stabilised by subtracting the max similarity. Returns 0
-    for an empty pattern set.
+    Numerically stable by max-subtraction. Returns 0 for empty pattern set.
     """
     if X.shape[0] == 0:
         return 0.0
@@ -80,10 +79,10 @@ def attractor_step(
     q0: np.ndarray,
     eta0: float,
 ) -> tuple[np.ndarray, float]:
-    """One modern-Hopfield update + the post-update completion score.
+    """One modern-Hopfield update + post-update completion score.
 
-    ``q``, ``q0`` are unit-normalised (D,); ``X`` is (N, D) of
-    unit-normalised stored vectors. Returns ``(q_next, score)``.
+    q, q0: unit-normalised (D,). X: (N, D) of unit-normalised vectors.
+    Returns (q_next, score).
     """
     sims = X @ q
     m = float(sims.max())
@@ -102,9 +101,9 @@ async def _gather_candidates(
     ep_filter: dict[str, Any] | None,
     k: int,
 ) -> np.ndarray:
-    """Search both stores at the current query and return stacked
-    unit-normalised stored embeddings. Empty (0,)-shape array if no
-    collection has any matches."""
+    """Search episodic + semantic stores; return stacked unit-norm embeddings.
+
+    Returns empty (0,)-shape array if no hits."""
     rows: list[np.ndarray] = []
     for coll, flt in ((service.episodic, ep_filter), (service.semantic, None)):
         if await coll.count() == 0:
@@ -139,11 +138,10 @@ async def run(
     eta0: float,
     eps: float = 1e-3,
 ) -> CompletionResult:
-    """Iterate the modern-Hopfield update on ``q0``; return the refined
-    query and per-step score trace.
+    """Iterate modern-Hopfield updates; return refined query + score trace.
 
-    Stops early when the inner-score delta falls below ``eps`` or when
-    the candidate set is empty. ``iters <= 0`` returns ``q0`` unchanged.
+    Stops early if score delta < eps or candidate set is empty.
+    iters <= 0 returns q0 unchanged.
     """
     if iters <= 0:
         return CompletionResult(query=list(q0), scores=[], converged=True)

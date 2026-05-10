@@ -37,11 +37,9 @@ import numpy as np
 
 
 class DGProjector:
-    """Deterministic random expansive projection + k-WTA sparsification.
+    """Random expansive projection + k-WTA sparsification.
 
-    The projection matrix is seeded so the same configuration produces
-    the same supports across process restarts — necessary for stored
-    supports to remain comparable.
+    Seeded so same config produces same supports across restarts.
     """
 
     def __init__(
@@ -68,9 +66,9 @@ class DGProjector:
         self.W = (rng.standard_normal((self.M, dim)) / np.sqrt(dim)).astype(np.float32)
 
     def support(self, x: Sequence[float]) -> tuple[int, ...]:
-        """Return the sorted tuple of active indices (size ``k`` or fewer
-        when fewer ReLU entries are positive). Hashable + JSON-serialisable
-        as a list, so it can live in document metadata."""
+        """Return sorted tuple of active indices (up to k).
+
+        Hashable and JSON-serialisable as list for document metadata."""
         x_arr = np.asarray(x, dtype=np.float32)
         if x_arr.ndim != 1 or x_arr.shape[0] != self.dim:
             raise ValueError(f"expected vector of dim {self.dim}, got shape {x_arr.shape}")
@@ -87,9 +85,9 @@ class DGProjector:
 
 
 def jaccard(a: Iterable[int], b: Iterable[int]) -> float:
-    """Jaccard overlap between two index sets. Returns 1.0 for two
-    empty sets (vacuously equal) and 0.0 when one is empty and the
-    other is not."""
+    """Jaccard overlap of two index sets.
+
+    1.0 for two empty sets (equal); 0.0 if one is empty and other is not."""
     sa, sb = set(a), set(b)
     if not sa and not sb:
         return 1.0

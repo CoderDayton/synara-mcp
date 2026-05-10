@@ -14,10 +14,9 @@ _VALID_TRANSPORTS: tuple[Transport, ...] = ("stdio", "http", "sse", "streamable-
 
 
 def default_db_path() -> str:
-    """Per-user vector DB path under the platform cache dir.
+    """Per-user vector DB path: XDG_CACHE_HOME or ~/.cache.
 
-    Honours ``XDG_CACHE_HOME`` when set (Linux/BSD); otherwise falls back to
-    ``~/.cache``. The directory itself is created lazily by the consumer.
+    Directory created lazily by the consumer.
     """
     base = os.environ.get("XDG_CACHE_HOME")
     cache_root = Path(base) if base else Path.home() / ".cache"

@@ -67,11 +67,9 @@ def now_seconds() -> float:
 
 
 def _normalise_embed_fn(fn: EmbedFn) -> Callable[[str], Awaitable[Sequence[float]]]:
-    """Wrap a sync embed_fn so all internal calls can ``await`` uniformly.
+    """Wrap sync embedder onto a worker thread so all calls can await uniformly.
 
-    Sync embedders (e.g. the hash-based test embedder) are pushed onto a
-    worker thread to keep blocking work off the event loop; async ones
-    are returned as-is.
+    Sync embedders go to a thread; async ones pass through.
     """
     if inspect.iscoroutinefunction(fn):
         return fn
@@ -89,7 +87,7 @@ def _normalise_embed_fn(fn: EmbedFn) -> Callable[[str], Awaitable[Sequence[float
 
 
 class HippocampusService:
-    """Episodic + semantic memory over two simplevecdb collections."""
+    """Episodic and semantic memory over two vector collections."""
 
     def __init__(
         self,
@@ -121,19 +119,19 @@ class HippocampusService:
 
     # ------------------------------------------------------------------ embed
     async def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None:
-        """Return embeddings for ``texts`` or ``None`` to defer to simplevecdb."""
+        """Return embeddings for texts, or None to let simplevecdb embed them."""
         if self._embed is None:
             return None
         return [list(await self._embed(t)) for t in texts]
 
     async def query_arg(self, query: str) -> str | list[float]:
-        """Shape a query for simplevecdb: text (auto-embed) or precomputed vec."""
+        """Shape query as text (auto-embed) or precomputed vector."""
         if self._embed is None:
             return query
         return list(await self._embed(query))
 
     def _ensure_projector(self, dim: int) -> _DGProjector:
-        """Build (or rebuild on dim change) the DG projector lazily."""
+        """Build/rebuild DG projector if dimension changed."""
         if self._dg is None or self._dg.dim != dim:
             self._dg = _DGProjector(
                 dim=dim,
@@ -172,14 +170,11 @@ class HippocampusService:
         *,
         session_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the ordered sub-records of a theta-segmented episode.
+        """Return theta-segmented episode sub-records, ordered by position.
 
-        Sub-records are sorted by ``position_in_episode``. The first
-        segment carries ``episode_group_id == its own id`` so passing
-        any sub-record's id as ``group_id`` recovers the full ordered
-        walk. Pass ``session_id`` for defense-in-depth against any
-        future change to id allocation that could let group ids appear
-        in more than one namespace.
+        First segment has episode_group_id == its own id, so any
+        sub-record id recovers the full ordered walk. Pass session_id
+        for namespace isolation.
         """
         flt: dict[str, Any] = {"episode_group_id": group_id}
         if session_id:

@@ -50,12 +50,12 @@ class _Backend(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingConfig:
-    """Resolved embedding backend selection.
+    """Backend config: local model repo-id or remote URL.
 
-    ``url`` switches to the remote backend when truthy. ``model`` is the
-    repo-id (local) or model alias/name sent to the remote endpoint.
-    ``api_key`` is sent as ``Authorization: Bearer ...`` when set.
-    ``timeout_seconds`` bounds remote HTTP calls.
+    url: switches to remote backend if set.
+    model: repo-id (local) or alias (remote).
+    api_key: sent as Bearer token to remote endpoint.
+    timeout_seconds: HTTP call timeout.
     """
 
     model: str | None = None
@@ -65,16 +65,13 @@ class EmbeddingConfig:
 
 
 class LocalBackend:
-    """Run a SentenceTransformer (default: Jina v5 nano) off the event loop.
+    """Run SentenceTransformer embeddings on a worker thread.
 
-    The model is loaded directly rather than through simplevecdb's bundled
-    embedder because Jina v5 ships custom modeling code and requires
-    ``trust_remote_code=True`` — the bundled loader force-disables that flag.
+    Loaded directly (not via simplevecdb) because Jina v5 needs
+    trust_remote_code=True, which the bundled loader disables.
 
-    On CUDA we additionally request ``dtype=bfloat16`` and (if the
-    ``flash_attn`` extension is importable) ``_attn_implementation =
-    "flash_attention_2"``. flash_attn is a heavy compiled dep; missing
-    it falls back silently to the default attention kernel.
+    On CUDA: dtype=bfloat16 + flash_attention_2 if flash_attn available.
+    Falls back to default attention silently if not present.
     """
 
     DEFAULT_MODEL = "jinaai/jina-embeddings-v5-text-nano"
@@ -106,7 +103,7 @@ class LocalBackend:
         return self._model is not None
 
     def warmup(self) -> None:
-        """Construct the SentenceTransformer; downloads on first run."""
+        """Load the SentenceTransformer; downloads on first run."""
         if self._model is not None:
             return
         cached = self._CACHE.get(self._model_id)
@@ -142,7 +139,7 @@ class LocalBackend:
         self._CACHE[self._model_id] = self._model
 
     async def aclose(self) -> None:
-        """No-op: the loaded model lives for the process."""
+        """Model stays loaded for the process lifecycle."""
 
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
@@ -190,7 +187,7 @@ class RemoteBackend:
         return True
 
     def warmup(self) -> None:
-        """No-op: remote model lifecycle is owned by the remote service."""
+        """Remote service owns model lifecycle."""
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -198,7 +195,7 @@ class RemoteBackend:
         return self._client
 
     async def aclose(self) -> None:
-        """Close the owned httpx client. Injected clients are caller-owned."""
+        """Close owned httpx client (caller-injected clients are caller-owned)."""
         if self._owned_client and self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -234,25 +231,24 @@ class RemoteBackend:
 
 
 class Embedder:
-    """Async-first embedder with single + batch convenience methods."""
+    """Async embedder wrapper with batch methods."""
 
     def __init__(self, backend: _Backend) -> None:
         self._backend = backend
 
     def warmup(self) -> None:
-        """Eagerly initialise the backend (e.g. download/load a local model)."""
+        """Eagerly load the backend (e.g., download local model)."""
         self._backend.warmup()
 
     def is_ready(self) -> bool:
-        """Whether the backend can encode without a load step."""
+        """True if backend is ready to encode."""
         return self._backend.is_ready()
 
     async def warmup_async(self, ctx: Any | None = None) -> None:
-        """Warm up the backend off the event loop, reporting progress to ``ctx``.
+        """Load the backend (first call may download multi-GB weights).
 
-        Idempotent. The first call may download multi-GB model weights, so
-        when an MCP ``Context`` is provided we surface that to the client
-        via ``ctx.info`` and an indeterminate ``ctx.report_progress``.
+        Idempotent. If ctx is provided, report progress via ctx.info
+        and ctx.report_progress.
         """
         if self._backend.is_ready():
             return

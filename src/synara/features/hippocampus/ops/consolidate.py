@@ -40,12 +40,10 @@ def _replay_score(
     now: float,
     d: float,
 ) -> float:
-    """Replay-sampling weight: strength * novelty, floored at a tiny epsilon.
+    """Replay-sampling weight: strength * novelty (floored at epsilon).
 
-    ``novelty`` is the cosine distance to the nearest existing schema
-    (1.0 = totally novel, 0.0 = identical). Multiplying by strength
-    biases replay toward salient, recent, *and* not-yet-covered
-    episodes — the empirical bias observed in hippocampal SWR content.
+    novelty: cosine distance to nearest schema (1.0 = novel, 0.0 = identical).
+    Biases replay toward salient, recent, not-yet-covered episodes.
     """
     history = md.get("access_history")
     if isinstance(history, list) and history:

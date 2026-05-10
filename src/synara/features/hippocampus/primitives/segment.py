@@ -30,13 +30,11 @@ def split_into_segments(
     max_chars: int,
     max_items: int,
 ) -> list[str]:
-    """Split ``content`` into ordered segments.
+    """Split content into ordered segments, respecting sentence boundaries.
 
-    Returns ``[content]`` when splitting is disabled (``max_chars <= 0``
-    or ``max_items <= 1``) or when ``content`` already fits the budget.
-    Otherwise returns 2..``max_items`` non-empty segments whose
-    concatenation reproduces the original content (modulo separator
-    whitespace). The list is never empty.
+    Returns [content] if splitting is disabled or content fits budget.
+    Otherwise returns 2..max_items segments. Concatenation preserves
+    original content (modulo whitespace). List is never empty.
     """
     if max_chars <= 0 or max_items <= 1:
         return [content]
