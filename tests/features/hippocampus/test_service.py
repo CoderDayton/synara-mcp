@@ -21,6 +21,7 @@ from synara.core.errors import ValidationError
 from synara.features.hippocampus.complete import attractor_step, completion_score
 from synara.features.hippocampus.consolidate import build_gist
 from synara.features.hippocampus.forget import memory_strength
+from synara.features.hippocampus.separate import DGProjector, jaccard
 from synara.features.hippocampus.service import (
     UNCONSOLIDATED,
     HippocampusConfig,
@@ -315,6 +316,104 @@ async def test_recall_with_completion_iters_returns_results() -> None:
         # query should pull alpha hits over beta hits.
         top_texts = [h["content"] for h in hits]
         assert any(t.startswith("alpha") for t in top_texts)
+    finally:
+        await db.close()
+
+
+def test_dg_projector_supports_have_correct_size() -> None:
+    proj = DGProjector(dim=32, expansion=4, sparsity=0.05, seed=0)
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(32)
+    x /= np.linalg.norm(x)
+    s = proj.support(x.tolist())
+    assert len(s) == proj.k
+    assert all(0 <= i < proj.M for i in s)
+    assert s == tuple(sorted(s))
+
+
+def test_dg_jaccard_orthogonalises_similar_inputs() -> None:
+    """High-cosine inputs map to a Jaccard strictly below their cosine —
+    the pattern-separation property: small input differences produce
+    larger representation-space differences."""
+    proj = DGProjector(dim=64, expansion=8, sparsity=0.05, seed=0)
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(64)
+    x /= np.linalg.norm(x)
+    # Noise scale 0.06 gives cos ~0.9 — the high-similarity regime
+    # where pattern separation matters.
+    y = x + 0.06 * rng.standard_normal(64)
+    y /= np.linalg.norm(y)
+    cos = float(x @ y)
+    j = jaccard(proj.support(x.tolist()), proj.support(y.tolist()))
+    assert 0.85 < cos < 1.0
+    # Pattern separation: representation overlap strictly below input overlap.
+    assert j < cos
+
+
+def test_dg_jaccard_separates_unrelated_inputs() -> None:
+    """Independent random inputs have near-zero Jaccard overlap."""
+    proj = DGProjector(dim=64, expansion=8, sparsity=0.05, seed=0)
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal(64)
+    a /= np.linalg.norm(a)
+    b = rng.standard_normal(64)
+    b /= np.linalg.norm(b)
+    j = jaccard(proj.support(a.tolist()), proj.support(b.tolist()))
+    assert j < 0.2
+
+
+def _paraphrase_embed(text: str, dim: int = 64) -> list[float]:
+    """Tight-bucket embedder for the DG paraphrase test: same prefix ⇒
+    cosine ~0.96 (genuine paraphrase regime), different prefix ⇒
+    near-orthogonal."""
+    head = text.strip().split("-", 1)[0].split()[0].lower() if text.strip() else ""
+    bucket_seed = int(hashlib.sha256(head.encode()).hexdigest()[:8], 16)
+    base = np.random.default_rng(bucket_seed).standard_normal(dim).astype(np.float32)
+    text_seed = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+    noise = 0.2 * np.random.default_rng(text_seed).standard_normal(dim).astype(np.float32)
+    v = base + noise
+    n = float(np.linalg.norm(v))
+    out = (v / n) if n > 0 else v
+    return [float(x) for x in out.tolist()]
+
+
+async def test_encode_dg_dedup_catches_paraphrase() -> None:
+    """With DG pattern separation enabled, near-identical embeddings
+    that fall just outside the cosine dedup_distance still get caught
+    by the Jaccard threshold."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        # Tight cosine threshold so cosine alone wouldn't dedup; Jaccard
+        # threshold tuned to catch the paraphrase regime (cos ~0.96).
+        cfg = HippocampusConfig(
+            dedup_distance=0.001,
+            dg_pattern_separation=True,
+            dg_expansion=8,
+            dg_jaccard_threshold=0.4,
+            dg_dedup_candidates=4,
+        )
+        svc = HippocampusService(db, config=cfg, embed_fn=_paraphrase_embed)
+        r1 = await svc.encode_episode("alpha-original", "s1", salience=0.5)
+        r2 = await svc.encode_episode("alpha-paraphrase", "s1", salience=0.5)
+        assert r1["deduped"] is False
+        assert r2["deduped"] is True
+        assert r2["id"] == r1["id"]
+        assert "jaccard" in r2
+        assert r2["jaccard"] >= 0.4
+    finally:
+        await db.close()
+
+
+async def test_encode_stores_dg_support_when_enabled() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = HippocampusConfig(dg_pattern_separation=True)
+        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        r = await svc.encode_episode("hello", "s1", salience=0.5)
+        rows = await svc.episodic.get_documents({"session_id": "s1"})
+        _, _, md = next(row for row in rows if row[0] == r["id"])
+        assert isinstance(md.get("dg_support"), list)
+        assert len(md["dg_support"]) > 0
     finally:
         await db.close()
 

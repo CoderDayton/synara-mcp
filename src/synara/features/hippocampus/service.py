@@ -26,6 +26,9 @@ from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
 
+from .separate import DGProjector as _DGProjector
+from .separate import jaccard as _dg_jaccard
+
 # Either a sync embedder ``f(text) -> vec`` or an async one
 # ``async f(text) -> vec``. The service normalises both to async at
 # construction so internal call sites only ever ``await``.
@@ -72,6 +75,17 @@ class HippocampusConfig:
     recall_completion_iters: int = 0
     recall_completion_beta: float = 8.0
     recall_completion_anchor: float = 0.6
+    # DG-style pattern separation (random expansive projection + k-WTA).
+    # When enabled, ``encode_episode`` checks Jaccard overlap of sparse
+    # codes against the top cosine candidates instead of the brittle
+    # cosine-distance threshold. Stored episodes carry their support set
+    # in ``dg_support`` metadata.
+    dg_pattern_separation: bool = True
+    dg_expansion: int = 4
+    dg_sparsity: float = 0.05
+    dg_jaccard_threshold: float = 0.5
+    dg_dedup_candidates: int = 4
+    dg_seed: int = 0
 
 
 def now_seconds() -> float:
@@ -117,6 +131,8 @@ class HippocampusService:
         self.episodic = db.collection(self.config.episodic_collection, store_embeddings=True)
         self.semantic = db.collection(self.config.semantic_collection, store_embeddings=True)
         self._embed = _normalise_embed_fn(embed_fn) if embed_fn is not None else None
+        # Lazily constructed once we observe the embedding dimension.
+        self._dg: _DGProjector | None = None
 
     # ------------------------------------------------------------------ embed
     async def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None:
@@ -130,6 +146,56 @@ class HippocampusService:
         if self._embed is None:
             return query
         return list(await self._embed(query))
+
+    def _ensure_projector(self, dim: int) -> _DGProjector:
+        """Build (or rebuild on dim change) the DG projector lazily."""
+        if self._dg is None or self._dg.dim != dim:
+            self._dg = _DGProjector(
+                dim=dim,
+                expansion=self.config.dg_expansion,
+                sparsity=self.config.dg_sparsity,
+                seed=self.config.dg_seed,
+            )
+        return self._dg
+
+    async def _dedup_jaccard(
+        self,
+        new_emb: list[float],
+        new_support: tuple[int, ...],
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """DG-Jaccard dedup. Pulls the top cosine candidates and returns
+        a dedup result if any candidate's stored support has Jaccard
+        overlap >= ``dg_jaccard_threshold`` with ``new_support``."""
+        cands = await self.episodic.similarity_search(
+            new_emb,
+            k=self.config.dg_dedup_candidates,
+            filter={"session_id": session_id},
+        )
+        best_j = 0.0
+        best_doc: Any = None
+        best_dist = 0.0
+        for doc, dist in cands:
+            cand_support = doc.metadata.get("dg_support") or []
+            if not cand_support:
+                continue
+            j = _dg_jaccard(new_support, cand_support)
+            if j > best_j:
+                best_j = j
+                best_doc = doc
+                best_dist = float(dist)
+        if best_doc is None or best_j < self.config.dg_jaccard_threshold:
+            return None
+        doc_id = int(best_doc.metadata.get("id", -1))
+        if doc_id >= 0:
+            await self.bump_retrieval(doc_id, best_doc.metadata)
+        return {
+            "id": doc_id,
+            "deduped": True,
+            "distance": best_dist,
+            "jaccard": float(best_j),
+            "session_id": session_id,
+        }
 
     # ------------------------------------------------------------------ encode
     async def encode_episode(
@@ -147,21 +213,38 @@ class HippocampusService:
         if not 0.0 <= salience <= 1.0:
             raise ValidationError("salience must be in [0, 1]")
 
-        # Pattern separation: refuse near-duplicates within the same session.
-        existing = await self.episodic.similarity_search(
-            await self.query_arg(content), k=1, filter={"session_id": session_id}
-        )
-        if existing and existing[0][1] <= self.config.dedup_distance:
-            doc, dist = existing[0]
-            doc_id = int(doc.metadata.get("id", -1))
-            if doc_id >= 0:
-                await self.bump_retrieval(doc_id, doc.metadata)
-            return {
-                "id": doc_id,
-                "deduped": True,
-                "distance": float(dist),
-                "session_id": session_id,
-            }
+        # Pattern separation: cosine threshold OR DG-Jaccard, depending
+        # on config. The DG path embeds once, computes the sparse code,
+        # and compares against the stored ``dg_support`` of the top
+        # cosine candidates within the same session.
+        new_embs = await self.vectorise([content])
+        new_emb = new_embs[0] if new_embs else None
+        new_support: tuple[int, ...] = ()
+        use_dg = self.config.dg_pattern_separation and new_emb is not None
+        dedup_hit: dict[str, Any] | None = None
+        if use_dg and new_emb is not None:
+            new_support = self._ensure_projector(len(new_emb)).support(new_emb)
+            dedup_hit = await self._dedup_jaccard(new_emb, new_support, session_id)
+        else:
+            q_arg: str | list[float] = (
+                new_emb if new_emb is not None else await self.query_arg(content)
+            )
+            existing = await self.episodic.similarity_search(
+                q_arg, k=1, filter={"session_id": session_id}
+            )
+            if existing and existing[0][1] <= self.config.dedup_distance:
+                doc, dist = existing[0]
+                doc_id = int(doc.metadata.get("id", -1))
+                if doc_id >= 0:
+                    await self.bump_retrieval(doc_id, doc.metadata)
+                dedup_hit = {
+                    "id": doc_id,
+                    "deduped": True,
+                    "distance": float(dist),
+                    "session_id": session_id,
+                }
+        if dedup_hit is not None:
+            return dedup_hit
 
         encoded_at = now_seconds()
         meta: dict[str, Any] = {
@@ -176,9 +259,9 @@ class HippocampusService:
             "access_history": [encoded_at],
             "consolidated_into": UNCONSOLIDATED,
         }
-        ids = await self.episodic.add_texts(
-            [content], metadatas=[meta], embeddings=await self.vectorise([content])
-        )
+        if use_dg and new_support:
+            meta["dg_support"] = list(new_support)
+        ids = await self.episodic.add_texts([content], metadatas=[meta], embeddings=new_embs)
         new_id = int(ids[0])
         # Mirror the auto-assigned id into metadata so similarity_search
         # results carry it without a follow-up join.
