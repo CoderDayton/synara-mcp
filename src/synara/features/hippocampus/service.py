@@ -26,8 +26,10 @@ from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
 
+from .segment import split_into_segments as _split_into_segments
 from .separate import DGProjector as _DGProjector
 from .separate import jaccard as _dg_jaccard
+from .successor import SuccessorRepresentation as _SR
 
 # Either a sync embedder ``f(text) -> vec`` or an async one
 # ``async f(text) -> vec``. The service normalises both to async at
@@ -86,6 +88,28 @@ class HippocampusConfig:
     dg_jaccard_threshold: float = 0.5
     dg_dedup_candidates: int = 4
     dg_seed: int = 0
+    # Theta-segmented intra-episode encoding (Lisman & Jensen 2013).
+    # Content longer than ``theta_segment_max_chars`` is split into
+    # ``<= theta_segment_max_items`` ordered sub-records that share an
+    # ``episode_group_id``. Each sub-record carries ``position_in_episode``
+    # and ``segment_count`` metadata so callers can reconstruct the
+    # original ordering. Set ``theta_segment_max_chars=0`` to disable.
+    theta_segment_max_chars: int = 1024
+    theta_segment_max_items: int = 7
+    # Successor representation (Stachenfeld 2017). When enabled, recall
+    # blends a temporal co-occurrence boost ``M[i*, j]`` into the rank
+    # score, where ``i*`` is the best-cosine episodic anchor. ``omega``
+    # ramps from 0 to ``sr_omega_max`` after enough edges accumulate.
+    sr_enabled: bool = True
+    sr_gamma: float = 0.7
+    sr_alpha: float = 0.1
+    sr_window_seconds: float = 60.0
+    sr_omega_max: float = 0.3
+    # Cold-start gate: omega ramps linearly until the edge population
+    # crosses ``sr_cold_start_ratio * episode_count``, then plateaus at
+    # ``sr_omega_max``. 1.0 = needs as many edges as episodes before
+    # full plateau. Lower = trust SR sooner.
+    sr_cold_start_ratio: float = 1.0
 
 
 def now_seconds() -> float:
@@ -133,6 +157,17 @@ class HippocampusService:
         self._embed = _normalise_embed_fn(embed_fn) if embed_fn is not None else None
         # Lazily constructed once we observe the embedding dimension.
         self._dg: _DGProjector | None = None
+        self._sr: _SR | None = (
+            _SR(
+                gamma=self.config.sr_gamma,
+                alpha=self.config.sr_alpha,
+                window_seconds=self.config.sr_window_seconds,
+                omega_max=self.config.sr_omega_max,
+                cold_start_ratio=self.config.sr_cold_start_ratio,
+            )
+            if self.config.sr_enabled
+            else None
+        )
 
     # ------------------------------------------------------------------ embed
     async def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None:
@@ -247,6 +282,40 @@ class HippocampusService:
             return dedup_hit
 
         encoded_at = now_seconds()
+        segments = _split_into_segments(
+            content,
+            max_chars=self.config.theta_segment_max_chars,
+            max_items=self.config.theta_segment_max_items,
+        )
+        if len(segments) == 1:
+            return await self._insert_single_episode(
+                content=content,
+                session_id=session_id,
+                tags=tags,
+                salience=salience,
+                encoded_at=encoded_at,
+                new_embs=new_embs,
+                dg_support=new_support if (use_dg and new_support) else None,
+            )
+        return await self._insert_segmented_episode(
+            segments=segments,
+            session_id=session_id,
+            tags=tags,
+            salience=salience,
+            encoded_at=encoded_at,
+        )
+
+    async def _insert_single_episode(
+        self,
+        *,
+        content: str,
+        session_id: str,
+        tags: Sequence[str] | None,
+        salience: float,
+        encoded_at: float,
+        new_embs: list[list[float]] | None,
+        dg_support: tuple[int, ...] | None,
+    ) -> dict[str, Any]:
         meta: dict[str, Any] = {
             "session_id": session_id,
             "tags": list(tags) if tags else [],
@@ -254,23 +323,75 @@ class HippocampusService:
             "encoded_at": encoded_at,
             "last_accessed": encoded_at,
             "retrieval_count": 0,
-            # Power-law strength integrates over every retrieval event, so
-            # we keep a (capped) timestamp list — not just the count.
             "access_history": [encoded_at],
             "consolidated_into": UNCONSOLIDATED,
         }
-        if use_dg and new_support:
-            meta["dg_support"] = list(new_support)
+        if dg_support:
+            meta["dg_support"] = list(dg_support)
         ids = await self.episodic.add_texts([content], metadatas=[meta], embeddings=new_embs)
         new_id = int(ids[0])
-        # Mirror the auto-assigned id into metadata so similarity_search
-        # results carry it without a follow-up join.
         await self.episodic.update_metadata([(new_id, {"id": new_id})])
         return {
             "id": new_id,
             "deduped": False,
             "distance": None,
             "session_id": session_id,
+        }
+
+    async def _insert_segmented_episode(
+        self,
+        *,
+        segments: list[str],
+        session_id: str,
+        tags: Sequence[str] | None,
+        salience: float,
+        encoded_at: float,
+    ) -> dict[str, Any]:
+        """Encode each segment as a sub-record sharing ``episode_group_id``.
+
+        The first segment's auto-assigned id doubles as the group id, so we
+        avoid an external id allocator. Subsequent segments are written
+        with that group id already set in their metadata.
+        """
+        segment_embs = await self.vectorise(segments)
+        tags_list = list(tags) if tags else []
+        seg_count = len(segments)
+        seg_ids: list[int] = []
+        group_id: int | None = None
+        for pos, seg in enumerate(segments):
+            seg_meta: dict[str, Any] = {
+                "session_id": session_id,
+                "tags": tags_list,
+                "salience": float(salience),
+                "encoded_at": encoded_at,
+                "last_accessed": encoded_at,
+                "retrieval_count": 0,
+                "access_history": [encoded_at],
+                "consolidated_into": UNCONSOLIDATED,
+                "position_in_episode": pos,
+                "segment_count": seg_count,
+            }
+            if group_id is not None:
+                seg_meta["episode_group_id"] = group_id
+            seg_emb_arg = [segment_embs[pos]] if segment_embs is not None else None
+            ids = await self.episodic.add_texts([seg], metadatas=[seg_meta], embeddings=seg_emb_arg)
+            seg_id = int(ids[0])
+            if group_id is None:
+                group_id = seg_id
+                await self.episodic.update_metadata(
+                    [(seg_id, {"id": seg_id, "episode_group_id": group_id})]
+                )
+            else:
+                await self.episodic.update_metadata([(seg_id, {"id": seg_id})])
+            seg_ids.append(seg_id)
+        resolved_group_id = group_id if group_id is not None else seg_ids[0]
+        return {
+            "id": seg_ids[0],
+            "deduped": False,
+            "distance": None,
+            "session_id": session_id,
+            "group_id": resolved_group_id,
+            "segment_ids": seg_ids,
         }
 
     # ------------------------------------------------------------------ recall
@@ -307,8 +428,50 @@ class HippocampusService:
                 eta0=self.config.recall_completion_anchor,
             )
             q = result.query
-        merged: list[tuple[int, str, dict[str, Any], float, str]] = []
+        merged = await self._merge_recall_hits(q, mode=mode, k=k, ep_filter=ep_filter)
+        rank_keys = await self._sr_rank_keys(merged)
+        # Key by (doc_id, source) instead of object identity: stable
+        # across any future merge-list copying or wrapping.
+        merged.sort(key=lambda r: rank_keys.get((r[0], r[4]), r[3]))
+        out: list[dict[str, Any]] = []
+        observed_episodic: list[tuple[str, int]] = []
+        for doc_id, text, md, dist, source in merged[:k]:
+            out.append(
+                {
+                    "id": doc_id,
+                    "content": text,
+                    "distance": dist,
+                    "source": source,
+                    "metadata": md,
+                }
+            )
+            if source == "episodic" and doc_id >= 0:
+                await self.bump_retrieval(doc_id, md)
+                sid = str(md.get("session_id", "")) if md else ""
+                if sid:
+                    observed_episodic.append((sid, doc_id))
+        # Anchor-model SR update: fold one edge from the best-cosine
+        # anchor (= first episodic hit after re-ranking) to each other
+        # episodic hit. Avoids the pairwise n*(n-1)/2 inflation that a
+        # naive "everything observed at the same t" loop would produce
+        # — five hits add four edges, not ten.
+        if self._sr is not None and observed_episodic:
+            t = now_seconds()
+            anchor_sid, anchor_id = observed_episodic[0]
+            self._sr.observe_recall_set(
+                anchor_sid, anchor_id, [j for _, j in observed_episodic[1:]], t
+            )
+        return out
 
+    async def _merge_recall_hits(
+        self,
+        q: str | list[float],
+        *,
+        mode: str,
+        k: int,
+        ep_filter: dict[str, Any] | None,
+    ) -> list[tuple[int, str, dict[str, Any], float, str]]:
+        merged: list[tuple[int, str, dict[str, Any], float, str]] = []
         if mode in {"auto", "semantic", "hybrid"} and await self.semantic.count() > 0:
             for doc, dist in await self.semantic.similarity_search(q, k=k):
                 merged.append(
@@ -331,22 +494,40 @@ class HippocampusService:
                         "episodic",
                     )
                 )
+        return merged
 
-        merged.sort(key=lambda r: r[3])
-        out: list[dict[str, Any]] = []
-        for doc_id, text, md, dist, source in merged[:k]:
-            out.append(
-                {
-                    "id": doc_id,
-                    "content": text,
-                    "distance": dist,
-                    "source": source,
-                    "metadata": md,
-                }
-            )
-            if source == "episodic" and doc_id >= 0:
-                await self.bump_retrieval(doc_id, md)
-        return out
+    async def _sr_rank_keys(
+        self,
+        merged: list[tuple[int, str, dict[str, Any], float, str]],
+    ) -> dict[tuple[int, str], float]:
+        """Return ``{(doc_id, source): rank_key}`` overrides for SR sort.
+
+        We pick the best-cosine episodic anchor ``i*`` and assign each
+        episodic candidate the rank key
+        ``(1 - omega) * dist - omega * M[i*, j]``. Rows not in the
+        returned mapping fall back to their raw cosine distance, so
+        published ``distance`` values stay unmodified. Keying by
+        ``(doc_id, source)`` keeps the lookup stable even if ``merged``
+        is rebuilt or copied between this call and the sort, and avoids
+        cross-source key collisions.
+        """
+        if self._sr is None or not merged:
+            return {}
+        ep_count = await self.episodic.count()
+        omega = self._sr.omega(ep_count)
+        if omega <= 0.0:
+            return {}
+        episodic_hits = [(doc_id, dist) for doc_id, _, _, dist, src in merged if src == "episodic"]
+        if not episodic_hits:
+            return {}
+        anchor_id = min(episodic_hits, key=lambda r: r[1])[0]
+        boost = self._sr.boost(anchor_id, [r[0] for r in episodic_hits])
+        keys: dict[tuple[int, str], float] = {}
+        for doc_id, _, _, dist, src in merged:
+            if src != "episodic":
+                continue
+            keys[(doc_id, src)] = (1.0 - omega) * dist - omega * boost.get(doc_id, 0.0)
+        return keys
 
     async def bump_retrieval(self, doc_id: int, current: dict[str, Any]) -> None:
         rc = int(current.get("retrieval_count", 0)) + 1
@@ -369,6 +550,38 @@ class HippocampusService:
                 )
             ]
         )
+
+    async def fetch_episode_group(
+        self,
+        group_id: int,
+        *,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the ordered sub-records of a theta-segmented episode.
+
+        Sub-records are sorted by ``position_in_episode``. The first
+        segment carries ``episode_group_id == its own id`` so passing
+        any sub-record's id as ``group_id`` recovers the full ordered
+        walk. Pass ``session_id`` for defense-in-depth against any
+        future change to id allocation that could let group ids appear
+        in more than one namespace.
+        """
+        flt: dict[str, Any] = {"episode_group_id": group_id}
+        if session_id:
+            flt["session_id"] = session_id
+        rows = await self.episodic.get_documents(flt)
+        items: list[dict[str, Any]] = []
+        for doc_id, text, md in rows:
+            items.append(
+                {
+                    "id": int(doc_id),
+                    "content": text,
+                    "position": int(md.get("position_in_episode", 0)),
+                    "metadata": md,
+                }
+            )
+        items.sort(key=lambda r: r["position"])
+        return items
 
     # ----------------------------------------------------------------- stats
     async def stats(self) -> dict[str, int]:

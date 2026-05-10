@@ -21,12 +21,14 @@ from synara.core.errors import ValidationError
 from synara.features.hippocampus.complete import attractor_step, completion_score
 from synara.features.hippocampus.consolidate import build_gist
 from synara.features.hippocampus.forget import memory_strength
+from synara.features.hippocampus.segment import split_into_segments
 from synara.features.hippocampus.separate import DGProjector, jaccard
 from synara.features.hippocampus.service import (
     UNCONSOLIDATED,
     HippocampusConfig,
     HippocampusService,
 )
+from synara.features.hippocampus.successor import SuccessorRepresentation
 
 
 def hash_embed(text: str, dim: int = 32) -> list[float]:
@@ -427,3 +429,227 @@ def test_build_gist_with_siblings() -> None:
     assert out.startswith("headline")
     assert "sibling one" in out
     assert "sibling two" in out
+
+
+# ---------------------------------------------------------------- segment (#6)
+def test_split_into_segments_passthrough_for_short_content() -> None:
+    text = "Short note."
+    assert split_into_segments(text, max_chars=1024, max_items=7) == [text]
+
+
+def test_split_into_segments_disabled_returns_single_item() -> None:
+    text = "x" * 5000
+    assert split_into_segments(text, max_chars=0, max_items=7) == [text]
+    assert split_into_segments(text, max_chars=1024, max_items=1) == [text]
+
+
+def test_split_into_segments_breaks_on_sentences() -> None:
+    text = "First sentence. Second sentence. Third sentence."
+    out = split_into_segments(text, max_chars=20, max_items=7)
+    assert len(out) >= 2
+    # Concatenation preserves all original tokens (modulo separator
+    # whitespace).
+    flat = " ".join(out)
+    for token in ("First", "Second", "Third"):
+        assert token in flat
+
+
+def test_split_into_segments_caps_count_at_max_items() -> None:
+    sentences = [f"S{i}." for i in range(20)]
+    text = " ".join(sentences)
+    out = split_into_segments(text, max_chars=4, max_items=5)
+    assert 1 <= len(out) <= 5
+    flat = " ".join(out)
+    for tok in ("S0", "S19"):
+        assert tok in flat
+
+
+def test_split_into_segments_windows_overlong_sentence() -> None:
+    text = "x" * 100  # No sentence boundary inside.
+    out = split_into_segments(text, max_chars=30, max_items=7)
+    assert len(out) >= 2
+    assert "".join(out) == text
+
+
+async def test_encode_long_content_creates_segments() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = HippocampusConfig(theta_segment_max_chars=40, theta_segment_max_items=5)
+        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        long_content = (
+            "First sentence about alpha. Second sentence about beta. "
+            "Third sentence about gamma. Fourth sentence about delta."
+        )
+        r = await svc.encode_episode(long_content, "s1", salience=0.5)
+        assert r["deduped"] is False
+        assert "group_id" in r
+        assert "segment_ids" in r
+        assert len(r["segment_ids"]) >= 2
+        # First segment id is the group id (and the published id).
+        assert r["id"] == r["segment_ids"][0]
+        assert r["group_id"] == r["segment_ids"][0]
+
+        rows = await svc.episodic.get_documents({"session_id": "s1"})
+        assert len(rows) == len(r["segment_ids"])
+        positions = sorted(int(md["position_in_episode"]) for _, _, md in rows)
+        assert positions == list(range(len(r["segment_ids"])))
+        assert all(int(md["segment_count"]) == len(r["segment_ids"]) for _, _, md in rows)
+    finally:
+        await db.close()
+
+
+async def test_fetch_episode_group_returns_ordered_segments() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = HippocampusConfig(theta_segment_max_chars=30, theta_segment_max_items=4)
+        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        text = "Alpha one. Beta two. Gamma three. Delta four."
+        r = await svc.encode_episode(text, "s1", salience=0.5)
+        group = await svc.fetch_episode_group(r["group_id"])
+        assert len(group) == len(r["segment_ids"])
+        # Positions are strictly ascending.
+        positions = [item["position"] for item in group]
+        assert positions == sorted(positions)
+        assert positions[0] == 0
+    finally:
+        await db.close()
+
+
+async def test_encode_short_content_keeps_legacy_shape() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        # Threshold high: short note never splits.
+        cfg = HippocampusConfig(theta_segment_max_chars=1024, theta_segment_max_items=7)
+        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        r = await svc.encode_episode("just a short note", "s1", salience=0.5)
+        assert "group_id" not in r
+        assert "segment_ids" not in r
+    finally:
+        await db.close()
+
+
+# ----------------------------------------------------------- successor SR (#5)
+def test_successor_observe_within_window_creates_edge() -> None:
+    sr = SuccessorRepresentation(window_seconds=10.0)
+    sr.observe("s1", 1, t=0.0)
+    sr.observe("s1", 2, t=1.0)
+    assert sr.total_edges == 1.0
+    boost = sr.boost(1, [2])
+    # First TD step on (1->2) sets M[1][2] = alpha * (1 + gamma * M[2][2])
+    # = 0.1 * (1 + 0) = 0.1.
+    assert boost[2] > 0.0
+
+
+def test_successor_observe_outside_window_skips_edge() -> None:
+    sr = SuccessorRepresentation(window_seconds=5.0)
+    sr.observe("s1", 1, t=0.0)
+    sr.observe("s1", 2, t=100.0)
+    assert sr.total_edges == 0.0
+    assert sr.boost(1, [2]) == {2: 0.0}
+
+
+def test_successor_observe_does_not_cross_sessions() -> None:
+    sr = SuccessorRepresentation(window_seconds=10.0)
+    sr.observe("s1", 1, t=0.0)
+    sr.observe("s2", 2, t=1.0)
+    assert sr.total_edges == 0.0
+
+
+def test_successor_omega_cold_start_ramp() -> None:
+    sr = SuccessorRepresentation(
+        omega_max=0.3,
+        cold_start_ratio=1.0,
+        window_seconds=1.5,
+    )
+    # No edges -> omega 0.
+    assert sr.omega(episode_count=10) == 0.0
+    # Window of 1.5s and t-spacing of 1s: each new event keeps exactly
+    # one prior in the window, so we get exactly 4 edges across 5 events.
+    for i in range(5):
+        sr.observe("s1", i, t=float(i))
+    assert sr.total_edges == 4.0
+    # 4 edges across 10 episodes -> ratio 0.4, partial ramp.
+    omega = sr.omega(episode_count=10)
+    assert 0.0 < omega < 0.3
+    # Plenty of edges past the ratio -> plateau at omega_max.
+    omega_full = sr.omega(episode_count=2)
+    assert omega_full == pytest.approx(0.3)
+
+
+def test_successor_td_propagates_through_chain() -> None:
+    """A->B->C should give M[A][C] > 0 once chain edges exist (gamma>0)."""
+    sr = SuccessorRepresentation(window_seconds=10.0, gamma=0.7, alpha=0.5)
+    # Train the chain a few times so TD has converged enough to propagate.
+    for trial in range(20):
+        base = trial * 100.0
+        sr.observe("s1", 1, t=base)
+        sr.observe("s1", 2, t=base + 1.0)
+        sr.observe("s1", 3, t=base + 2.0)
+    boost = sr.boost(1, [3])
+    assert boost[3] > 0.0
+
+
+async def test_recall_observes_cooccurrences_into_sr() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        await svc.encode_episode("alpha note", "s1", salience=0.5)
+        await svc.encode_episode("beta note", "s1", salience=0.5)
+        # First recall returns both, which folds an edge into SR.
+        await svc.recall("alpha note", session_id="s1", k=5, mode="episodic")
+        assert svc._sr is not None
+        assert svc._sr.total_edges >= 1.0
+    finally:
+        await db.close()
+
+
+async def test_recall_anchor_model_does_not_inflate_edges() -> None:
+    """A single recall returning n hits adds exactly n-1 edges, not
+    n*(n-1)/2 — confirming the anchor-model fold prevents the
+    pairwise-coincident inflation a naive observe-each loop produces."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        for tag in ("alpha", "beta", "gamma", "delta"):
+            await svc.encode_episode(f"{tag} note", "s1", salience=0.5)
+        await svc.recall("alpha note", session_id="s1", k=4, mode="episodic")
+        assert svc._sr is not None
+        # Exactly k-1 edges out of the anchor (no pairwise inflation).
+        assert svc._sr.total_edges == 3.0
+    finally:
+        await db.close()
+
+
+def test_successor_observe_recall_set_anchor_only_edges() -> None:
+    sr = SuccessorRepresentation(window_seconds=10.0)
+    sr.observe_recall_set("s1", anchor_id=1, other_ids=[2, 3, 4], t=0.0)
+    # Anchor -> each other = 3 edges (no pairwise between 2,3,4).
+    assert sr.total_edges == 3.0
+    boost = sr.boost(1, [2, 3, 4])
+    assert all(v > 0.0 for v in boost.values())
+    # 2 has no outgoing edges from this single recall.
+    assert sr.boost(2, [3, 4]) == {3: 0.0, 4: 0.0}
+
+
+def test_successor_recall_set_chains_across_recalls() -> None:
+    """A second recall in the same session should chain off the prior
+    anchor by adding one cross-recall edge into the new anchor."""
+    sr = SuccessorRepresentation(window_seconds=10.0)
+    sr.observe_recall_set("s1", anchor_id=1, other_ids=[2], t=0.0)
+    edges_after_first = sr.total_edges
+    sr.observe_recall_set("s1", anchor_id=3, other_ids=[4], t=1.0)
+    # Second recall adds 1 within-recall edge (3 -> 4) + 1 cross-recall
+    # edge (1 -> 3) since prior anchor 1 was still in the window.
+    assert sr.total_edges == edges_after_first + 2.0
+
+
+async def test_recall_sr_disabled_when_config_off() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = HippocampusConfig(sr_enabled=False)
+        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        assert svc._sr is None
+        await svc.encode_episode("alpha", "s1")
+        await svc.recall("alpha", session_id="s1", k=3, mode="episodic")
+    finally:
+        await db.close()
