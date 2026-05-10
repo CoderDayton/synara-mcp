@@ -400,3 +400,41 @@ async def test_reconsolidation_drift_accounted_when_enabled() -> None:
         assert any_drift
     finally:
         await db.close()
+
+
+async def test_reconsolidation_pulls_vector_toward_cue() -> None:
+    """Reconsolidation buffers a vector update so post-flush retrieval
+    distance to the recall cue decreases."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = HippocampusConfig(
+            reconsolidation_alpha=0.4,
+            reconsolidation_min_score=0.0,
+            reconsolidation_max_total_drift=1.0,
+        )
+        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        await svc.encode_episode("encoded-text", "s1")
+        await svc.encode_episode("other-episode", "s1")
+        cue_query = "different-cue"
+        cue_vec = hash_embed(cue_query)
+        # Discover which episode the recall picks as anchor; drift will
+        # land on that one.
+        first = await svc.recall(cue_query, session_id="s1", k=2)
+        anchor_id = int(first[0]["id"])
+        # Baseline distance from cue to the anchor episode before drift.
+        hits_before = await svc.episodic.similarity_search(cue_vec, k=5)
+        d_before = next(
+            float(d) for doc, d in hits_before if int(doc.metadata.get("id", -1)) == anchor_id
+        )
+        for _ in range(6):
+            await svc.recall(cue_query, session_id="s1", k=2)
+        flushed = await svc.episodic.flush_pending()
+        assert flushed > 0
+        hits_after = await svc.episodic.similarity_search(cue_vec, k=5)
+        d_after = next(
+            float(d) for doc, d in hits_after if int(doc.metadata.get("id", -1)) == anchor_id
+        )
+        # Drift moved the stored vector toward the cue: distance shrinks.
+        assert d_after < d_before
+    finally:
+        await db.close()

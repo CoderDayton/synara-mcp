@@ -171,6 +171,13 @@ async def run(
     if session_id:
         flt["session_id"] = session_id
 
+    # Promote any reconsolidation-buffered vector updates into HNSW so
+    # subsequent searches see the drifted embeddings. Cheap no-op when
+    # the pending buffer is empty.
+    flushed = await service.episodic.flush_pending()
+    if flushed > 0:
+        await service.episodic.rebuild_if_needed()
+
     candidates = await service.episodic.get_documents(flt)
     # Schema-eligibility gates: skip episodes too young or too rarely
     # retrieved. Mirrors the day-to-week ramp of HC->cortex handover.

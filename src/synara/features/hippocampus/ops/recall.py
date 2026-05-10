@@ -11,6 +11,7 @@ The pipeline is:
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from synara.core.errors import ValidationError
@@ -107,7 +108,8 @@ async def run(
         # episode's metadata when the alpha is set. Vector rewrite is
         # deferred (see config note); this only records the bound.
         if service.config.reconsolidation_alpha > 0.0 and anchor_row is not None:
-            await _accrue_drift(service, anchor_row, t=t)
+            cue = q if isinstance(q, list) else None
+            await _accrue_drift(service, anchor_row, t=t, cue=cue)
     return out
 
 
@@ -124,14 +126,20 @@ async def _accrue_drift(
     row: dict[str, Any],
     *,
     t: float,
+    cue: list[float] | None = None,
 ) -> None:
-    """Record one reconsolidation drift step in the episode's metadata.
+    """Apply one reconsolidation step (Nader 2000) to the episode.
 
-    Drift bound: cosine-distance from the original embedding is
-    bounded above by the cumulative blend ``sum(alpha * score)``.
-    Once it crosses ``reconsolidation_max_total_drift`` the episode is
-    marked ``drift_locked`` and further drift is rejected. ``min_score``
-    gates accumulation to avoid drifting on noisy recalls.
+    Drift bound: cosine-distance from the original embedding is bounded
+    above by the cumulative blend ``sum(alpha * score)``. Once it
+    crosses ``reconsolidation_max_total_drift`` the episode is marked
+    ``drift_locked`` and further drift is rejected. ``min_score`` gates
+    accumulation to avoid drifting on noisy recalls.
+
+    When a ``cue`` embedding is supplied the stored vector is buffered
+    via ``pending.update`` and pulled toward the cue:
+    ``v_new = (1 - a*s) v_old + a*s cue`` (re-normalised). The buffered
+    update is promoted to HNSW by ``flush_pending()`` during consolidate.
     """
     cfg = service.config
     md = row.get("metadata") or {}
@@ -156,6 +164,39 @@ async def _accrue_drift(
     if locked:
         md_update["drift_locked"] = True
     await service.episodic.update_metadata([(int(row["id"]), md_update)])
+    if cue is not None:
+        await _apply_drift_to_vector(service, int(row["id"]), cue=cue, blend=step)
+
+
+async def _apply_drift_to_vector(
+    service: HippocampusService,
+    doc_id: int,
+    *,
+    cue: list[float],
+    blend: float,
+) -> None:
+    """Pull the stored vector toward the cue and buffer the update.
+
+    Buffered through ``pending.update`` so HNSW only sees the new vector
+    after the next ``flush_pending`` (typically run by consolidate).
+    """
+    if blend <= 0.0:
+        return
+    embeds = await service.episodic.get_embeddings_by_ids([doc_id])
+    v_old = embeds.get(doc_id)
+    if v_old is None:
+        return
+    v_old_list = list(v_old)
+    if len(v_old_list) != len(cue):
+        return
+    blended = [
+        (1.0 - blend) * float(v_old_list[i]) + blend * float(cue[i]) for i in range(len(cue))
+    ]
+    norm = math.sqrt(sum(x * x for x in blended))
+    if norm <= 0.0:
+        return
+    v_new = [x / norm for x in blended]
+    await service.episodic.update_embedding(doc_id, v_new, source="reconsolidation")
 
 
 async def _merge_hits(
