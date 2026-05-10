@@ -26,11 +26,11 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from ..service import UNCONSOLIDATED, now_seconds
 from .forget import memory_strength
-from .service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .service import HippocampusService
+    from ..service import HippocampusService
 
 
 def _replay_score(

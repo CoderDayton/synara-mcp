@@ -25,10 +25,10 @@ from typing import TYPE_CHECKING, Any
 
 from synara.core.errors import ValidationError
 
-from .service import UNCONSOLIDATED, now_seconds
+from ..service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .service import HippocampusService
+    from ..service import HippocampusService
 
 
 def memory_strength(

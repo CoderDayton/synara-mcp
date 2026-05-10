@@ -18,17 +18,17 @@ import pytest_asyncio
 from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
-from synara.features.hippocampus.complete import attractor_step, completion_score
-from synara.features.hippocampus.consolidate import build_gist
-from synara.features.hippocampus.forget import memory_strength
-from synara.features.hippocampus.segment import split_into_segments
-from synara.features.hippocampus.separate import DGProjector, jaccard
+from synara.features.hippocampus.ops.consolidate import build_gist
+from synara.features.hippocampus.ops.forget import memory_strength
+from synara.features.hippocampus.primitives.complete import attractor_step, completion_score
+from synara.features.hippocampus.primitives.segment import split_into_segments
+from synara.features.hippocampus.primitives.separate import DGProjector, jaccard
+from synara.features.hippocampus.primitives.successor import SuccessorRepresentation
 from synara.features.hippocampus.service import (
     UNCONSOLIDATED,
     HippocampusConfig,
     HippocampusService,
 )
-from synara.features.hippocampus.successor import SuccessorRepresentation
 
 
 def hash_embed(text: str, dim: int = 32) -> list[float]:
