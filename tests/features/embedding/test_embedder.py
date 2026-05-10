@@ -11,6 +11,7 @@ format.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -253,6 +254,9 @@ async def test_embedder_warmup_and_aclose_delegate_to_backend() -> None:
         async def embed_batch(self, texts: object) -> list[list[float]]:
             return []
 
+        async def dim(self) -> int:
+            return 0
+
     embedder = Embedder(_Spy())
     embedder.warmup()
     await embedder.aclose()
@@ -284,6 +288,86 @@ async def test_remote_backend_does_not_close_injected_client() -> None:
         # Caller-owned client must remain usable after backend.aclose().
         await Embedder(backend).embed("hi")
     assert len(captured) == 1
+
+
+# ---------------------------------------------------------------------- dim()
+async def test_remote_backend_dim_uses_probe_and_caches() -> None:
+    """First dim() probes the endpoint; further calls reuse the cached value."""
+    captured: list[httpx.Request] = []
+    transport = _ok_handler(captured)
+    async with httpx.AsyncClient(transport=transport) as client:
+        backend = RemoteBackend("http://x", client=client)
+        d1 = await backend.dim()
+        d2 = await backend.dim()
+    # _ok_handler returns 2-dim vectors; both dim() calls match.
+    assert d1 == 2
+    assert d2 == 2
+    # Exactly one probe POST — second call hit the cache.
+    assert len(captured) == 1
+
+
+async def test_embedder_dim_delegates_to_backend() -> None:
+    captured: list[httpx.Request] = []
+    transport = _ok_handler(captured)
+    async with httpx.AsyncClient(transport=transport) as client:
+        embedder = Embedder(RemoteBackend("http://x", client=client))
+        assert await embedder.dim() == 2
+
+
+def test_local_backend_dim_uses_st_getter_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SentenceTransformer exposes get_sentence_embedding_dimension; the
+    local backend should read it directly instead of running an encode."""
+    encode_calls: list[object] = []
+
+    class _FakeST:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            self.model_id = model_id
+
+        def get_sentence_embedding_dimension(self) -> int:
+            return 384
+
+        def encode(self, *args: object, **kwargs: object) -> object:
+            encode_calls.append(args)
+            raise AssertionError("dim() must not run encode when getter is available")
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+
+    backend = LocalBackend(model="some/repo")
+    assert asyncio.run(backend.dim()) == 384
+    # Cached: second call must not re-warm or re-read.
+    assert asyncio.run(backend.dim()) == 384
+    assert encode_calls == []
+
+
+def test_local_backend_dim_falls_back_to_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the SentenceTransformer doesn't expose the dimension getter
+    (older / custom subclass), dim() falls back to a single-shot encode."""
+    probe_inputs: list[list[str]] = []
+
+    class _FakeST:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            self.model_id = model_id
+
+        def encode(self, texts: object, **kwargs: object) -> object:
+            assert isinstance(texts, list)
+            probe_inputs.append(list(texts))
+            return [[0.0, 0.0, 0.0, 0.0, 0.0]]
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+
+    backend = LocalBackend(model="probe/repo")
+    assert asyncio.run(backend.dim()) == 5
+    # Probe ran exactly once; cached result.
+    assert asyncio.run(backend.dim()) == 5
+    assert len(probe_inputs) == 1
 
 
 # --------------------------------------------------------------- factory wiring

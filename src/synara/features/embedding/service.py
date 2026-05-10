@@ -47,6 +47,19 @@ class _Backend(Protocol):
 
     async def aclose(self) -> None: ...
 
+    async def dim(self) -> int: ...
+
+
+_DIM_PROBE_TEXT = "."
+
+
+async def _probe_dim(backend: _Backend) -> int:
+    """One-shot probe: run a tiny encode to learn the output dimension."""
+    out = await backend.embed_batch([_DIM_PROBE_TEXT])
+    if not out or not out[0]:
+        raise EmbeddingError("dimension probe returned an empty embedding")
+    return len(out[0])
+
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingConfig:
@@ -98,9 +111,29 @@ class LocalBackend:
         # ``Any``-typed because sentence_transformers ships no public stubs;
         # the runtime contract is just ``model.encode(...)``.
         self._model: Any = None
+        self._dim: int | None = None
 
     def is_ready(self) -> bool:
         return self._model is not None
+
+    async def dim(self) -> int:
+        """Output dimension; cached after first probe.
+
+        SentenceTransformer exposes ``get_sentence_embedding_dimension``;
+        we read it directly when available to avoid a wasted encode.
+        """
+        if self._dim is not None:
+            return self._dim
+        if self._model is None:
+            await asyncio.to_thread(self.warmup)
+        getter = getattr(self._model, "get_sentence_embedding_dimension", None)
+        if callable(getter):
+            value = getter()
+            if isinstance(value, int) and value > 0:
+                self._dim = value
+                return self._dim
+        self._dim = await _probe_dim(self)
+        return self._dim
 
     def warmup(self) -> None:
         """Load the SentenceTransformer; downloads on first run."""
@@ -182,12 +215,19 @@ class RemoteBackend:
         # across the many encode/recall calls a memory feature triggers.
         self._client = client
         self._owned_client = client is None
+        self._dim: int | None = None
 
     def is_ready(self) -> bool:
         return True
 
     def warmup(self) -> None:
         """Remote service owns model lifecycle."""
+
+    async def dim(self) -> int:
+        """Output dimension; cached after the first probe call."""
+        if self._dim is None:
+            self._dim = await _probe_dim(self)
+        return self._dim
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -272,6 +312,14 @@ class Embedder:
 
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         return await self._backend.embed_batch(texts)
+
+    async def dim(self) -> int:
+        """Output vector dimension. Detected on first call and cached.
+
+        Lets downstream features size buffers / build projectors without
+        the user having to declare a dimension up-front.
+        """
+        return await self._backend.dim()
 
 
 def build_embedder(config: EmbeddingConfig) -> Embedder:
