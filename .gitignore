@@ -86,3 +86,4 @@ desktop.ini
 *.sqlite3
 *.db
 data/
+refs/

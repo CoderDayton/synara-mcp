@@ -14,6 +14,7 @@ _VALID_TRANSPORTS: tuple[Transport, ...] = ("stdio", "http", "sse", "streamable-
 class Settings:
     log_level: str
     transport: Transport
+    db_path: str = ":memory:"
 
     @classmethod
     def from_env(cls, argv: list[str] | None = None) -> Settings:
@@ -24,4 +25,5 @@ class Settings:
         return cls(
             log_level=os.environ.get("SYNARA_LOG_LEVEL", "INFO").upper(),
             transport=raw_transport,
+            db_path=os.environ.get("SYNARA_DB_PATH", ":memory:"),
         )
