@@ -244,6 +244,9 @@ async def test_embedder_warmup_and_aclose_delegate_to_backend() -> None:
         def warmup(self) -> None:
             calls.append("warm")
 
+        def is_ready(self) -> bool:
+            return "warm" in calls
+
         async def aclose(self) -> None:
             calls.append("close")
 

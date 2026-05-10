@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
+
+from synara.features.embedding import Embedder
 
 from .service import HippocampusService
 
@@ -21,7 +23,19 @@ _SID = (
 )
 
 
-def register_tools(mcp: FastMCP, service: HippocampusService) -> None:
+async def _ensure_warmed(embedder: Embedder | None, ctx: Context) -> None:
+    """Lazy embedder warmup with progress reporting on first call."""
+    if embedder is None:
+        return
+    await embedder.warmup_async(ctx)
+
+
+def register_tools(
+    mcp: FastMCP,
+    service: HippocampusService,
+    *,
+    embedder: Embedder | None = None,
+) -> None:
     @mcp.tool(
         name="memory_encode",
         description=(
@@ -38,15 +52,23 @@ def register_tools(mcp: FastMCP, service: HippocampusService) -> None:
     async def memory_encode(
         content: str,
         session_id: str,
+        ctx: Context,
         tags: list[str] | None = None,
         salience: float = 0.5,
     ) -> dict[str, Any]:
-        return await service.encode_episode(
+        await _ensure_warmed(embedder, ctx)
+        await ctx.debug(f"memory_encode: session_id={session_id!r} salience={salience}")
+        result = await service.encode_episode(
             content=content,
             session_id=session_id,
             tags=tags,
             salience=salience,
         )
+        if result.get("deduped"):
+            await ctx.info(f"deduped onto existing episode id={result['id']}")
+        else:
+            await ctx.info(f"encoded episode id={result['id']}")
+        return result
 
     @mcp.tool(
         name="memory_recall",
@@ -61,11 +83,16 @@ def register_tools(mcp: FastMCP, service: HippocampusService) -> None:
     )
     async def memory_recall(
         query: str,
+        ctx: Context,
         session_id: str | None = None,
         k: int = 8,
         mode: str = "auto",
     ) -> list[dict[str, Any]]:
-        return await service.recall(query=query, session_id=session_id, k=k, mode=mode)
+        await _ensure_warmed(embedder, ctx)
+        await ctx.debug(f"memory_recall: session_id={session_id!r} k={k} mode={mode!r}")
+        results = await service.recall(query=query, session_id=session_id, k=k, mode=mode)
+        await ctx.info(f"recall returned {len(results)} hit(s)")
+        return results
 
     @mcp.tool(
         name="memory_consolidate",
@@ -78,15 +105,23 @@ def register_tools(mcp: FastMCP, service: HippocampusService) -> None:
         ),
     )
     async def memory_consolidate(
+        ctx: Context,
         session_id: str | None = None,
         n_clusters: int | None = None,
         min_cluster_size: int | None = None,
     ) -> list[dict[str, Any]]:
-        return await service.consolidate(
+        await _ensure_warmed(embedder, ctx)
+        await ctx.info(
+            f"consolidate: session_id={session_id!r} n_clusters={n_clusters} "
+            f"min_cluster_size={min_cluster_size}"
+        )
+        formed = await service.consolidate(
             session_id=session_id,
             n_clusters=n_clusters,
             min_cluster_size=min_cluster_size,
         )
+        await ctx.info(f"consolidation produced {len(formed)} schema(s)")
+        return formed
 
     @mcp.tool(
         name="memory_forget",
@@ -102,15 +137,26 @@ def register_tools(mcp: FastMCP, service: HippocampusService) -> None:
         ),
     )
     async def memory_forget(
+        ctx: Context,
         strength_floor: float = 0.05,
         decay_tau_seconds: float | None = None,
         dry_run: bool = True,
     ) -> dict[str, Any]:
-        return await service.forget(
+        await ctx.debug(
+            f"memory_forget: strength_floor={strength_floor} "
+            f"decay_tau_seconds={decay_tau_seconds} dry_run={dry_run}"
+        )
+        result = await service.forget(
             strength_floor=strength_floor,
             decay_tau_seconds=decay_tau_seconds,
             dry_run=dry_run,
         )
+        verb = "would prune" if dry_run else "pruned"
+        candidate_count = len(result.get("candidate_ids") or [])
+        deleted_count = result.get("deleted") or 0
+        n = candidate_count if dry_run else deleted_count
+        await ctx.info(f"{verb} {n} episode(s)")
+        return result
 
     @mcp.tool(
         name="memory_reflect",
@@ -125,14 +171,23 @@ def register_tools(mcp: FastMCP, service: HippocampusService) -> None:
     )
     async def memory_reflect(
         session_id: str,
+        ctx: Context,
         query: str | None = None,
         k: int = 5,
     ) -> dict[str, Any]:
-        return await service.reflect(session_id=session_id, query=query, k=k)
+        await _ensure_warmed(embedder, ctx)
+        await ctx.debug(f"memory_reflect: session_id={session_id!r} query={query!r} k={k}")
+        result = await service.reflect(session_id=session_id, query=query, k=k)
+        schemas = len(result.get("schemas") or [])
+        episodes = len(result.get("episodes") or [])
+        await ctx.info(f"reflect returned {schemas} schema(s) + {episodes} episode(s)")
+        return result
 
     @mcp.tool(
         name="memory_stats",
         description="Return {episodic_count, semantic_count}. No params.",
     )
-    async def memory_stats() -> dict[str, int]:
-        return await service.stats()
+    async def memory_stats(ctx: Context) -> dict[str, int]:
+        result = await service.stats()
+        await ctx.debug(f"stats: {result}")
+        return result

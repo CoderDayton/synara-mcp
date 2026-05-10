@@ -7,18 +7,9 @@ from synara.config import Settings
 from synara.server import build_server
 
 
-def test_build_server_returns_fastmcp_instance(monkeypatch: pytest.MonkeyPatch) -> None:
-    """build_server warms up the embedder; stub SentenceTransformer to keep
-    this unit test offline (the real model load is exercised in the slow
-    embedding tests)."""
-
-    class _FakeST:
-        def __init__(self, model_id: str, **kwargs: object) -> None: ...
-
-        def encode(self, *args: object, **kwargs: object) -> object:
-            raise NotImplementedError
-
-    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+def test_build_server_returns_fastmcp_instance() -> None:
+    """build_server defers embedder warmup to first tool call, so this is
+    a pure construction smoke test — no SentenceTransformer stub needed."""
     settings = Settings(log_level="INFO", transport="stdio", db_path=":memory:")
     mcp = build_server(settings)
     assert isinstance(mcp, FastMCP)

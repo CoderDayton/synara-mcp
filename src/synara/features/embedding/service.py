@@ -43,6 +43,8 @@ class _Backend(Protocol):
 
     def warmup(self) -> None: ...
 
+    def is_ready(self) -> bool: ...
+
     async def aclose(self) -> None: ...
 
 
@@ -99,6 +101,9 @@ class LocalBackend:
         # ``Any``-typed because sentence_transformers ships no public stubs;
         # the runtime contract is just ``model.encode(...)``.
         self._model: Any = None
+
+    def is_ready(self) -> bool:
+        return self._model is not None
 
     def warmup(self) -> None:
         """Construct the SentenceTransformer; downloads on first run."""
@@ -181,6 +186,9 @@ class RemoteBackend:
         self._client = client
         self._owned_client = client is None
 
+    def is_ready(self) -> bool:
+        return True
+
     def warmup(self) -> None:
         """No-op: remote model lifecycle is owned by the remote service."""
 
@@ -234,6 +242,27 @@ class Embedder:
     def warmup(self) -> None:
         """Eagerly initialise the backend (e.g. download/load a local model)."""
         self._backend.warmup()
+
+    def is_ready(self) -> bool:
+        """Whether the backend can encode without a load step."""
+        return self._backend.is_ready()
+
+    async def warmup_async(self, ctx: Any | None = None) -> None:
+        """Warm up the backend off the event loop, reporting progress to ``ctx``.
+
+        Idempotent. The first call may download multi-GB model weights, so
+        when an MCP ``Context`` is provided we surface that to the client
+        via ``ctx.info`` and an indeterminate ``ctx.report_progress``.
+        """
+        if self._backend.is_ready():
+            return
+        if ctx is not None:
+            await ctx.info("Loading embedding model — first run may download model weights")
+            await ctx.report_progress(progress=0, total=1)
+        await asyncio.to_thread(self._backend.warmup)
+        if ctx is not None:
+            await ctx.report_progress(progress=1, total=1)
+            await ctx.info("Embedding model ready")
 
     async def aclose(self) -> None:
         """Release backend resources (e.g. an httpx connection pool)."""

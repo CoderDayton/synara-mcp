@@ -28,6 +28,8 @@ from __future__ import annotations
 from fastmcp import FastMCP
 from simplevecdb import AsyncVectorDB
 
+from synara.features.embedding import Embedder
+
 from .service import EmbedFn, HippocampusConfig, HippocampusService
 from .tools import register_tools
 
@@ -44,14 +46,17 @@ def register(
     db: AsyncVectorDB,
     *,
     config: HippocampusConfig | None = None,
+    embedder: Embedder | None = None,
     embed_fn: EmbedFn | None = None,
 ) -> HippocampusService:
     """Wire the hippocampus feature into the FastMCP server.
 
-    ``embed_fn`` is optional. When ``None``, simplevecdb's bundled local
-    embedder is used (downloads a SentenceTransformer on first call).
-    Tests pass a deterministic embedder to avoid network access.
+    Pass ``embedder`` (preferred) to enable lazy warmup with progress
+    reporting through the MCP context. ``embed_fn`` remains supported for
+    tests that drive the service with a deterministic in-process embedder
+    and don't need progress/log wiring.
     """
-    service = HippocampusService(db, config=config, embed_fn=embed_fn)
-    register_tools(mcp, service)
+    resolved_embed_fn = embed_fn if embed_fn is not None else (embedder.embed if embedder else None)
+    service = HippocampusService(db, config=config, embed_fn=resolved_embed_fn)
+    register_tools(mcp, service, embedder=embedder)
     return service
