@@ -95,6 +95,74 @@ async def test_encode_rejects_bad_input(service: HippocampusService) -> None:
         await service.encode_episode("ok", "s1", salience=1.5)
 
 
+async def test_encode_merges_signal_metadata(service: HippocampusService) -> None:
+    content = (
+        "Traceback (most recent call last):\n"
+        "ValueError: bad value\n"
+        "see src/foo.py and `bar` for context"
+    )
+    await service.encode_episode(content, "s1", salience=0.5)
+    rows = await service.episodic.get_documents({"session_id": "s1"})
+    md = rows[0][2]
+    assert md["has_traceback"] is True
+    assert md["has_diff_markers"] is False
+    assert "src/foo.py" in md["references"]
+    assert "bar" in md["references"]
+    assert md["length_class"] in {"short", "medium"}
+
+
+async def test_auto_salience_off_keeps_default_when_omitted() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = HippocampusService(
+            db,
+            config=HippocampusConfig(auto_salience=False),
+            embed_fn=hash_embed,
+        )
+        await svc.encode_episode("plain note", "s1")  # no salience kwarg
+        rows = await svc.episodic.get_documents({"session_id": "s1"})
+        assert rows[0][2]["salience"] == pytest.approx(0.5)
+    finally:
+        await db.close()
+
+
+async def test_auto_salience_on_uses_derived_when_omitted() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = HippocampusService(
+            db,
+            config=HippocampusConfig(auto_salience=True, auto_salience_base=0.3),
+            embed_fn=hash_embed,
+        )
+        # Traceback + diff content should derive well above the 0.3 base.
+        content = (
+            "Traceback (most recent call last):\nValueError: x\n"
+            "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        await svc.encode_episode(content, "s1")
+        rows = await svc.episodic.get_documents({"session_id": "s1"})
+        assert rows[0][2]["salience"] > 0.5
+    finally:
+        await db.close()
+
+
+async def test_signal_metadata_disabled_by_config() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = HippocampusService(
+            db,
+            config=HippocampusConfig(auto_signal_metadata=False),
+            embed_fn=hash_embed,
+        )
+        await svc.encode_episode("RuntimeError: nope", "s1", salience=0.5)
+        rows = await svc.episodic.get_documents({"session_id": "s1"})
+        md = rows[0][2]
+        assert "has_traceback" not in md
+        assert "references" not in md
+    finally:
+        await db.close()
+
+
 async def test_recall_returns_results_and_bumps_retrieval(
     service: HippocampusService,
 ) -> None:
@@ -180,6 +248,78 @@ async def test_reflect_returns_recent_episodes(service: HippocampusService) -> N
 
 async def test_stats_starts_empty(service: HippocampusService) -> None:
     assert await service.stats() == {"episodic_count": 0, "semantic_count": 0}
+
+
+async def test_store_semantic_memory_persists_with_metadata(
+    service: HippocampusService,
+) -> None:
+    out = await service.store_semantic_memory(
+        "Prefer pytest fixtures over manual setup.",
+        kind="preference",
+        tags=["testing", "python"],
+        confidence=0.9,
+    )
+    assert out["id"] >= 0
+    assert out["kind"] == "preference"
+    assert out["tags"] == ["python", "testing"]  # sorted, deduped
+    assert out["confidence"] == pytest.approx(0.9)
+    stats = await service.stats()
+    assert stats["semantic_count"] == 1
+    assert stats["episodic_count"] == 0  # bypasses episodic store
+    rows = await service.semantic.get_documents({"id": out["id"]})
+    assert len(rows) == 1
+    md = rows[0][2]
+    assert md["kind"] == "preference"
+    assert md["authored"] is True
+    assert md["source_episode_ids"] == []
+
+
+async def test_store_semantic_memory_rejects_bad_input(
+    service: HippocampusService,
+) -> None:
+    with pytest.raises(ValidationError):
+        await service.store_semantic_memory("", kind="fact")
+    with pytest.raises(ValidationError):
+        await service.store_semantic_memory("ok", kind="")
+    with pytest.raises(ValidationError):
+        await service.store_semantic_memory("ok", confidence=1.5)
+
+
+async def test_recall_semantic_memory_returns_only_semantic_hits(
+    service: HippocampusService,
+) -> None:
+    # Episode in episodic store + same-text semantic memory in semantic store.
+    # recall_semantic_memory must only see the semantic side.
+    await service.encode_episode("alpha episode", "s1", salience=0.5)
+    sem = await service.store_semantic_memory("alpha truth", kind="fact")
+    hits = await service.recall_semantic_memory("alpha", k=5)
+    assert hits, "expected at least one semantic hit"
+    assert all("kind" in h["metadata"] for h in hits)
+    assert sem["id"] in {h["id"] for h in hits}
+
+
+async def test_recall_semantic_memory_filters_by_kind(
+    service: HippocampusService,
+) -> None:
+    await service.store_semantic_memory("alpha fact", kind="fact")
+    pref = await service.store_semantic_memory("alpha preference", kind="preference")
+    hits = await service.recall_semantic_memory("alpha", k=5, kind="preference")
+    assert hits
+    assert {h["id"] for h in hits} == {pref["id"]}
+
+
+async def test_recall_semantic_memory_empty_store_returns_empty(
+    service: HippocampusService,
+) -> None:
+    assert await service.recall_semantic_memory("anything", k=5) == []
+
+
+async def test_recall_semantic_memory_rejects_bad_input(
+    service: HippocampusService,
+) -> None:
+    with pytest.raises(ValidationError):
+        await service.recall_semantic_memory("", k=5)
+    assert await service.recall_semantic_memory("ok", k=0) == []
 
 
 def test_memory_strength_decays_with_age() -> None:

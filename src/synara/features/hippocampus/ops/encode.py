@@ -12,13 +12,14 @@ Pipeline:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from synara.core.errors import ValidationError
 
 from ..primitives.segment import split_into_segments
 from ..primitives.separate import jaccard as _dg_jaccard
+from ..primitives.signals import derive_salience, derive_signals
 from ..service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -31,12 +32,22 @@ async def run(
     content: str,
     session_id: str,
     tags: Sequence[str] | None = None,
-    salience: float = 0.5,
+    salience: float | None = None,
 ) -> dict[str, Any]:
     if not content.strip():
         raise ValidationError("content must be non-empty")
     if not session_id:
         raise ValidationError("session_id must be non-empty")
+    cfg = service.config
+    signals = derive_signals(content) if cfg.auto_signal_metadata else None
+    if salience is None:
+        if cfg.auto_salience:
+            salience = derive_salience(
+                signals if signals is not None else derive_signals(content),
+                base=cfg.auto_salience_base,
+            )
+        else:
+            salience = 0.5
     if not 0.0 <= salience <= 1.0:
         raise ValidationError("salience must be in [0, 1]")
 
@@ -90,6 +101,7 @@ async def run(
             encoded_at=encoded_at,
             new_embs=new_embs,
             dg_support=new_support if (use_dg and new_support) else None,
+            signals=signals,
         )
     return await _insert_segmented(
         service,
@@ -98,6 +110,7 @@ async def run(
         tags=tags,
         salience=salience,
         encoded_at=encoded_at,
+        signals=signals,
     )
 
 
@@ -178,6 +191,7 @@ async def _insert_single(
     encoded_at: float,
     new_embs: list[list[float]] | None,
     dg_support: tuple[int, ...] | None,
+    signals: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     meta: dict[str, Any] = {
         "session_id": session_id,
@@ -191,6 +205,8 @@ async def _insert_single(
     }
     if dg_support:
         meta["dg_support"] = list(dg_support)
+    if signals is not None:
+        meta.update(signals)
     ids = await service.episodic.add_texts([content], metadatas=[meta], embeddings=new_embs)
     new_id = int(ids[0])
     await service.episodic.update_metadata([(new_id, {"id": new_id})])
@@ -210,6 +226,7 @@ async def _insert_segmented(
     tags: Sequence[str] | None,
     salience: float,
     encoded_at: float,
+    signals: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Encode each segment as a sub-record sharing ``episode_group_id``.
 
@@ -237,6 +254,8 @@ async def _insert_segmented(
         }
         if group_id is not None:
             seg_meta["episode_group_id"] = group_id
+        if signals is not None:
+            seg_meta.update(signals)
         seg_emb_arg = [segment_embs[pos]] if segment_embs is not None else None
         ids = await service.episodic.add_texts([seg], metadatas=[seg_meta], embeddings=seg_emb_arg)
         seg_id = int(ids[0])

@@ -166,6 +166,15 @@ class HippocampusConfig:
     # Tests that need immediate consolidation pass ``=0`` overrides.
     consolidate_min_age_seconds: float = 60.0
     consolidate_min_retrievals: int = 1
+    # Schema-margin replay weighting. The consolidation pass scores each
+    # unconsolidated episode by ``strength * d1 / (1 + beta * margin)``,
+    # where ``d1`` is the cosine distance to the nearest schema and
+    # ``margin = d2 - d1`` is the gap to the second-nearest. Larger beta
+    # damps episodes that one schema clearly owns (stable) relative to
+    # episodes whose top-2 schemas disagree (perturbed) - the latter
+    # carry the strongest schema-boundary learning signal. ``beta=0``
+    # recovers the legacy ``strength * novelty`` ordering.
+    schema_margin_beta: float = 2.0
 
     # Surprise-modulated encoding: when a new episode's nearest-neighbour
     # cosine distance exceeds the floor, salience is boosted by
@@ -174,6 +183,22 @@ class HippocampusConfig:
     # against, so by definition cannot surprise.
     surprise_distance_floor: float = 0.6
     surprise_salience_boost: float = 0.1
+
+    # Auto-fill structural signal flags (``has_traceback``,
+    # ``has_diff_markers``, ``references``, ...) from a regex pass over
+    # the content into every encoded episode's metadata. Pure and
+    # constant-cost per encode; the upside is that recall filters can
+    # pivot on shape without the caller declaring an event ``kind``.
+    # Defaults ON because the cost is negligible.
+    auto_signal_metadata: bool = True
+
+    # Substitute a structurally-derived salience when the caller omits
+    # one (``encode_episode(..., salience=None)``). Off by default — when
+    # on, the encoder calls ``derive_salience(derive_signals(content),
+    # base=auto_salience_base)`` so failure / diff / decision records
+    # float to the top without per-call tuning.
+    auto_salience: bool = False
+    auto_salience_base: float = 0.3
 
     # Reactor policy thresholds (only consulted when
     # ``self_learning_enabled``). Defaults are conservative enough that

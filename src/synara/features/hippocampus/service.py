@@ -36,6 +36,8 @@ from typing import Any
 
 from simplevecdb import AsyncVectorDB
 
+from synara.core.errors import ValidationError
+
 from .config import HippocampusConfig
 from .ops.events import EventBus as _EventBus
 from .ops.events import InteractionEvent as _Event
@@ -278,7 +280,7 @@ class HippocampusService:
         session_id: str,
         *,
         tags: Sequence[str] | None = None,
-        salience: float = 0.5,
+        salience: float | None = None,
     ) -> dict[str, Any]:
         result = await _encode_mod.run(
             self,
@@ -375,6 +377,91 @@ class HippocampusService:
             },
         )
         return result
+
+    # --------------------------------------------- direct semantic memory
+    # The semantic store is also written to by ``consolidate`` (clusters
+    # of episodes -> distilled schemas). These two methods give callers a
+    # direct lane that bypasses the episodic pipeline — for authored
+    # facts, procedures, preferences, and conventions that should persist
+    # without raw-trace baggage.
+    async def store_semantic_memory(
+        self,
+        content: str,
+        *,
+        kind: str = "fact",
+        tags: Sequence[str] | None = None,
+        confidence: float = 1.0,
+    ) -> dict[str, Any]:
+        if not content.strip():
+            raise ValidationError("content must be non-empty")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValidationError("confidence must be in [0, 1]")
+        if not kind or not kind.strip():
+            raise ValidationError("kind must be non-empty")
+
+        now = now_seconds()
+        tag_list = sorted({t for t in (tags or []) if isinstance(t, str) and t})
+        metadata: dict[str, Any] = {
+            "kind": kind,
+            "source_episode_ids": [],
+            "tags": tag_list,
+            "confidence": float(confidence),
+            "created_at": now,
+            "updated_at": now,
+            "authored": True,
+        }
+        sem_ids = await self.semantic.add_texts(
+            [content],
+            metadatas=[metadata],
+            embeddings=await self.vectorise([content]),
+        )
+        sem_id = int(sem_ids[0])
+        # Patch id back into metadata so downstream recall can read it
+        # uniformly (mirrors how consolidate does it).
+        await self.semantic.update_metadata([(sem_id, {"id": sem_id})])
+        return {
+            "id": sem_id,
+            "kind": kind,
+            "tags": tag_list,
+            "confidence": float(confidence),
+            "created_at": now,
+        }
+
+    async def recall_semantic_memory(
+        self,
+        query: str,
+        *,
+        k: int = 8,
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not query.strip():
+            raise ValidationError("query must be non-empty")
+        if k <= 0:
+            return []
+        if await self.semantic.count() == 0:
+            return []
+        q = await self.query_arg(query)
+        # When a kind filter is requested, over-fetch and filter in Python
+        # so cosine ranking still drives the final order; semantic store
+        # is small (gist-level) so the over-fetch is cheap.
+        fetch_k = k if kind is None else max(k * 4, 32)
+        hits = await self.semantic.similarity_search(q, k=fetch_k)
+        out: list[dict[str, Any]] = []
+        for doc, dist in hits:
+            md = dict(doc.metadata)
+            if kind is not None and str(md.get("kind", "")) != kind:
+                continue
+            out.append(
+                {
+                    "id": int(md.get("id", -1)),
+                    "content": doc.page_content,
+                    "distance": float(dist),
+                    "metadata": md,
+                }
+            )
+            if len(out) >= k:
+                break
+        return out
 
 
 # Late imports avoid a top-of-file cycle: each sub-module needs

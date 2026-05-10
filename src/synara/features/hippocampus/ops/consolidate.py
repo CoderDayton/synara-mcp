@@ -4,14 +4,22 @@ Two-stage replay-driven consolidation, modelled on hippocampal
 sharp-wave ripples (SWR) followed by neocortical schema integration:
 
 * **Stage 1 — replay-biased absorption.** Score each unconsolidated
-  episode by ``strength * novelty`` (strength uses the same power-law
-  activation that ``forget`` uses; novelty is the cosine distance to
-  the nearest existing schema). Process in descending-score order: if
-  an episode's nearest schema is within ``consolidate_absorb_distance``,
-  *absorb* the episode by appending it to the schema's source list and
-  bumping confidence — no new schema is created. This implements the
-  Tse et al. (2007) fast-track for schema-fitting episodes and prevents
-  representation drift across consolidation passes.
+  episode by ``strength * error``, where ``error = d1 / (1 + beta * (d2 - d1))``
+  is a top-2 schema-margin error signal (strength uses the same
+  power-law activation that ``forget`` uses; ``d1`` and ``d2`` are
+  cosine distances to the nearest and second-nearest schemas). The
+  margin term distinguishes three regimes: *stable* (one schema clearly
+  owns the episode, large margin -> low score), *perturbed* (top-2
+  schemas disagree, small margin -> high score), and *novel + isolated*
+  (no schema fits, full d1 weight survives). Process in descending
+  score order: if an episode's nearest schema is within
+  ``consolidate_absorb_distance``, *absorb* the episode by appending it
+  to the schema's source list and bumping confidence — no new schema
+  is created. This implements the Tse et al. (2007) fast-track for
+  schema-fitting episodes and prevents representation drift across
+  consolidation passes. Margin scoring is the algorithmic stand-in for
+  the McClelland et al. error-driven replay prescription: replay budget
+  is spent first on episodes the cortical model is most confused about.
 
 * **Stage 2 — clustering of the residual.** Whatever was *not* absorbed
   is clustered (MiniBatch K-Means) into new semantic schemas — the
@@ -36,14 +44,24 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 def _replay_score(
     md: dict[str, Any],
     *,
-    novelty: float,
+    d_near: float,
+    margin: float,
+    beta: float,
     now: float,
     d: float,
 ) -> float:
-    """Replay-sampling weight: strength * novelty (floored at epsilon).
+    """Replay-sampling weight: strength * schema-margin error (floored).
 
-    novelty: cosine distance to nearest schema (1.0 = novel, 0.0 = identical).
-    Biases replay toward salient, recent, not-yet-covered episodes.
+    d_near: cosine distance to nearest schema (1.0 = novel, 0.0 = identical).
+    margin: ``d2 - d1`` gap to second-nearest schema; 0 when only one
+        schema exists, in which case the score reduces to the legacy
+        ``strength * d_near``.
+    beta:   non-negative margin sensitivity. 0 disables the perturbation
+        amplification; larger values suppress stable (high-margin)
+        episodes more aggressively relative to perturbed ones.
+
+    Biases replay toward salient, recent, schema-boundary-confused
+    episodes — episodes the cortex would mispredict most.
     """
     history = md.get("access_history")
     if isinstance(history, list) and history:
@@ -59,28 +77,36 @@ def _replay_score(
         now=now,
         d=d,
     )
-    return max(strength * float(novelty), 1e-9)
+    error = float(d_near) / (1.0 + max(0.0, float(beta)) * max(0.0, float(margin)))
+    return max(strength * error, 1e-9)
 
 
-async def _nearest_schema(service: HippocampusService, text: str) -> tuple[int, float] | None:
+async def _nearest_schema(
+    service: HippocampusService, text: str
+) -> tuple[int, float, float] | None:
     # Caller is responsible for the upfront ``service.semantic.count()``
     # check; skipping it here saves an O(N) DB roundtrip across the
     # _absorb candidate loop.
     # Route through ``query_arg`` so the configured embed_fn produces the
     # query vector — using raw text would invoke simplevecdb's bundled
     # embedder, which can mismatch the stored vector dimension.
+    # k=2 so the caller can compute the schema margin (d2 - d1) used by
+    # the perturbation-amplified replay score. With only one schema we
+    # fall back to d2 = d1 -> margin = 0, which makes the score reduce
+    # to the legacy ``strength * d1``.
     q = await service.query_arg(text)
     try:
-        hits = await service.semantic.similarity_search(q, k=1)
+        hits = await service.semantic.similarity_search(q, k=2)
     except (ValueError, RuntimeError):
         return None
     if not hits:
         return None
-    sch_doc, dist = hits[0]
+    sch_doc, d1 = hits[0]
     sch_id = int(sch_doc.metadata.get("id", -1))
     if sch_id < 0:
         return None
-    return sch_id, float(dist)
+    d2 = float(hits[1][1]) if len(hits) > 1 else float(d1)
+    return sch_id, float(d1), d2
 
 
 async def _absorb(
@@ -96,16 +122,18 @@ async def _absorb(
 
     d = service.config.forget_d
     absorb_dist = service.config.consolidate_absorb_distance
+    beta = service.config.schema_margin_beta
 
     scored: list[tuple[float, int, str, int, float]] = []
     for ep_id, text, md in candidates:
         nearest = await _nearest_schema(service, text)
         if nearest is None:
             continue
-        sch_id, dist = nearest
-        novelty = max(0.0, dist)  # cosine distance in [0, 2]; treat as novelty
-        score = _replay_score(md, novelty=novelty, now=now, d=d)
-        scored.append((score, int(ep_id), text, sch_id, dist))
+        sch_id, d1, d2 = nearest
+        d_near = max(0.0, d1)  # cosine distance in [0, 2]
+        margin = max(0.0, d2 - d1)  # 0 when only one schema exists
+        score = _replay_score(md, d_near=d_near, margin=margin, beta=beta, now=now, d=d)
+        scored.append((score, int(ep_id), text, sch_id, d1))
 
     # Process in descending replay score — high-strength, high-novelty
     # episodes get the absorption attempt first.
