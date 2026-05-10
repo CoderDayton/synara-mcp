@@ -1,13 +1,23 @@
 """Episodic -> semantic consolidation.
 
-Clusters unconsolidated episodes (optionally restricted to one session)
-and writes a semantic schema per cluster. Each schema's text is a
-heuristic gist (no LLM) — sufficient to expose cluster content to
-downstream recall, deliberately replaceable with a real summariser.
+Two-stage replay-driven consolidation, modelled on hippocampal
+sharp-wave ripples (SWR) followed by neocortical schema integration:
 
-Source episodes are marked ``consolidated_into=<schema_id>`` so the
-``forget`` pass knows their gist is preserved upstream and can prune
-them more aggressively than uncosolidated ones.
+* **Stage 1 — replay-biased absorption.** Score each unconsolidated
+  episode by ``strength * novelty`` (strength uses the same power-law
+  activation that ``forget`` uses; novelty is the cosine distance to
+  the nearest existing schema). Process in descending-score order: if
+  an episode's nearest schema is within ``consolidate_absorb_distance``,
+  *absorb* the episode by appending it to the schema's source list and
+  bumping confidence — no new schema is created. This implements the
+  Tse et al. (2007) fast-track for schema-fitting episodes and prevents
+  representation drift across consolidation passes.
+
+* **Stage 2 — clustering of the residual.** Whatever was *not* absorbed
+  is clustered (MiniBatch K-Means) into new semantic schemas — the
+  classical CLS slow-pathway. Source episodes are marked
+  ``consolidated_into=<schema_id>`` so ``forget`` knows their gist is
+  preserved upstream.
 """
 
 from __future__ import annotations
@@ -16,10 +26,140 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from .forget import memory_strength
 from .service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .service import HippocampusService
+
+
+def _replay_score(
+    md: dict[str, Any],
+    *,
+    novelty: float,
+    now: float,
+    d: float,
+) -> float:
+    """Replay-sampling weight: strength * novelty, floored at a tiny epsilon.
+
+    ``novelty`` is the cosine distance to the nearest existing schema
+    (1.0 = totally novel, 0.0 = identical). Multiplying by strength
+    biases replay toward salient, recent, *and* not-yet-covered
+    episodes — the empirical bias observed in hippocampal SWR content.
+    """
+    history = md.get("access_history")
+    if isinstance(history, list) and history:
+        access_times: list[float] = [float(t) for t in history]
+    else:
+        enc = float(md.get("encoded_at", now))
+        last = float(md.get("last_accessed", enc))
+        rc = int(md.get("retrieval_count", 0))
+        access_times = [enc] + [last] * max(rc, 0)
+    strength = memory_strength(
+        salience=float(md.get("salience", 0.0)),
+        access_times=access_times,
+        now=now,
+        d=d,
+    )
+    return max(strength * float(novelty), 1e-9)
+
+
+async def _nearest_schema(service: HippocampusService, text: str) -> tuple[int, float] | None:
+    if await service.semantic.count() == 0:
+        return None
+    # Route through ``query_arg`` so the configured embed_fn produces the
+    # query vector — using raw text would invoke simplevecdb's bundled
+    # embedder, which can mismatch the stored vector dimension.
+    q = await service.query_arg(text)
+    try:
+        hits = await service.semantic.similarity_search(q, k=1)
+    except (ValueError, RuntimeError):
+        return None
+    if not hits:
+        return None
+    sch_doc, dist = hits[0]
+    sch_id = int(sch_doc.metadata.get("id", -1))
+    if sch_id < 0:
+        return None
+    return sch_id, float(dist)
+
+
+async def _absorb(
+    service: HippocampusService,
+    candidates: Sequence[tuple[int, str, dict[str, Any]]],
+    *,
+    now: float,
+) -> tuple[set[int], list[dict[str, Any]]]:
+    """Run the replay/absorption stage. Returns absorbed episode IDs and
+    the list of schema records (one per schema that grew this pass)."""
+    if await service.semantic.count() == 0:
+        return set(), []
+
+    d = service.config.forget_d
+    absorb_dist = service.config.consolidate_absorb_distance
+
+    scored: list[tuple[float, int, str, int, float]] = []
+    for ep_id, text, md in candidates:
+        nearest = await _nearest_schema(service, text)
+        if nearest is None:
+            continue
+        sch_id, dist = nearest
+        novelty = max(0.0, dist)  # cosine distance in [0, 2]; treat as novelty
+        score = _replay_score(md, novelty=novelty, now=now, d=d)
+        scored.append((score, int(ep_id), text, sch_id, dist))
+
+    # Process in descending replay score — high-strength, high-novelty
+    # episodes get the absorption attempt first.
+    scored.sort(key=lambda r: -r[0])
+
+    by_schema: dict[int, list[int]] = {}
+    for _score, ep_id, _text, sch_id, dist in scored:
+        if dist > absorb_dist:
+            continue
+        by_schema.setdefault(sch_id, []).append(ep_id)
+
+    absorbed_ids: set[int] = set()
+    formed: list[dict[str, Any]] = []
+    for sch_id, ep_ids in by_schema.items():
+        existing = await service.semantic.get_documents({"id": sch_id}, limit=1)
+        if not existing:
+            continue
+        _, sch_text, sch_md = existing[0]
+        prior = list(sch_md.get("source_episode_ids") or [])
+        new_sources = sorted(set(prior) | {int(e) for e in ep_ids})
+        if len(new_sources) == len(prior):
+            continue
+        # Confidence ~ fraction of total candidate evidence this schema
+        # has now absorbed; bounded in [0, 1].
+        denom = max(1, len(candidates) + len(prior))
+        new_conf = min(1.0, len(new_sources) / denom)
+        await service.semantic.update_metadata(
+            [
+                (
+                    sch_id,
+                    {
+                        "source_episode_ids": new_sources,
+                        "confidence": float(new_conf),
+                        "updated_at": now,
+                    },
+                )
+            ]
+        )
+        await service.episodic.update_metadata(
+            [(eid, {"consolidated_into": sch_id}) for eid in ep_ids]
+        )
+        absorbed_ids.update(ep_ids)
+        formed.append(
+            {
+                "id": sch_id,
+                "summary": sch_text,
+                "source_episode_ids": new_sources,
+                "confidence": float(new_conf),
+                "tags": list(sch_md.get("tags") or []),
+                "absorbed": True,
+            }
+        )
+    return absorbed_ids, formed
 
 
 async def run(
@@ -38,28 +178,38 @@ async def run(
     if len(candidates) < floor:
         return []
 
-    n = n_clusters or max(1, int(math.sqrt(len(candidates))))
-    n = max(1, min(n, len(candidates)))
+    now = now_seconds()
+    formed: list[dict[str, Any]] = []
+
+    # ---- Stage 1: replay-driven absorption into existing schemas ----
+    absorbed_ids, absorbed_schemas = await _absorb(service, candidates, now=now)
+    formed.extend(absorbed_schemas)
+
+    # ---- Stage 2: K-means on the residual ----
+    remaining = [c for c in candidates if int(c[0]) not in absorbed_ids]
+    if len(remaining) < floor:
+        return formed
+
+    n = n_clusters or max(1, int(math.sqrt(len(remaining))))
+    n = max(1, min(n, len(remaining)))
     try:
         result = await service.episodic.cluster(
             n_clusters=n,
             algorithm="minibatch_kmeans",
-            filter=flt,
+            filter=flt,  # absorbed episodes are no longer UNCONSOLIDATED
             random_state=0,
         )
     except (ValueError, ImportError):
-        # Too few points for the requested algorithm or sklearn missing.
-        return []
+        return formed
 
     groups: dict[int, list[int]] = {}
     for label, ep_id in zip(result.labels, result.doc_ids, strict=True):
         groups.setdefault(int(label), []).append(int(ep_id))
 
     ep_lookup: dict[int, tuple[str, dict[str, Any]]] = {
-        int(ep_id): (text, dict(md)) for ep_id, text, md in candidates
+        int(ep_id): (text, dict(md)) for ep_id, text, md in remaining
     }
-    formed: list[dict[str, Any]] = []
-    total = max(1, len(candidates))
+    total = max(1, len(remaining))
 
     for ep_ids in groups.values():
         members = [ep_lookup[eid] for eid in ep_ids if eid in ep_lookup]
@@ -72,7 +222,6 @@ async def run(
         )
         summary = build_gist(head_text, [m[0] for m in members])
         confidence = min(1.0, len(ep_ids) / total)
-        now = now_seconds()
         sem_meta: dict[str, Any] = {
             "source_episode_ids": list(ep_ids),
             "tags": tag_union,
@@ -98,6 +247,7 @@ async def run(
                 "source_episode_ids": list(ep_ids),
                 "confidence": float(confidence),
                 "tags": tag_union,
+                "absorbed": False,
             }
         )
     return formed

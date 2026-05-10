@@ -47,13 +47,22 @@ class HippocampusConfig:
     # Cosine distance below this threshold counts as a duplicate within a
     # session — encode_episode bumps the existing record instead of inserting.
     dedup_distance: float = 0.05
-    # Ebbinghaus-style decay time constant. Strength halves roughly every
-    # ``decay_tau_seconds * ln 2`` for an episode that is never retrieved.
-    decay_tau_seconds: float = 7.0 * 24.0 * 3600.0
-    # Per-retrieval boost added to strength score.
-    retrieval_boost: float = 0.05
+    # Power-law (Wickelgren/Wixted) decay exponent used by ``forget``:
+    #   S(t) = salience * sum_k (1 + (t - t_k))^(-d)
+    # d ~ 0.5 fits behavioural retention curves better than the exponential
+    # Ebbinghaus form. Larger d = faster decay.
+    forget_d: float = 0.5
+    # Cap on retained access-history timestamps per episode; older entries
+    # are FIFO-evicted. Keeps storage bounded while preserving Anderson's
+    # base-level activation shape for typical usage.
+    access_history_cap: int = 32
     # Minimum cluster size that yields a semantic schema during consolidation.
     consolidate_min_cluster: int = 2
+    # Cosine distance below which an unconsolidated episode is *absorbed*
+    # into the nearest existing schema (instead of contributing to a new
+    # cluster). Implements schema-fitting fast-track consolidation
+    # (Tse et al. 2007). Smaller = stricter fit required.
+    consolidate_absorb_distance: float = 0.4
 
 
 def now_seconds() -> float:
@@ -153,6 +162,9 @@ class HippocampusService:
             "encoded_at": encoded_at,
             "last_accessed": encoded_at,
             "retrieval_count": 0,
+            # Power-law strength integrates over every retrieval event, so
+            # we keep a (capped) timestamp list — not just the count.
+            "access_history": [encoded_at],
             "consolidated_into": UNCONSOLIDATED,
         }
         ids = await self.episodic.add_texts(
@@ -230,8 +242,24 @@ class HippocampusService:
 
     async def bump_retrieval(self, doc_id: int, current: dict[str, Any]) -> None:
         rc = int(current.get("retrieval_count", 0)) + 1
+        now = now_seconds()
+        history = list(current.get("access_history") or [])
+        history.append(now)
+        # FIFO-evict the oldest access timestamps once we exceed the cap.
+        cap = self.config.access_history_cap
+        if cap > 0 and len(history) > cap:
+            history = history[-cap:]
         await self.episodic.update_metadata(
-            [(doc_id, {"retrieval_count": rc, "last_accessed": now_seconds()})]
+            [
+                (
+                    doc_id,
+                    {
+                        "retrieval_count": rc,
+                        "last_accessed": now,
+                        "access_history": history,
+                    },
+                )
+            ]
         )
 
     # ----------------------------------------------------------------- stats

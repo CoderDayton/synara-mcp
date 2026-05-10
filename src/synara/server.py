@@ -20,7 +20,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
-from simplevecdb import AsyncVectorDB
+from simplevecdb import AsyncVectorDB, Quantization
 
 from synara import __version__
 from synara.config import Settings
@@ -33,7 +33,7 @@ _logger = logging.getLogger(__name__)
 def build_server(settings: Settings) -> FastMCP:
     if settings.db_path != ":memory:":
         Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
-    db = AsyncVectorDB(settings.db_path)
+    db = AsyncVectorDB(settings.db_path, quantization=Quantization.INT8)
     embedder = build_embedder(settings.embedding)
 
     backend_kind = "remote" if settings.embedding.url else "local"

@@ -9,6 +9,7 @@ recall plumbing, and consolidation.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import AsyncIterator
 
 import numpy as np
@@ -169,32 +170,90 @@ async def test_stats_starts_empty(service: HippocampusService) -> None:
 
 
 def test_memory_strength_decays_with_age() -> None:
-    fresh = memory_strength(
-        salience=1.0,
-        age_seconds=0.0,
-        retrievals=0,
-        tau_seconds=10.0,
-        retrieval_boost=0.05,
-    )
-    aged = memory_strength(
-        salience=1.0,
-        age_seconds=20.0,
-        retrievals=0,
-        tau_seconds=10.0,
-        retrieval_boost=0.05,
-    )
+    fresh = memory_strength(salience=1.0, access_times=[100.0], now=100.0)
+    aged = memory_strength(salience=1.0, access_times=[100.0], now=120.0)
     assert fresh > aged > 0.0
 
 
-def test_memory_strength_invalid_tau() -> None:
+def test_memory_strength_power_law_slower_than_exponential_for_old_traces() -> None:
+    """Power-law retention dominates exponential at long lags (Jost's law)."""
+    s, age = 1.0, 1000.0
+    power = memory_strength(salience=s, access_times=[0.0], now=age, d=0.5)
+    exp_eq = s * math.exp(-age / 10.0)
+    assert power > exp_eq
+
+
+def test_memory_strength_retrievals_increase_strength() -> None:
+    one = memory_strength(salience=1.0, access_times=[100.0], now=100.0)
+    many = memory_strength(salience=1.0, access_times=[100.0] * 5, now=100.0)
+    assert many > one
+
+
+def test_memory_strength_invalid_d() -> None:
     with pytest.raises(ValidationError):
-        memory_strength(
-            salience=1.0,
-            age_seconds=1.0,
-            retrievals=0,
-            tau_seconds=0.0,
-            retrieval_boost=0.0,
-        )
+        memory_strength(salience=1.0, access_times=[0.0], now=1.0, d=0.0)
+
+
+def _bucket_embed(text: str, dim: int = 32) -> list[float]:
+    """Prefix-bucketed embedder: shared content prefix ⇒ near-collinear
+    vectors (cluster), differing prefixes ⇒ near-orthogonal. Lets the
+    absorption test exercise schema-fit logic with a deterministic
+    content-aware similarity model.
+    """
+    head = text.strip().split("-", 1)[0].split()[0].lower() if text.strip() else ""
+    bucket_seed = int(hashlib.sha256(head.encode()).hexdigest()[:8], 16)
+    base = np.random.default_rng(bucket_seed).standard_normal(dim).astype(np.float32)
+    text_seed = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+    # 0.5 noise scale puts within-bucket cosine distance ~0.1-0.2, above
+    # dedup_distance (0.05) so distinct texts encode separately, but below
+    # consolidate_absorb_distance (0.4) so the absorb path triggers.
+    noise = 0.5 * np.random.default_rng(text_seed).standard_normal(dim).astype(np.float32)
+    v = base + noise
+    n = float(np.linalg.norm(v))
+    out = (v / n) if n > 0 else v
+    return [float(x) for x in out.tolist()]
+
+
+async def test_consolidate_absorbs_into_existing_schema() -> None:
+    """A second consolidation pass should absorb new fitting episodes into
+    the existing schema instead of forming a parallel one."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=_bucket_embed)
+        for i in range(3):
+            await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5, tags=["a"])
+        formed_first = await svc.consolidate(session_id="s1", n_clusters=1, min_cluster_size=2)
+        assert formed_first
+        assert not formed_first[0]["absorbed"]
+        sch_id = formed_first[0]["id"]
+
+        # New "alpha-*" episodes share the prefix bucket and should be
+        # absorbed by the existing schema rather than spawn a parallel one.
+        for i in range(3, 6):
+            await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5, tags=["a"])
+        formed_second = await svc.consolidate(session_id="s1", min_cluster_size=2)
+
+        absorbed = [s for s in formed_second if s.get("absorbed")]
+        assert absorbed, "expected absorption into the existing alpha schema"
+        assert any(s["id"] == sch_id for s in absorbed)
+    finally:
+        await db.close()
+
+
+async def test_encode_records_access_history(service: HippocampusService) -> None:
+    r = await service.encode_episode("hello", "s1", salience=0.5)
+    rows = await service.episodic.get_documents({"session_id": "s1"})
+    _, _, md = next(row for row in rows if row[0] == r["id"])
+    assert isinstance(md.get("access_history"), list)
+    assert len(md["access_history"]) == 1
+
+
+async def test_recall_appends_access_history(service: HippocampusService) -> None:
+    r = await service.encode_episode("hello access", "s1", salience=0.5)
+    await service.recall(query="hello access", session_id="s1", k=1, mode="episodic")
+    rows = await service.episodic.get_documents({"session_id": "s1"})
+    _, _, md = next(row for row in rows if row[0] == r["id"])
+    assert len(md["access_history"]) >= 2
 
 
 def test_build_gist_with_only_headline() -> None:

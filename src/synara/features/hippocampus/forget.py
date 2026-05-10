@@ -1,20 +1,26 @@
-"""Forgetting pass: Ebbinghaus-style decay + selective pruning.
+"""Forgetting pass: power-law decay + selective pruning.
 
-A memory's strength at time ``t`` is:
+Anderson's ACT-R base-level activation, in the Wickelgren / Wixted
+power-law form that empirically beats the exponential Ebbinghaus model
+across multiple time scales (Wixted 2004):
 
-    strength = salience * exp(-age / tau) + retrieval_count * boost
+    S(t) = salience * sum_k (1 + (t - t_k))^(-d)
+
+The sum aggregates every retrieval event ``t_k`` (encoding included).
+Power-law decay obeys Jost's law — older traces decay slower at the
+same instantaneous rate, so well-rehearsed memories survive long after
+an exponential model would have culled them.
 
 Episodes whose strength has fallen below ``strength_floor`` are flagged
 (``dry_run=True``) or deleted (``dry_run=False``). Consolidated episodes
-are pruned at the configured threshold; unconsolidated ones are pruned
-only when their strength is below half the floor — to avoid losing
-fresh-but-low-salience traces before they've had a chance to be
-consolidated.
+are pruned at the configured threshold; unconsolidated ones at half
+that threshold — fresh-but-low traces get a second chance to be
+consolidated before they vanish.
 """
 
 from __future__ import annotations
 
-import math
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from synara.core.errors import ValidationError
@@ -27,17 +33,46 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 def memory_strength(
     salience: float,
-    age_seconds: float,
-    retrievals: int,
+    access_times: Sequence[float],
     *,
-    tau_seconds: float,
-    retrieval_boost: float,
+    now: float,
+    d: float = 0.5,
 ) -> float:
-    """Public so callers can score memories with the same formula."""
-    if tau_seconds <= 0.0:
-        raise ValidationError("tau_seconds must be positive")
-    decay = math.exp(-max(age_seconds, 0.0) / tau_seconds)
-    return float(salience) * decay + float(retrievals) * retrieval_boost
+    """Power-law (Wickelgren/Wixted) memory strength.
+
+    ``access_times`` should include the encoding event plus every
+    retrieval event. With one access at the present moment, returns the
+    salience verbatim; with one access at age ``a`` and exponent ``d``,
+    returns ``salience * (1 + a)^(-d)`` — a strictly slower decay than
+    the exponential ``salience * exp(-a/tau)`` for ``a >> 1``.
+    """
+    if d <= 0.0:
+        raise ValidationError("d must be positive")
+    if not access_times:
+        return float(salience)
+    total = 0.0
+    for t_k in access_times:
+        delta = max(0.0, now - float(t_k))
+        total += (1.0 + delta) ** (-d)
+    return float(salience) * total
+
+
+def _access_times_from_meta(md: dict[str, Any], *, fallback_now: float) -> list[float]:
+    """Build an access-time list from episode metadata.
+
+    Newer episodes carry an explicit ``access_history``; older ones
+    (encoded before this field existed) fall back to ``[encoded_at]``
+    plus ``last_accessed`` repeated ``retrieval_count`` times — a coarse
+    approximation that still gives the activation function the right
+    qualitative shape.
+    """
+    history = md.get("access_history")
+    if isinstance(history, list) and history:
+        return [float(t) for t in history]
+    enc = float(md.get("encoded_at", fallback_now))
+    last = float(md.get("last_accessed", enc))
+    rc = int(md.get("retrieval_count", 0))
+    return [enc] + [last] * max(rc, 0)
 
 
 async def run(
@@ -50,21 +85,24 @@ async def run(
 ) -> dict[str, Any]:
     if not 0.0 <= strength_floor <= 1.0:
         raise ValidationError("strength_floor must be in [0, 1]")
-    tau = decay_tau_seconds if decay_tau_seconds is not None else service.config.decay_tau_seconds
-    if tau <= 0.0:
+    # ``decay_tau_seconds`` is preserved for API compatibility but the
+    # power-law model is parameterised by the dimensionless exponent
+    # ``d`` rather than a time constant. We allow callers to override
+    # ``d`` indirectly: tau <= 0 still raises so misconfigured callers
+    # get an immediate error instead of silently surviving.
+    if decay_tau_seconds is not None and decay_tau_seconds <= 0.0:
         raise ValidationError("decay_tau_seconds must be positive")
 
     now = now_seconds()
     rows = await service.episodic.get_documents(filter_dict=None, limit=max_scan)
     weak: list[int] = []
     for ep_id, _text, md in rows:
-        age = now - float(md.get("encoded_at", now))
+        access_times = _access_times_from_meta(md, fallback_now=now)
         strength = memory_strength(
             salience=float(md.get("salience", 0.0)),
-            age_seconds=age,
-            retrievals=int(md.get("retrieval_count", 0)),
-            tau_seconds=tau,
-            retrieval_boost=service.config.retrieval_boost,
+            access_times=access_times,
+            now=now,
+            d=service.config.forget_d,
         )
         consolidated = int(md.get("consolidated_into", UNCONSOLIDATED))
         if strength < strength_floor and consolidated != UNCONSOLIDATED:
