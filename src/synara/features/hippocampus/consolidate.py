@@ -83,7 +83,7 @@ async def run(
         sem_ids = await service.semantic.add_texts(
             [summary],
             metadatas=[sem_meta],
-            embeddings=service.vectorise([summary]),
+            embeddings=await service.vectorise([summary]),
         )
         sem_id = int(sem_ids[0])
         await service.semantic.update_metadata([(sem_id, {"id": sem_id})])

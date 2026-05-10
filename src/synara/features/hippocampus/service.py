@@ -15,14 +15,21 @@ modest:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
+
+# Either a sync embedder ``f(text) -> vec`` or an async one
+# ``async f(text) -> vec``. The service normalises both to async at
+# construction so internal call sites only ever ``await``.
+EmbedFn = Callable[[str], Sequence[float] | Awaitable[Sequence[float]]]
 
 # Sentinel for "this episode has not yet been consolidated into a semantic
 # schema". simplevecdb's filter format only supports exact equality and
@@ -53,6 +60,28 @@ def now_seconds() -> float:
     return time.time()
 
 
+def _normalise_embed_fn(fn: EmbedFn) -> Callable[[str], Awaitable[Sequence[float]]]:
+    """Wrap a sync embed_fn so all internal calls can ``await`` uniformly.
+
+    Sync embedders (e.g. the hash-based test embedder) are pushed onto a
+    worker thread to keep blocking work off the event loop; async ones
+    are returned as-is.
+    """
+    if inspect.iscoroutinefunction(fn):
+        return fn
+
+    async def _wrapped(text: str) -> Sequence[float]:
+        result = await asyncio.to_thread(fn, text)
+        # An async callable still flagged as not-coroutinefunction
+        # (e.g. a lambda returning a coroutine) ends up returning an
+        # Awaitable; honour it.
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    return _wrapped
+
+
 class HippocampusService:
     """Episodic + semantic memory over two simplevecdb collections."""
 
@@ -61,7 +90,7 @@ class HippocampusService:
         db: AsyncVectorDB,
         config: HippocampusConfig | None = None,
         *,
-        embed_fn: Callable[[str], Sequence[float]] | None = None,
+        embed_fn: EmbedFn | None = None,
     ) -> None:
         self.config = config or HippocampusConfig()
         self.db = db
@@ -69,20 +98,20 @@ class HippocampusService:
         # even after process restarts.
         self.episodic = db.collection(self.config.episodic_collection, store_embeddings=True)
         self.semantic = db.collection(self.config.semantic_collection, store_embeddings=True)
-        self._embed = embed_fn
+        self._embed = _normalise_embed_fn(embed_fn) if embed_fn is not None else None
 
     # ------------------------------------------------------------------ embed
-    def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None:
+    async def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None:
         """Return embeddings for ``texts`` or ``None`` to defer to simplevecdb."""
         if self._embed is None:
             return None
-        return [list(self._embed(t)) for t in texts]
+        return [list(await self._embed(t)) for t in texts]
 
-    def query_arg(self, query: str) -> str | list[float]:
+    async def query_arg(self, query: str) -> str | list[float]:
         """Shape a query for simplevecdb: text (auto-embed) or precomputed vec."""
         if self._embed is None:
             return query
-        return list(self._embed(query))
+        return list(await self._embed(query))
 
     # ------------------------------------------------------------------ encode
     async def encode_episode(
@@ -102,7 +131,7 @@ class HippocampusService:
 
         # Pattern separation: refuse near-duplicates within the same session.
         existing = await self.episodic.similarity_search(
-            self.query_arg(content), k=1, filter={"session_id": session_id}
+            await self.query_arg(content), k=1, filter={"session_id": session_id}
         )
         if existing and existing[0][1] <= self.config.dedup_distance:
             doc, dist = existing[0]
@@ -127,7 +156,7 @@ class HippocampusService:
             "consolidated_into": UNCONSOLIDATED,
         }
         ids = await self.episodic.add_texts(
-            [content], metadatas=[meta], embeddings=self.vectorise([content])
+            [content], metadatas=[meta], embeddings=await self.vectorise([content])
         )
         new_id = int(ids[0])
         # Mirror the auto-assigned id into metadata so similarity_search
@@ -157,7 +186,7 @@ class HippocampusService:
             raise ValidationError(f"unknown recall mode: {mode}")
 
         ep_filter: dict[str, Any] | None = {"session_id": session_id} if session_id else None
-        q = self.query_arg(query)
+        q = await self.query_arg(query)
         merged: list[tuple[int, str, dict[str, Any], float, str]] = []
 
         if mode in {"auto", "semantic", "hybrid"} and await self.semantic.count() > 0:

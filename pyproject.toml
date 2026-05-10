@@ -7,7 +7,9 @@ requires-python = ">=3.13"
 dependencies = [
     "bandit>=1.9.4",
     "fastmcp>=3.2.4",
+    "httpx>=0.28",
     "mypy>=2.0.0",
+    "peft>=0.19.1",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "ruff>=0.15.12",
@@ -48,7 +50,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["simplevecdb", "simplevecdb.*"]
+module = ["simplevecdb", "simplevecdb.*", "flash_attn", "sentence_transformers"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -57,6 +59,9 @@ testpaths = ["tests"]
 addopts = "-ra -q --strict-markers --strict-config"
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = [
+    "slow: tests that download large models or otherwise hit the network",
+]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]

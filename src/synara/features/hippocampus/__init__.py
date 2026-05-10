@@ -25,15 +25,14 @@ externalised half of the loop.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-
 from fastmcp import FastMCP
 from simplevecdb import AsyncVectorDB
 
-from .service import HippocampusConfig, HippocampusService
+from .service import EmbedFn, HippocampusConfig, HippocampusService
 from .tools import register_tools
 
 __all__ = [
+    "EmbedFn",
     "HippocampusConfig",
     "HippocampusService",
     "register",
@@ -45,7 +44,7 @@ def register(
     db: AsyncVectorDB,
     *,
     config: HippocampusConfig | None = None,
-    embed_fn: Callable[[str], Sequence[float]] | None = None,
+    embed_fn: EmbedFn | None = None,
 ) -> HippocampusService:
     """Wire the hippocampus feature into the FastMCP server.
 

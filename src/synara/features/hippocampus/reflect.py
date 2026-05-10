@@ -41,7 +41,8 @@ async def run(
 
     sem_results: list[dict[str, Any]] = []
     if seed and await service.semantic.count() > 0:
-        for doc, dist in await service.semantic.similarity_search(service.query_arg(seed), k=k):
+        seed_q = await service.query_arg(seed)
+        for doc, dist in await service.semantic.similarity_search(seed_q, k=k):
             sem_results.append(
                 {
                     "id": int(doc.metadata.get("id", -1)),
