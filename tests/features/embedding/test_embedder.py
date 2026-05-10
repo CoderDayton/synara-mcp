@@ -370,6 +370,181 @@ def test_local_backend_dim_falls_back_to_probe(
     assert len(probe_inputs) == 1
 
 
+# ------------------------------------------------------- variable-dim / batch
+async def test_remote_backend_sends_dimensions_when_pinned() -> None:
+    """When the user pins a dimension, the request body includes
+    ``dimensions`` (OpenAI text-embedding-3 / compatible providers)."""
+    captured: list[httpx.Request] = []
+    transport = _ok_handler(captured)
+    async with httpx.AsyncClient(transport=transport) as client:
+        backend = RemoteBackend("http://x", client=client, dim=128)
+        await Embedder(backend).embed("hi")
+    body = json.loads(captured[0].content)
+    assert body["dimensions"] == 128
+
+
+async def test_remote_backend_omits_dimensions_when_unset() -> None:
+    captured: list[httpx.Request] = []
+    transport = _ok_handler(captured)
+    async with httpx.AsyncClient(transport=transport) as client:
+        backend = RemoteBackend("http://x", client=client)
+        await Embedder(backend).embed("hi")
+    body = json.loads(captured[0].content)
+    assert "dimensions" not in body
+
+
+async def test_remote_backend_chunks_by_batch_size() -> None:
+    """A batch of N > batch_size texts is split into multiple POSTs."""
+    captured: list[httpx.Request] = []
+    transport = _ok_handler(captured)
+    async with httpx.AsyncClient(transport=transport) as client:
+        backend = RemoteBackend("http://x", client=client, batch_size=2)
+        vecs = await Embedder(backend).embed_batch(["a", "b", "c", "d", "e"])
+    assert len(vecs) == 5
+    # 5 texts / batch_size 2 -> 3 POSTs (2 + 2 + 1).
+    assert len(captured) == 3
+    sizes = [len(json.loads(r.content)["input"]) for r in captured]
+    assert sizes == [2, 2, 1]
+
+
+def test_remote_backend_rejects_nonpositive_options() -> None:
+    with pytest.raises(ValueError, match="dim"):
+        RemoteBackend("http://x", dim=0)
+    with pytest.raises(ValueError, match="batch_size"):
+        RemoteBackend("http://x", batch_size=0)
+
+
+def test_local_backend_passes_truncate_dim_to_st(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When config pins ``dim``, the local encode call must forward
+    ``truncate_dim`` so Matryoshka models truncate before normalising."""
+    captured_kwargs: dict[str, object] = {}
+
+    class _FakeST:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            self.max_seq_length = 8192
+
+        def encode(self, texts: object, **kwargs: object) -> object:
+            captured_kwargs.update(kwargs)
+            assert isinstance(texts, list)
+            return [[0.0] * 4 for _ in texts]
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+
+    backend = LocalBackend(model="m", dim=4, batch_size=8)
+    asyncio.run(backend.embed_batch(["x"]))
+    assert captured_kwargs["truncate_dim"] == 4
+    assert captured_kwargs["batch_size"] == 8
+
+
+def test_local_backend_uses_tensor_path_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the model lives on CUDA, encode() must request a tensor
+    (preserves bf16 in GPU memory) instead of a numpy array."""
+    captured_kwargs: dict[str, object] = {}
+
+    class _FakeDevice:
+        type = "cuda"
+
+    class _FakeTensor:
+        def __init__(self, rows: list[list[float]]) -> None:
+            self._rows = rows
+
+        def float(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def cpu(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def tolist(self):  # type: ignore[no-untyped-def]
+            return self._rows
+
+    class _FakeST:
+        device = _FakeDevice()
+        max_seq_length = 8192
+
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            pass
+
+        def encode(self, texts: object, **kwargs: object) -> object:
+            captured_kwargs.update(kwargs)
+            assert isinstance(texts, list)
+            return _FakeTensor([[0.5, 0.25] for _ in texts])
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+
+    vecs = asyncio.run(LocalBackend(model="m").embed_batch(["x"]))
+    assert vecs == [[0.5, 0.25]]
+    assert captured_kwargs.get("convert_to_tensor") is True
+    assert "convert_to_numpy" not in captured_kwargs
+
+
+def test_local_backend_omits_truncate_dim_when_unpinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    class _FakeST:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            self.max_seq_length = 8192
+
+        def encode(self, texts: object, **kwargs: object) -> object:
+            captured_kwargs.update(kwargs)
+            return [[0.0]]
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+
+    asyncio.run(LocalBackend(model="m").embed_batch(["x"]))
+    assert "truncate_dim" not in captured_kwargs
+
+
+def test_local_backend_sets_max_seq_length_on_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeST:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            self.max_seq_length = 8192
+
+        def encode(self, *a: object, **kw: object) -> object:
+            return [[0.0]]
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+
+    backend = LocalBackend(model="m", max_seq_length=512)
+    backend.warmup()
+    assert backend._model.max_seq_length == 512
+
+
+def test_local_backend_rejects_nonpositive_options() -> None:
+    with pytest.raises(ValueError, match="dim"):
+        LocalBackend(dim=0)
+    with pytest.raises(ValueError, match="batch_size"):
+        LocalBackend(batch_size=0)
+    with pytest.raises(ValueError, match="max_seq_length"):
+        LocalBackend(max_seq_length=0)
+
+
+async def test_local_backend_dim_returns_configured_value_without_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pinning ``dim`` in config skips both the model getter and the
+    encode probe — dim() returns the configured value immediately."""
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+    backend = LocalBackend(model="m", dim=512)
+    assert await backend.dim() == 512
+    assert not backend.is_ready(), "configured dim must not force a warmup"
+
+
 # --------------------------------------------------------------- factory wiring
 def test_build_embedder_picks_local_when_no_url() -> None:
     embedder = build_embedder(EmbeddingConfig())

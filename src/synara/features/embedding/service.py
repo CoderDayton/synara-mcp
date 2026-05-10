@@ -1,25 +1,22 @@
 """Embedding service.
 
-Internal capability — not an MCP tool surface. Other features (hippocampus
-today, future memory/reasoning modules tomorrow) consume an ``Embedder``
-to vectorise text without caring whether vectors come from a locally
-loaded SentenceTransformer or a remote OpenAI-compatible HTTP endpoint.
+Internal capability, not an MCP tool surface. Other features (hippocampus
+today, future memory/reasoning modules later) use an ``Embedder`` to
+turn text into vectors without caring where the vectors came from.
 
-Two backends, one interface:
+``LocalBackend`` loads a SentenceTransformer directly. We don't go
+through the bundled simplevecdb loader because it disables
+``trust_remote_code``, which Jina v5 needs. Encode is sync, so we run
+it on a worker thread to keep the event loop free. Default model is
+``jinaai/jina-embeddings-v5-text-nano``, loaded as bf16 on CUDA with
+SDPA.
 
-* ``LocalBackend``  - loads a SentenceTransformer directly (the bundled
-  simplevecdb loader force-disables ``trust_remote_code``, which Jina v5
-  requires). torch encode is sync; we offload to a thread so the event
-  loop stays free. Default model: ``jinaai/jina-embeddings-v5-text-nano``,
-  loaded with ``dtype=bfloat16`` and (when ``flash_attn`` is importable)
-  ``_attn_implementation="flash_attention_2"`` on CUDA.
-* ``RemoteBackend`` - POSTs to ``{base_url}/v1/embeddings`` (OpenAI shape).
-  Covers ollama, the bundled ``simplevecdb-server``, OpenAI proper, and
-  any other compatible provider with one configuration switch.
+``RemoteBackend`` POSTs to ``{base_url}/v1/embeddings``. That shape
+covers ollama, the bundled ``simplevecdb-server``, OpenAI, and most
+other providers without a per-provider adapter class.
 
-The selector is environment-driven: setting ``SYNARA_EMBEDDING_URL``
-flips the factory to remote; otherwise local. No second adapter class
-per provider.
+The factory picks based on ``SYNARA_EMBEDDING_URL``: set it for
+remote, leave it unset for local.
 """
 
 from __future__ import annotations
@@ -35,7 +32,7 @@ _HTTP_ERROR_FLOOR = 400
 
 
 class EmbeddingError(RuntimeError):
-    """Raised when an embedding backend fails to return a usable vector."""
+    """The backend gave us back something we can't use."""
 
 
 class _Backend(Protocol):
@@ -54,7 +51,7 @@ _DIM_PROBE_TEXT = "."
 
 
 async def _probe_dim(backend: _Backend) -> int:
-    """One-shot probe: run a tiny encode to learn the output dimension."""
+    """Encode a single character to find out how wide the output vectors are."""
     out = await backend.embed_batch([_DIM_PROBE_TEXT])
     if not out or not out[0]:
         raise EmbeddingError("dimension probe returned an empty embedding")
@@ -63,32 +60,42 @@ async def _probe_dim(backend: _Backend) -> int:
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingConfig:
-    """Backend config: local model repo-id or remote URL.
+    """Backend config. Either a local model repo-id or a remote URL.
 
-    url: switches to remote backend if set.
-    model: repo-id (local) or alias (remote).
-    api_key: sent as Bearer token to remote endpoint.
-    timeout_seconds: HTTP call timeout.
+    url: if set, we use the remote backend.
+    model: repo-id when local, server alias when remote.
+    api_key: sent as a Bearer token on remote requests.
+    timeout_seconds: HTTP timeout.
+    dim: pin the output width. Locally this becomes ``truncate_dim`` on
+        the SentenceTransformer call, which works for Matryoshka models
+        (Jina v3/v5, BGE-M3, Nomic). Remotely it goes in the request as
+        ``dimensions`` (OpenAI text-embedding-3 and friends). Leave it
+        as ``None`` to keep the model's native dimension.
+    batch_size: encode chunk size locally, per-request size remotely.
+    max_seq_length: token cap for the local model. Lower it to trade
+        context for throughput. The remote backend ignores this; the
+        server decides truncation.
     """
 
     model: str | None = None
     url: str | None = None
     api_key: str | None = None
     timeout_seconds: float = 30.0
+    dim: int | None = None
+    batch_size: int = 64
+    max_seq_length: int | None = None
 
 
 class LocalBackend:
-    """Run SentenceTransformer embeddings on a worker thread.
+    """SentenceTransformer encode, run on a worker thread.
 
-    Loaded directly (not via simplevecdb) because Jina v5 needs
-    trust_remote_code=True, which the bundled loader disables.
-
-    On CUDA: dtype=bfloat16 + flash_attention_2 if flash_attn available.
-    Falls back to default attention silently if not present.
+    We load the model ourselves rather than through simplevecdb because
+    Jina v5 requires ``trust_remote_code=True`` and the bundled loader
+    forces it off. On CUDA we use bf16 with SDPA.
     """
 
     DEFAULT_MODEL = "jinaai/jina-embeddings-v5-text-nano"
-    _ENCODE_BATCH_SIZE = 64
+    DEFAULT_BATCH_SIZE = 64
 
     # Process-level cache keyed by model id. Re-instantiating LocalBackend
     # for an already-loaded model reuses the existing SentenceTransformer.
@@ -106,21 +113,38 @@ class LocalBackend:
     #    entirely.
     _CACHE: ClassVar[dict[str, Any]] = {}
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        dim: int | None = None,
+        batch_size: int | None = None,
+        max_seq_length: int | None = None,
+    ) -> None:
+        if dim is not None and dim <= 0:
+            raise ValueError("dim must be positive when set")
+        if batch_size is not None and batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if max_seq_length is not None and max_seq_length <= 0:
+            raise ValueError("max_seq_length must be positive")
         self._model_id = model or self.DEFAULT_MODEL
         # ``Any``-typed because sentence_transformers ships no public stubs;
         # the runtime contract is just ``model.encode(...)``.
         self._model: Any = None
-        self._dim: int | None = None
+        self._configured_dim = dim
+        self._dim: int | None = dim
+        self._batch_size = batch_size or self.DEFAULT_BATCH_SIZE
+        self._max_seq_length = max_seq_length
 
     def is_ready(self) -> bool:
         return self._model is not None
 
     async def dim(self) -> int:
-        """Output dimension; cached after first probe.
+        """Output dimension. Cached once we've found it.
 
-        SentenceTransformer exposes ``get_sentence_embedding_dimension``;
-        we read it directly when available to avoid a wasted encode.
+        We try the configured value first, then the model's
+        ``get_sentence_embedding_dimension`` if it has one, then fall
+        back to a one-shot encode probe.
         """
         if self._dim is not None:
             return self._dim
@@ -136,7 +160,7 @@ class LocalBackend:
         return self._dim
 
     def warmup(self) -> None:
-        """Load the SentenceTransformer; downloads on first run."""
+        """Load the SentenceTransformer. The first call downloads weights."""
         if self._model is not None:
             return
         cached = self._CACHE.get(self._model_id)
@@ -162,38 +186,66 @@ class LocalBackend:
             "model_kwargs": model_kwargs,
         }
         if device.type == "cuda":
-            try:
-                import flash_attn  # noqa: F401, PLC0415
-            except ImportError:
-                pass
-            else:
-                load_kwargs["config_kwargs"] = {"_attn_implementation": "flash_attention_2"}
+            load_kwargs["config_kwargs"] = {"_attn_implementation": "sdpa"}
         self._model = SentenceTransformer(self._model_id, **load_kwargs)
+        if self._max_seq_length is not None:
+            # Direct attribute write is the public knob (see
+            # SentenceTransformer.max_seq_length).
+            self._model.max_seq_length = self._max_seq_length
         self._CACHE[self._model_id] = self._model
 
     async def aclose(self) -> None:
-        """Model stays loaded for the process lifecycle."""
+        """Nothing to release; the model stays loaded for the process."""
 
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
         if self._model is None:
             self.warmup()
-        return await asyncio.to_thread(self._encode, list(texts))
+        return await asyncio.to_thread(self._encode_to_lists, list(texts))
 
-    def _encode(self, texts: list[str]) -> list[list[float]]:
-        arr = self._model.encode(
-            texts,
-            normalize_embeddings=True,
-            batch_size=self._ENCODE_BATCH_SIZE,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-        )
-        return [[float(x) for x in row] for row in arr]
+    def _is_on_cuda(self) -> bool:
+        device = getattr(self._model, "device", None)
+        return getattr(device, "type", None) == "cuda"
+
+    def _encode(self, texts: list[str]) -> Any:
+        """Encode and return the raw model output.
+
+        On CUDA you get a ``torch.Tensor`` (bf16 preserved). On CPU you
+        get a numpy array. ``_encode_to_lists`` does the materialisation
+        to Python lists; callers that want to stay on the GPU (e.g. to
+        chain another bf16 op) can call this method directly.
+        """
+        encode_kwargs: dict[str, Any] = {
+            "normalize_embeddings": True,
+            "batch_size": self._batch_size,
+            "show_progress_bar": False,
+        }
+        # Matryoshka truncation: only pass when the user pinned a dim,
+        # so models that don't support it keep their native shape.
+        if self._configured_dim is not None:
+            encode_kwargs["truncate_dim"] = self._configured_dim
+        if self._is_on_cuda():
+            encode_kwargs["convert_to_tensor"] = True
+        else:
+            encode_kwargs["convert_to_numpy"] = True
+        return self._model.encode(texts, **encode_kwargs)
+
+    def _encode_to_lists(self, texts: list[str]) -> list[list[float]]:
+        out = self._encode(texts)
+        # Tensor (CUDA bf16): widen to float32 on CPU before materialising;
+        # Python lists don't support bf16, so f32 is the standard intermediate.
+        # .tolist() runs in C and yields native Python floats — far faster than
+        # a per-element float() comprehension.
+        if hasattr(out, "float") and hasattr(out, "cpu"):
+            out = out.float().cpu()
+        return out.tolist() if hasattr(out, "tolist") else [list(row) for row in out]
 
 
 class RemoteBackend:
-    """OpenAI-compatible /v1/embeddings client."""
+    """Client for any server speaking the OpenAI ``/v1/embeddings`` shape."""
+
+    DEFAULT_BATCH_SIZE = 64
 
     def __init__(
         self,
@@ -203,7 +255,13 @@ class RemoteBackend:
         api_key: str | None = None,
         timeout_seconds: float = 30.0,
         client: httpx.AsyncClient | None = None,
+        dim: int | None = None,
+        batch_size: int | None = None,
     ) -> None:
+        if dim is not None and dim <= 0:
+            raise ValueError("dim must be positive when set")
+        if batch_size is not None and batch_size <= 0:
+            raise ValueError("batch_size must be positive")
         self._endpoint = url.rstrip("/") + "/v1/embeddings"
         self._model = model or "default"
         self._headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -215,16 +273,18 @@ class RemoteBackend:
         # across the many encode/recall calls a memory feature triggers.
         self._client = client
         self._owned_client = client is None
-        self._dim: int | None = None
+        self._configured_dim = dim
+        self._dim: int | None = dim
+        self._batch_size = batch_size or self.DEFAULT_BATCH_SIZE
 
     def is_ready(self) -> bool:
         return True
 
     def warmup(self) -> None:
-        """Remote service owns model lifecycle."""
+        """Nothing to do; the remote server handles its own model loading."""
 
     async def dim(self) -> int:
-        """Output dimension; cached after the first probe call."""
+        """Output dimension. Cached after the first probe."""
         if self._dim is None:
             self._dim = await _probe_dim(self)
         return self._dim
@@ -235,7 +295,10 @@ class RemoteBackend:
         return self._client
 
     async def aclose(self) -> None:
-        """Close owned httpx client (caller-injected clients are caller-owned)."""
+        """Close the httpx client if we built it.
+
+        If the caller injected one, it stays theirs to close.
+        """
         if self._owned_client and self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -256,39 +319,49 @@ class RemoteBackend:
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
-        body = await self._post({"input": list(texts), "model": self._model})
-        data = body.get("data")
-        if not isinstance(data, list) or len(data) != len(texts):
-            raise EmbeddingError(f"expected {len(texts)} embeddings, got {data!r:.80}")
+        text_list = list(texts)
         out: list[list[float]] = []
-        # OpenAI guarantees an ``index`` field — sort to be safe.
-        for item in sorted(data, key=lambda r: int(r.get("index", 0))):
-            vector = item.get("embedding")
-            if not isinstance(vector, list):
-                raise EmbeddingError("embedding entry missing 'embedding' list")
-            out.append([float(x) for x in vector])
+        # Chunk requests so we don't hand the server arbitrarily large
+        # payloads when callers pass huge batches.
+        for start in range(0, len(text_list), self._batch_size):
+            chunk = text_list[start : start + self._batch_size]
+            payload: dict[str, object] = {"input": chunk, "model": self._model}
+            if self._configured_dim is not None:
+                # OpenAI text-embedding-3-* and compatible providers
+                # accept ``dimensions`` to truncate the output vector.
+                payload["dimensions"] = self._configured_dim
+            body = await self._post(payload)
+            data = body.get("data")
+            if not isinstance(data, list) or len(data) != len(chunk):
+                raise EmbeddingError(f"expected {len(chunk)} embeddings, got {data!r:.80}")
+            # OpenAI guarantees an ``index`` field — sort to be safe.
+            for item in sorted(data, key=lambda r: int(r.get("index", 0))):
+                vector = item.get("embedding")
+                if not isinstance(vector, list):
+                    raise EmbeddingError("embedding entry missing 'embedding' list")
+                out.append([float(x) for x in vector])
         return out
 
 
 class Embedder:
-    """Async embedder wrapper with batch methods."""
+    """Async wrapper around a backend, with single and batch methods."""
 
     def __init__(self, backend: _Backend) -> None:
         self._backend = backend
 
     def warmup(self) -> None:
-        """Eagerly load the backend (e.g., download local model)."""
+        """Force the backend to load now (for the local case, this downloads the model)."""
         self._backend.warmup()
 
     def is_ready(self) -> bool:
-        """True if backend is ready to encode."""
+        """True once the backend can encode without further loading."""
         return self._backend.is_ready()
 
     async def warmup_async(self, ctx: Any | None = None) -> None:
-        """Load the backend (first call may download multi-GB weights).
+        """Load the backend. The first call may pull multi-GB weights.
 
-        Idempotent. If ctx is provided, report progress via ctx.info
-        and ctx.report_progress.
+        Safe to call repeatedly. If you pass a ``ctx``, we'll report
+        progress through ``ctx.info`` and ``ctx.report_progress``.
         """
         if self._backend.is_ready():
             return
@@ -301,7 +374,7 @@ class Embedder:
             await ctx.info("Embedding model ready")
 
     async def aclose(self) -> None:
-        """Release backend resources (e.g. an httpx connection pool)."""
+        """Release whatever the backend is holding (httpx pool, etc.)."""
         await self._backend.aclose()
 
     async def embed(self, text: str) -> list[float]:
@@ -314,16 +387,16 @@ class Embedder:
         return await self._backend.embed_batch(texts)
 
     async def dim(self) -> int:
-        """Output vector dimension. Detected on first call and cached.
+        """Output vector width. We detect it on the first call and cache it.
 
-        Lets downstream features size buffers / build projectors without
-        the user having to declare a dimension up-front.
+        That way callers can size their own buffers or projectors
+        without anyone having to declare a dimension up-front.
         """
         return await self._backend.dim()
 
 
 def build_embedder(config: EmbeddingConfig) -> Embedder:
-    """Pick a backend from config: remote if URL set, else local."""
+    """Pick a backend from the config. URL set means remote; otherwise local."""
     backend: _Backend
     if config.url:
         backend = RemoteBackend(
@@ -331,7 +404,14 @@ def build_embedder(config: EmbeddingConfig) -> Embedder:
             model=config.model,
             api_key=config.api_key,
             timeout_seconds=config.timeout_seconds,
+            dim=config.dim,
+            batch_size=config.batch_size,
         )
     else:
-        backend = LocalBackend(model=config.model)
+        backend = LocalBackend(
+            model=config.model,
+            dim=config.dim,
+            batch_size=config.batch_size,
+            max_seq_length=config.max_seq_length,
+        )
     return Embedder(backend)
