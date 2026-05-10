@@ -1,0 +1,56 @@
+[project]
+name = "synara-mcp"
+version = "0.1.0"
+description = "MCP server exposing simplevecdb vector storage and semantic search."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "bandit>=1.9.4",
+    "fastmcp>=3.2.4",
+    "mypy>=2.0.0",
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+    "simplevecdb[server]>=2.6.0",
+]
+
+[project.scripts]
+synara-mcp = "synara.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/synara"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "PT"]
+ignore = ["PLR0913"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src", "tests"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-ra -q --strict-markers --strict-config"
+pythonpath = ["src"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint · type · security · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: ruff (lint)
+        run: uv run --frozen ruff check src tests
+
+      - name: ruff (format check)
+        run: uv run --frozen ruff format --check src tests
+
+      - name: mypy
+        run: uv run --frozen mypy
+
+      - name: bandit
+        run: uv run --frozen bandit -q -r src
+
+      - name: pytest
+        run: uv run --frozen pytest
