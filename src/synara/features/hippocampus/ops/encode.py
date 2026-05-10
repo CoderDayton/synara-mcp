@@ -119,7 +119,11 @@ async def _maybe_surprise_boost(
     nearest = await service.episodic.similarity_search(
         new_emb, k=1, filter={"session_id": session_id}
     )
-    d_star = 1.0 if not nearest else float(nearest[0][1])
+    # Surprise = prediction error vs an existing memory; with nothing
+    # to predict against, the encode is novel-by-default, not surprising.
+    if not nearest:
+        return salience
+    d_star = float(nearest[0][1])
     if d_star >= cfg.surprise_distance_floor:
         return min(1.0, salience + cfg.surprise_salience_boost)
     return salience

@@ -150,25 +150,30 @@ class HippocampusConfig:
 
     # Spreading activation on recall: BFS this many hops on the
     # plasticity-weight graph from the cosine anchor, attenuating by
-    # ``decay`` per hop. 0 = disabled (safe default; ranking unchanged).
-    spreading_activation_hops: int = 0
+    # ``decay`` per hop. 1 hop = co-activated episodes share a small
+    # boost; 0 disables. Default 1 (cheap; only fires once durable
+    # edges exist via L-LTP, otherwise the spread is empty).
+    spreading_activation_hops: int = 1
     spreading_activation_decay: float = 0.5
     # Mixing weight of the spreading-activation contribution into the
     # final rank key (added on top of the SR omega-weighted boost).
     spreading_activation_weight: float = 0.2
 
     # Schema-eligibility gates for systems consolidation. An episode is
-    # absorbed into a schema only once both are met. 0 disables the gate
-    # (default - existing tests assume immediate consolidation).
-    consolidate_min_age_seconds: float = 0.0
-    consolidate_min_retrievals: int = 0
+    # absorbed into a schema only once both are met. ~60 s real-time
+    # combined with the default 24x compression maps to ~1 compressed
+    # day, mirroring the day-to-week ramp of HC->cortex handover.
+    # Tests that need immediate consolidation pass ``=0`` overrides.
+    consolidate_min_age_seconds: float = 60.0
+    consolidate_min_retrievals: int = 1
 
     # Surprise-modulated encoding: when a new episode's nearest-neighbour
     # cosine distance exceeds the floor, salience is boosted by
-    # ``surprise_salience_boost`` (capped at 1.0). Defaults to 0 (off);
-    # set boost > 0 to mirror prediction-error-driven plasticity.
+    # ``surprise_salience_boost`` (capped at 1.0). Boost only fires when
+    # there IS a neighbour - an empty namespace has nothing to predict
+    # against, so by definition cannot surprise.
     surprise_distance_floor: float = 0.6
-    surprise_salience_boost: float = 0.0
+    surprise_salience_boost: float = 0.1
 
     # Reactor policy thresholds (only consulted when
     # ``self_learning_enabled``). Defaults are conservative enough that

@@ -378,6 +378,9 @@ async def test_surprise_salience_boosts_when_enabled() -> None:
     try:
         cfg = HippocampusConfig(surprise_salience_boost=0.3, surprise_distance_floor=0.0)
         svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        # Seed a baseline so the next encode has an existing neighbour to
+        # be surprised against (empty namespace = no prediction error).
+        await svc.encode_episode("baseline", "s1", salience=0.5)
         r = await svc.encode_episode("anything", "s1", salience=0.4)
         rows = await svc.episodic.get_documents({"id": r["id"]}, limit=1)
         _, _, md = rows[0]
@@ -436,5 +439,149 @@ async def test_reconsolidation_pulls_vector_toward_cue() -> None:
         )
         # Drift moved the stored vector toward the cue: distance shrinks.
         assert d_after < d_before
+    finally:
+        await db.close()
+
+
+# ----- Default-on knob coverage ----------------------------------------
+
+
+async def test_surprise_no_boost_when_namespace_is_empty() -> None:
+    """First episode in an empty namespace has no neighbour to predict
+    against, so default surprise boost must NOT fire."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        # Default config: surprise_salience_boost=0.1, floor=0.6.
+        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        r = await svc.encode_episode("first ever", "s1", salience=0.5)
+        rows = await svc.episodic.get_documents({"id": r["id"]}, limit=1)
+        _, _, md = rows[0]
+        assert float(md["salience"]) == pytest.approx(0.5)
+    finally:
+        await db.close()
+
+
+async def test_surprise_default_boosts_distant_second_encode() -> None:
+    """With defaults on, a second far-away encode in a populated session
+    crosses the floor and gets the salience bump."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        # hash_embed gives near-orthogonal vectors for distinct text, so
+        # cosine distance between unrelated entries is ~1.0 >> floor 0.6.
+        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        await svc.encode_episode("baseline note", "s1", salience=0.5)
+        r = await svc.encode_episode("totally different", "s1", salience=0.5)
+        rows = await svc.episodic.get_documents({"id": r["id"]}, limit=1)
+        _, _, md = rows[0]
+        # Default boost is 0.1: 0.5 -> 0.6.
+        assert float(md["salience"]) == pytest.approx(0.6)
+    finally:
+        await db.close()
+
+
+async def test_consolidate_min_age_gate_skips_young_episodes() -> None:
+    """Default min_age (60s) hides freshly-encoded episodes from
+    consolidation; passing the override allows immediate consolidation."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        # Default: consolidate_min_age_seconds=60.0.
+        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        for i in range(4):
+            await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5)
+            await svc.recall(f"alpha-{i}", session_id="s1", k=1)
+        # Young episodes -> nothing eligible.
+        formed = await svc.consolidate(session_id="s1", min_cluster_size=2)
+        assert formed == []
+
+        # Same data, gate disabled -> consolidation runs.
+        cfg2 = HippocampusConfig(
+            consolidate_min_age_seconds=0.0,
+            consolidate_min_retrievals=0,
+        )
+        # Reuse the same DB; svc2 sees the same episodes.
+        svc2 = HippocampusService(db, config=cfg2, embed_fn=hash_embed)
+        formed2 = await svc2.consolidate(session_id="s1", min_cluster_size=2)
+        assert formed2, "expected schemas once age gate is removed"
+    finally:
+        await db.close()
+
+
+async def test_consolidate_min_retrievals_gate_skips_unaccessed() -> None:
+    """An episode that has never been recalled is below the default
+    retrieval-count gate (1) and is excluded from consolidation."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        # Disable age gate to isolate the retrievals gate.
+        cfg = HippocampusConfig(
+            consolidate_min_age_seconds=0.0,
+            consolidate_min_retrievals=1,
+        )
+        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        for i in range(4):
+            await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5)
+        # Never recalled -> retrieval_count == 0 < 1 -> filtered out.
+        formed_before = await svc.consolidate(session_id="s1", min_cluster_size=2)
+        assert formed_before == []
+
+        # Bump retrieval_count on each by recalling its content.
+        for i in range(4):
+            await svc.recall(f"alpha-{i}", session_id="s1", k=1, mode="episodic")
+        formed_after = await svc.consolidate(session_id="s1", min_cluster_size=2)
+        assert formed_after, "expected schemas once retrievals >= gate"
+    finally:
+        await db.close()
+
+
+async def test_spreading_activation_boosts_neighbour_with_durable_edge() -> None:
+    """With spreading_activation_hops=1 (default), a recall whose anchor
+    has a durable plasticity edge to a candidate must rank that candidate
+    above an equally-distant distractor."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        # Custom embedder: query and anchor collinear; neighbour and
+        # distractor share equal (large) cosine distance to the query.
+        vectors = {
+            "anchor": [1.0, 0.0, 0.0, 0.0],
+            "neighbour": [0.0, 1.0, 0.0, 0.0],
+            "distractor": [0.0, 0.0, 1.0, 0.0],
+            "cue": [1.0, 0.0, 0.0, 0.0],
+        }
+
+        def stub_embed(text: str) -> list[float]:
+            return list(vectors[text])
+
+        cfg = HippocampusConfig(
+            # Defaults already enable spreading; tighten weight so its
+            # contribution dominates the rank-key tie-break.
+            spreading_activation_hops=1,
+            spreading_activation_decay=0.9,
+            spreading_activation_weight=1.0,
+            # Disable consolidation gates so the test stays focused.
+            consolidate_min_age_seconds=0.0,
+            consolidate_min_retrievals=0,
+            # Avoid surprise side-effects on stored salience.
+            surprise_salience_boost=0.0,
+            # Single-hop e->w fold: any score reinforcement beyond the
+            # threshold flips bonus into a durable weight.
+            l_ltp_threshold_hits=1,
+            sr_enabled=False,
+        )
+        svc = HippocampusService(db, config=cfg, embed_fn=stub_embed)
+        r_a = await svc.encode_episode("anchor", "s1")
+        r_n = await svc.encode_episode("neighbour", "s1")
+        r_d = await svc.encode_episode("distractor", "s1")
+
+        # Build a durable plasticity edge anchor -> neighbour.
+        await svc._plasticity.reinforce(r_a["id"], r_n["id"], score=1.0, now=0.0)
+        await svc._plasticity.reinforce(r_a["id"], r_n["id"], score=1.0, now=1.0)
+        state = await svc._plasticity.edge_state(r_a["id"], r_n["id"])
+        assert state is not None
+        assert state["weight"] > 0.0
+
+        hits = await svc.recall("cue", session_id="s1", k=3, mode="episodic")
+        ids_in_order = [int(h["id"]) for h in hits]
+        # Anchor wins on raw cosine; the contested rank is between
+        # neighbour (with spread boost) and distractor (without).
+        assert ids_in_order.index(r_n["id"]) < ids_in_order.index(r_d["id"])
     finally:
         await db.close()

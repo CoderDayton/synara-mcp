@@ -114,21 +114,30 @@ async def test_recall_unknown_mode_raises(service: HippocampusService) -> None:
         await service.recall("x", mode="bogus")
 
 
-async def test_consolidate_forms_schemas_and_links_episodes(
-    service: HippocampusService,
-) -> None:
-    for i in range(4):
-        await service.encode_episode(f"item-A-{i}", "s1", salience=0.5, tags=["a"])
-    for i in range(4):
-        await service.encode_episode(f"item-B-{i}", "s1", salience=0.5, tags=["b"])
-    formed = await service.consolidate(session_id="s1", n_clusters=2, min_cluster_size=2)
-    assert formed, "expected at least one schema"
-    stats = await service.stats()
-    assert stats["semantic_count"] >= 1
-    # All clustered episodes should now point at a positive schema id.
-    rows = await service.episodic.get_documents({"session_id": "s1"})
-    consolidated = [md["consolidated_into"] for _, _, md in rows if md["consolidated_into"]]
-    assert len(consolidated) >= 4
+async def test_consolidate_forms_schemas_and_links_episodes() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        # Schema-eligibility gates default to ON; this test predates them
+        # and assumes immediate consolidation, so disable both gates here.
+        cfg = HippocampusConfig(
+            consolidate_min_age_seconds=0.0,
+            consolidate_min_retrievals=0,
+        )
+        service = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        for i in range(4):
+            await service.encode_episode(f"item-A-{i}", "s1", salience=0.5, tags=["a"])
+        for i in range(4):
+            await service.encode_episode(f"item-B-{i}", "s1", salience=0.5, tags=["b"])
+        formed = await service.consolidate(session_id="s1", n_clusters=2, min_cluster_size=2)
+        assert formed, "expected at least one schema"
+        stats = await service.stats()
+        assert stats["semantic_count"] >= 1
+        # All clustered episodes should now point at a positive schema id.
+        rows = await service.episodic.get_documents({"session_id": "s1"})
+        consolidated = [md["consolidated_into"] for _, _, md in rows if md["consolidated_into"]]
+        assert len(consolidated) >= 4
+    finally:
+        await db.close()
 
 
 async def test_consolidate_returns_empty_when_too_few_candidates(
@@ -223,7 +232,13 @@ async def test_consolidate_absorbs_into_existing_schema() -> None:
     the existing schema instead of forming a parallel one."""
     db = AsyncVectorDB(":memory:")
     try:
-        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=_bucket_embed)
+        # Disable age/retrieval gates so the absorb path triggers on
+        # freshly-encoded, never-recalled episodes (legacy test contract).
+        cfg = HippocampusConfig(
+            consolidate_min_age_seconds=0.0,
+            consolidate_min_retrievals=0,
+        )
+        svc = HippocampusService(db, config=cfg, embed_fn=_bucket_embed)
         for i in range(3):
             await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5, tags=["a"])
         formed_first = await svc.consolidate(session_id="s1", n_clusters=1, min_cluster_size=2)
