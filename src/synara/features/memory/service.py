@@ -152,6 +152,12 @@ class MemoryService:
             if self.config.sr_enabled
             else None
         )
+        # SR persists its transition tally under ``kind="sr"`` on the
+        # episodic collection alongside plasticity's ``kind="plasticity"``
+        # rows. Load happens lazily on first DB-touching op (see
+        # ``_ensure_sr_loaded``).
+        if self._sr is not None:
+            self._sr.attach(self.episodic)
         # Plasticity graph + interaction event bus. Both are persistent
         # (edges live in coll.edges, event log lives in coll.events) so
         # the brain survives process restarts. The reactor only
@@ -348,6 +354,15 @@ class MemoryService:
     # see one cohesive service surface. The sub-modules import only the
     # already-bound symbols above (UNCONSOLIDATED / now_seconds), avoiding
     # an import cycle.
+    async def _ensure_sr_loaded(self) -> None:
+        """Rehydrate the SR's transition tally from coll.edges (idempotent).
+
+        Called at the top of each public async entry point so the durable
+        SR state is available before any observe/boost/omega read.
+        """
+        if self._sr is not None:
+            await self._sr.load()
+
     async def encode_episode(
         self,
         content: str,
@@ -356,6 +371,7 @@ class MemoryService:
         tags: Sequence[str] | None = None,
         salience: float | None = None,
     ) -> dict[str, Any]:
+        await self._ensure_sr_loaded()
         result = await _encode_mod.run(
             self,
             content=content,
@@ -378,6 +394,7 @@ class MemoryService:
         k: int = 8,
         mode: str = "auto",
     ) -> list[dict[str, Any]]:
+        await self._ensure_sr_loaded()
         with _start_request("recall", enabled=self.config.tracing_enabled) as _trace_ctx:
             with _trace_ctx.span(
                 "recall.run",

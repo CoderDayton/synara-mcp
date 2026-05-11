@@ -102,6 +102,7 @@ async def run(
         anchor_sid, anchor_id = observed_episodic[0]
         others = [j for _, j in observed_episodic[1:]]
         service._sr.observe_recall_set(anchor_sid, anchor_id, others, t)
+        await service._sr.flush()
         # Plasticity layer: reinforce anchor->each-other edge with the
         # cosine-similarity score (1 - distance, clipped). Co-recall is
         # the brain's bread-and-butter Hebbian event.

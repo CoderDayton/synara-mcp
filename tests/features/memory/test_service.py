@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -796,6 +797,38 @@ def test_successor_recall_set_chains_across_recalls() -> None:
     # Second recall adds 1 within-recall edge (3 -> 4) + 1 cross-recall
     # edge (1 -> 3) since prior anchor 1 was still in the window.
     assert sr.total_edges == edges_after_first + 2.0
+
+
+async def test_sr_transitions_persist_across_restart(tmp_path: Path) -> None:
+    """T-counts written by recall in process A must rehydrate in process B."""
+    db_path = str(tmp_path / "sr.db")
+
+    db1 = AsyncVectorDB(db_path)
+    try:
+        svc1 = MemoryService(db1, config=MemoryConfig(), embed_fn=hash_embed)
+        for tag in ("alpha", "beta", "gamma"):
+            await svc1.encode_episode(f"{tag} note", "s1", salience=0.5)
+        await svc1.recall("alpha note", session_id="s1", k=3, mode="episodic")
+        assert svc1._sr is not None
+        edges_first = svc1._sr.total_edges
+        assert edges_first >= 1.0
+    finally:
+        await db1.close()
+
+    db2 = AsyncVectorDB(db_path)
+    try:
+        svc2 = MemoryService(db2, config=MemoryConfig(), embed_fn=hash_embed)
+        assert svc2._sr is not None
+        # Force the lazy load that normally happens on first async op.
+        await svc2._ensure_sr_loaded()
+        assert svc2._sr.total_edges == edges_first
+        # M was rebuilt from T, so boost from any anchor with an outgoing
+        # edge is non-zero.
+        any_anchor = next(iter(svc2._sr._T_counts))
+        any_target = next(iter(svc2._sr._T_counts[any_anchor]))
+        assert svc2._sr.boost(any_anchor, [any_target])[any_target] > 0.0
+    finally:
+        await db2.close()
 
 
 async def test_recall_sr_disabled_when_config_off() -> None:
