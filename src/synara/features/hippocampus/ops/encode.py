@@ -19,11 +19,15 @@ from synara.core.errors import ValidationError
 
 from ..primitives.segment import split_into_segments
 from ..primitives.separate import jaccard as _dg_jaccard
-from ..primitives.signals import derive_salience, derive_signals
+from ..primitives.signals import (
+    SignalRegistry,
+    derive_salience,
+    derive_signals,
+)
 from ..service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..service import HippocampusService
+    from ..primitives.port import MemoryServicePort as HippocampusService
 
 
 async def run(
@@ -39,15 +43,10 @@ async def run(
     if not session_id:
         raise ValidationError("session_id must be non-empty")
     cfg = service.config
-    signals = derive_signals(content) if cfg.auto_signal_metadata else None
+    registry = cfg.signal_registry if isinstance(cfg.signal_registry, SignalRegistry) else None
+    signals = _derive_signals(content, registry) if cfg.auto_signal_metadata else None
     if salience is None:
-        if cfg.auto_salience:
-            salience = derive_salience(
-                signals if signals is not None else derive_signals(content),
-                base=cfg.auto_salience_base,
-            )
-        else:
-            salience = 0.5
+        salience = _derive_salience(content, registry, cfg, signals)
     if not 0.0 <= salience <= 1.0:
         raise ValidationError("salience must be in [0, 1]")
 
@@ -112,6 +111,26 @@ async def run(
         encoded_at=encoded_at,
         signals=signals,
     )
+
+
+def _derive_signals(content: str, registry: SignalRegistry | None) -> dict[str, Any]:
+    if registry is not None:
+        return registry.derive(content)
+    return dict(derive_signals(content))
+
+
+def _derive_salience(
+    content: str,
+    registry: SignalRegistry | None,
+    cfg: Any,
+    signals: dict[str, Any] | None,
+) -> float:
+    if not cfg.auto_salience:
+        return 0.5
+    base_signals = signals if signals is not None else _derive_signals(content, registry)
+    if registry is not None:
+        return registry.salience(base_signals)
+    return derive_salience(base_signals, base=cfg.auto_salience_base)
 
 
 async def _maybe_surprise_boost(

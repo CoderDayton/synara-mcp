@@ -43,9 +43,15 @@ from .ops.events import EventBus as _EventBus
 from .ops.events import InteractionEvent as _Event
 from .ops.events import TriggerPolicy as _Policy
 from .ops.events import now_seconds as _now_real
+from .primitives.memory_types import (
+    MemoryType,
+    MemoryTypeRegistry,
+    default_registry,
+)
 from .primitives.plasticity import PlasticityGraph as _Plasticity
 from .primitives.separate import DGProjector as _DGProjector
 from .primitives.successor import SuccessorRepresentation as _SR
+from .primitives.tracing import start_request as _start_request
 
 # Either a sync embedder ``f(text) -> vec`` or an async one
 # ``async f(text) -> vec``. The service normalises both to async at
@@ -105,13 +111,36 @@ class HippocampusService:
     ) -> None:
         self.config = config or HippocampusConfig()
         self.db = db
+        # Memory-type registry: explicit override beats the two
+        # ``*_collection`` config fields. Collections are materialised
+        # in registration order, so additional kinds just need a spec.
+        self.memory_types: MemoryTypeRegistry = (
+            self.config.memory_types
+            if self.config.memory_types is not None
+            else default_registry(
+                episodic_collection=self.config.episodic_collection,
+                semantic_collection=self.config.semantic_collection,
+            )
+        )
         # store_embeddings=True keeps vectors at hand for cluster()/rebuild
         # even after process restarts.
-        self.episodic = db.collection(self.config.episodic_collection, store_embeddings=True)
-        self.semantic = db.collection(self.config.semantic_collection, store_embeddings=True)
+        self._collections: dict[MemoryType, Any] = {
+            spec.type: db.collection(spec.collection, store_embeddings=True)
+            for spec in self.memory_types
+        }
+        # Convenience handles for the two legacy kinds — preserves the
+        # ``service.episodic`` / ``service.semantic`` attribute API.
+        self.episodic = self._collections[MemoryType.EPISODIC]
+        self.semantic = self._collections[MemoryType.SEMANTIC]
         self._embed = _normalise_embed_fn(embed_fn) if embed_fn is not None else None
         # Lazily constructed once we observe the embedding dimension.
         self._dg: _DGProjector | None = None
+        # First-class embedding dim: explicit override beats the lazy
+        # probe; ``None`` means "discover and cache on first vector op".
+        self._embedding_dimension: int | None = self.config.embedding_dimension
+        # Latest captured trace dump (only populated when
+        # ``config.tracing_enabled`` and after at least one traced op).
+        self.last_trace: dict[str, Any] | None = None
         self._sr: _SR | None = (
             _SR(
                 gamma=self.config.sr_gamma,
@@ -190,13 +219,58 @@ class HippocampusService:
         """Return embeddings for texts, or None to let simplevecdb embed them."""
         if self._embed is None:
             return None
-        return [list(await self._embed(t)) for t in texts]
+        vecs = [list(await self._embed(t)) for t in texts]
+        if vecs and self._embedding_dimension is None:
+            self._embedding_dimension = len(vecs[0])
+        elif (
+            vecs
+            and self._embedding_dimension is not None
+            and len(vecs[0]) != self._embedding_dimension
+        ):
+            raise ValidationError(
+                f"embedding dimension drift: configured {self._embedding_dimension}, "
+                f"observed {len(vecs[0])}",
+            )
+        return vecs
 
     async def query_arg(self, query: str) -> str | list[float]:
         """Shape query as text (auto-embed) or precomputed vector."""
         if self._embed is None:
             return query
-        return list(await self._embed(query))
+        vec = list(await self._embed(query))
+        if self._embedding_dimension is None:
+            self._embedding_dimension = len(vec)
+        return vec
+
+    async def embedding_dimension(self) -> int | None:
+        """Return the active embedding dimension, probing once if needed.
+
+        Returns ``None`` when no embedder is configured (simplevecdb's
+        bundled embedder handles vectorisation server-side and the
+        service has no view of the dim). Otherwise probes a tiny string
+        through the configured embed_fn on the first call and caches.
+        """
+        if self._embedding_dimension is not None:
+            return self._embedding_dimension
+        if self._embed is None:
+            return None
+        probe = list(await self._embed("\u200b"))
+        self._embedding_dimension = len(probe) if probe else None
+        return self._embedding_dimension
+
+    def collection_for(self, kind: MemoryType) -> Any:
+        """Return the simplevecdb collection backing ``kind``.
+
+        Ops that want to address a specific memory kind go through this
+        accessor so adding a new kind does not require an attribute on
+        the service.
+        """
+        try:
+            return self._collections[kind]
+        except KeyError as exc:
+            raise ValidationError(
+                f"memory type {kind.value!r} is not registered on this service",
+            ) from exc
 
     def _ensure_projector(self, dim: int) -> _DGProjector:
         """Build/rebuild DG projector if dimension changed."""
@@ -304,13 +378,20 @@ class HippocampusService:
         k: int = 8,
         mode: str = "auto",
     ) -> list[dict[str, Any]]:
-        result = await _recall_mod.run(
-            self,
-            query=query,
-            session_id=session_id,
-            k=k,
-            mode=mode,
-        )
+        with _start_request("recall", enabled=self.config.tracing_enabled) as _trace_ctx:
+            with _trace_ctx.span(
+                "recall.run",
+                payload={"session_id": session_id, "k": k, "mode": mode},
+            ):
+                result = await _recall_mod.run(
+                    self,
+                    query=query,
+                    session_id=session_id,
+                    k=k,
+                    mode=mode,
+                )
+            if self.config.tracing_enabled:
+                self.last_trace = _trace_ctx.as_dict()
         await self._emit(
             "recall",
             session_id=session_id,

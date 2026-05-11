@@ -38,7 +38,7 @@ from ..service import UNCONSOLIDATED, now_seconds
 from .forget import memory_strength
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..service import HippocampusService
+    from ..primitives.port import MemoryServicePort as HippocampusService
 
 
 def _replay_score(
@@ -79,6 +79,16 @@ def _replay_score(
     )
     error = float(d_near) / (1.0 + max(0.0, float(beta)) * max(0.0, float(margin)))
     return max(strength * error, 1e-9)
+
+
+def _schema_confidence(n_sources: int, full_at: int) -> float:
+    """Saturating confidence from a schema's source-episode count.
+
+    Single source of truth so the absorption and clustering paths cannot
+    drift apart: identical ``len(source_episode_ids)`` => identical
+    confidence, independent of the consolidation pass shape.
+    """
+    return min(1.0, max(0, n_sources) / max(1, full_at))
 
 
 async def _nearest_schema(
@@ -156,10 +166,9 @@ async def _absorb(
         new_sources = sorted(set(prior) | {int(e) for e in ep_ids})
         if len(new_sources) == len(prior):
             continue
-        # Confidence ~ fraction of total candidate evidence this schema
-        # has now absorbed; bounded in [0, 1].
-        denom = max(1, len(candidates) + len(prior))
-        new_conf = min(1.0, len(new_sources) / denom)
+        new_conf = _schema_confidence(
+            len(new_sources), service.config.consolidate_confidence_full_at
+        )
         await service.semantic.update_metadata(
             [
                 (
@@ -259,7 +268,6 @@ async def run(
     ep_lookup: dict[int, tuple[str, dict[str, Any]]] = {
         int(ep_id): (text, dict(md)) for ep_id, text, md in remaining
     }
-    total = max(1, len(remaining))
 
     for ep_ids in groups.values():
         members = [ep_lookup[eid] for eid in ep_ids if eid in ep_lookup]
@@ -271,7 +279,7 @@ async def run(
             {t for _, md in members for t in (md.get("tags") or []) if isinstance(t, str)}
         )
         summary = build_gist(head_text, [m[0] for m in members])
-        confidence = min(1.0, len(ep_ids) / total)
+        confidence = _schema_confidence(len(ep_ids), service.config.consolidate_confidence_full_at)
         sem_meta: dict[str, Any] = {
             "source_episode_ids": list(ep_ids),
             "tags": tag_union,

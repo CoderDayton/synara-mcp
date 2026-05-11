@@ -30,6 +30,15 @@ from simplevecdb import AsyncVectorDB
 
 from synara.features.embedding import Embedder
 
+from .primitives.memory_types import (
+    MemoryType,
+    MemoryTypeRegistry,
+    MemoryTypeSpec,
+    default_registry,
+)
+from .primitives.port import MemoryServicePort
+from .primitives.signals import SignalRegistry, SignalSpec
+from .primitives.tracing import RequestContext, start_request
 from .service import EmbedFn, HippocampusConfig, HippocampusService
 from .tools import register_tools
 
@@ -37,7 +46,16 @@ __all__ = [
     "EmbedFn",
     "HippocampusConfig",
     "HippocampusService",
+    "MemoryServicePort",
+    "MemoryType",
+    "MemoryTypeRegistry",
+    "MemoryTypeSpec",
+    "RequestContext",
+    "SignalRegistry",
+    "SignalSpec",
+    "default_registry",
     "register",
+    "start_request",
 ]
 
 

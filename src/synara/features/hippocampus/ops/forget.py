@@ -28,7 +28,7 @@ from synara.core.errors import ValidationError
 from ..service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..service import HippocampusService
+    from ..primitives.port import MemoryServicePort as HippocampusService
 
 
 def memory_strength(

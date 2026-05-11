@@ -7,7 +7,9 @@ config without pulling each other.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .primitives.memory_types import MemoryTypeRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +18,29 @@ class HippocampusConfig:
 
     episodic_collection: str = "hippocampus_episodic"
     semantic_collection: str = "hippocampus_semantic"
+    # First-class embedding dimensionality. ``None`` (default) lets the
+    # service probe the configured embedder once and cache the observed
+    # dim. Explicit values are validated against the probe at first use
+    # so a swapped-out embedder cannot silently mismatch downstream
+    # shape assumptions (DG projector, reconsolidation drift, ...).
+    embedding_dimension: int | None = None
+    # Optional override for the memory-type registry. ``None`` (default)
+    # builds the standard ``episodic``/``semantic`` registry from the
+    # two ``*_collection`` fields above. Custom registries enable
+    # additional kinds (procedural, conceptual, ...) without touching
+    # service.py / encode.py / consolidate.py.
+    memory_types: MemoryTypeRegistry | None = None
+    # Per-request trace collection. When True, recall (and the consolidate
+    # / forget / reflect paths that opt in) publish a RequestContext
+    # spans list on a ContextVar; recall surfaces it back as
+    # ``__trace__`` on the result list when callers need observability.
+    # Default OFF — measured overhead is two ContextVar reads per op.
+    tracing_enabled: bool = False
+    # Optional signal-registry override for the encode path. ``None``
+    # falls back to the hardcoded :data:`SALIENCE_WEIGHTS` table inside
+    # ``primitives/signals.py``. Pass a custom registry to add a signal
+    # without touching ``encode.py``.
+    signal_registry: object | None = field(default=None, repr=False)
     # Cosine distance below this threshold counts as a duplicate within a
     # session — encode_episode bumps the existing record instead of inserting.
     dedup_distance: float = 0.05
@@ -175,6 +200,16 @@ class HippocampusConfig:
     # carry the strongest schema-boundary learning signal. ``beta=0``
     # recovers the legacy ``strength * novelty`` ordering.
     schema_margin_beta: float = 2.0
+    # Saturation point for consolidation-derived schema confidence:
+    # ``confidence = min(1.0, n_source_episodes / consolidate_confidence_full_at)``.
+    # Both consolidation paths (absorption into an existing schema and
+    # fresh K-means clustering) derive confidence from the schema's
+    # ``source_episode_ids`` count, so identical evidence yields
+    # identical confidence regardless of which path produced the schema.
+    # User-asserted confidence (via ``store_semantic_memory``) is
+    # unaffected. Default 5: a 2-episode cluster lands at 0.4, a fully
+    # corroborated schema saturates at 5+ supporting episodes.
+    consolidate_confidence_full_at: int = 5
 
     # Surprise-modulated encoding: when a new episode's nearest-neighbour
     # cosine distance exceeds the floor, salience is boosted by

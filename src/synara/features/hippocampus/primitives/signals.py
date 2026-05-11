@@ -33,7 +33,8 @@ its behavior is fully covered by tests.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, TypedDict
 
 
@@ -280,4 +281,98 @@ def derive_salience(signals: Mapping[str, Any], *, base: float = 0.3) -> float:
     return s
 
 
-__all__ = ["SALIENCE_WEIGHTS", "SignalDict", "derive_salience", "derive_signals"]
+# --- Signal registry (extensibility) -----------------------------------
+#
+# The hardcoded ``derive_signals`` / ``SALIENCE_WEIGHTS`` pair stays the
+# default. Callers that want to add a signal without forking encode.py
+# can plug a :class:`SignalRegistry` into ``HippocampusConfig`` —
+# encode.py routes through it when set, otherwise the legacy path runs
+# unchanged.
+
+
+@dataclass(frozen=True, slots=True)
+class SignalSpec:
+    """One extensibility entry.
+
+    name: stable key written into episode metadata when ``compute``
+        returns a truthy value (booleans stored as-is, numbers stored
+        when non-zero).
+    weight: contribution to derived salience when the signal "fires"
+        (boolean True, or numeric > 0).
+    compute: callable producing the signal value from raw content. Must
+        be a *pure* synchronous function — runs on every encode.
+    """
+
+    name: str
+    weight: float
+    compute: Callable[[str], Any]
+
+
+@dataclass(frozen=True, slots=True)
+class SignalRegistry:
+    """Ordered, immutable bundle of :class:`SignalSpec` entries.
+
+    Construct via :func:`default_signal_registry` or directly. Adding a
+    custom signal is one line at the call site, not a five-file edit.
+    """
+
+    specs: tuple[SignalSpec, ...] = ()
+    base_salience: float = 0.3
+    reference_density_threshold: int = _REF_DENSITY_THRESHOLD
+    reference_density_weight: float = _REF_DENSITY_W
+    long_content_weight: float = _LONG_W
+    include_legacy_structural: bool = True
+
+    def derive(self, content: str) -> dict[str, Any]:
+        """Run every registered signal + the legacy structural pass.
+
+        Always returns a dict that is safe to merge into episode
+        metadata. The legacy fields (``has_diff_markers``, ``references``,
+        ...) are included when ``include_legacy_structural`` is True so
+        downstream filters keep working.
+        """
+        out: dict[str, Any] = {}
+        if self.include_legacy_structural:
+            out.update(derive_signals(content))
+        for spec in self.specs:
+            value = spec.compute(content)
+            if isinstance(value, bool) or value:
+                out[spec.name] = value
+        return out
+
+    def salience(self, signals: Mapping[str, Any]) -> float:
+        """Compose a salience score from a derived-signals dict."""
+        s = float(self.base_salience)
+        if self.include_legacy_structural:
+            for key, weight in _FLAG_CONTRIB:
+                if signals.get(key):
+                    s += weight
+            refs = signals.get("references") or []
+            if isinstance(refs, list) and len(refs) >= self.reference_density_threshold:
+                s += self.reference_density_weight
+            if signals.get("length_class") == "long":
+                s += self.long_content_weight
+        for spec in self.specs:
+            value = signals.get(spec.name)
+            if isinstance(value, bool):
+                if value:
+                    s += spec.weight
+            elif isinstance(value, (int, float)) and value > 0:
+                s += spec.weight
+        return max(0.0, min(1.0, s))
+
+
+def default_signal_registry() -> SignalRegistry:
+    """Registry that reproduces the legacy hardcoded behaviour exactly."""
+    return SignalRegistry(specs=())
+
+
+__all__ = [
+    "SALIENCE_WEIGHTS",
+    "SignalDict",
+    "SignalRegistry",
+    "SignalSpec",
+    "default_signal_registry",
+    "derive_salience",
+    "derive_signals",
+]

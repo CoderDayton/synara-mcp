@@ -19,10 +19,11 @@ import numpy as np
 from synara.core.errors import ValidationError
 
 from ..primitives import complete as _complete_mod
+from ..primitives.tracing import record_span as _trace_span
 from ..service import now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..service import HippocampusService
+    from ..primitives.port import MemoryServicePort as HippocampusService
 
 
 # Type alias for a merged hit row.
@@ -45,26 +46,30 @@ async def run(
         raise ValidationError(f"unknown recall mode: {mode}")
 
     ep_filter: dict[str, Any] | None = {"session_id": session_id} if session_id else None
-    q = await service.query_arg(query)
+    with _trace_span("query_arg"):
+        q = await service.query_arg(query)
     # CA3 iterative pattern completion: refine the query by
     # softmax-recombining its near-neighbours before the final search.
     # Skipped when no embed_fn is configured (q is a string) or when
     # iters == 0.
     iters = service.config.recall_completion_iters
     if iters > 0 and isinstance(q, list):
-        result = await _complete_mod.run(
-            service,
-            q,
-            ep_filter=ep_filter,
-            k_inner=max(k, 8),
-            iters=iters,
-            beta=service.config.recall_completion_beta,
-            eta0=service.config.recall_completion_anchor,
-        )
+        with _trace_span("ca3_completion", payload={"iters": iters}):
+            result = await _complete_mod.run(
+                service,
+                q,
+                ep_filter=ep_filter,
+                k_inner=max(k, 8),
+                iters=iters,
+                beta=service.config.recall_completion_beta,
+                eta0=service.config.recall_completion_anchor,
+            )
         q = result.query
 
-    merged = await _merge_hits(service, q, mode=mode, k=k, ep_filter=ep_filter)
-    rank_keys = await _sr_rank_keys(service, merged)
+    with _trace_span("merge_hits"):
+        merged = await _merge_hits(service, q, mode=mode, k=k, ep_filter=ep_filter)
+    with _trace_span("sr_rank"):
+        rank_keys = await _sr_rank_keys(service, merged)
     # Key by (doc_id, source) instead of object identity: stable across
     # any future merge-list copying or wrapping.
     merged.sort(key=lambda r: rank_keys.get((r[0], r[4]), r[3]))
