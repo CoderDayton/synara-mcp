@@ -1,6 +1,6 @@
 """Embedding service.
 
-Internal capability, not an MCP tool surface. Other features (hippocampus
+Internal capability, not an MCP tool surface. Other features (memory
 today, future memory/reasoning modules later) use an ``Embedder`` to
 turn text into vectors without caring where the vectors came from.
 

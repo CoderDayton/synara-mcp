@@ -11,15 +11,15 @@ import pytest
 import pytest_asyncio
 from simplevecdb import AsyncVectorDB
 
-from synara.features.hippocampus.config import HippocampusConfig
-from synara.features.hippocampus.ops.events import (
+from synara.features.memory.config import MemoryConfig
+from synara.features.memory.ops.events import (
     EventBus,
     InteractionEvent,
     ReactorState,
     TriggerPolicy,
 )
-from synara.features.hippocampus.primitives.plasticity import PlasticityGraph
-from synara.features.hippocampus.service import HippocampusService
+from synara.features.memory.primitives.plasticity import PlasticityGraph
+from synara.features.memory.service import MemoryService
 
 
 def hash_embed(text: str, dim: int = 32) -> list[float]:
@@ -33,10 +33,10 @@ def hash_embed(text: str, dim: int = 32) -> list[float]:
 
 
 @pytest_asyncio.fixture
-async def service() -> AsyncIterator[HippocampusService]:
+async def service() -> AsyncIterator[MemoryService]:
     db = AsyncVectorDB(":memory:")
     try:
-        yield HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        yield MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
     finally:
         await db.close()
 
@@ -321,7 +321,7 @@ async def test_event_bus_react_skips_reactor_kinds() -> None:
 # ----- Service-integration tests ---------------------------------------
 
 
-async def test_service_emits_event_per_op(service: HippocampusService) -> None:
+async def test_service_emits_event_per_op(service: MemoryService) -> None:
     await service.encode_episode("hello", "s1")
     await service.recall("hello", session_id="s1", k=3)
     log = await service.event_log()
@@ -331,7 +331,7 @@ async def test_service_emits_event_per_op(service: HippocampusService) -> None:
 
 
 async def test_service_records_plasticity_after_co_recall(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     await service.encode_episode("alpha", "s1")
     await service.encode_episode("beta", "s1")
@@ -345,11 +345,11 @@ async def test_service_records_plasticity_after_co_recall(
 async def test_reactor_consolidate_fires_after_threshold() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(
+        cfg = MemoryConfig(
             reactor_consolidate_after_novel=3,
             reactor_consolidate_cooldown_seconds=0.0,
         )
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(4):
             await svc.encode_episode(f"item-{i}", "s1")
         log = await svc.event_log()
@@ -362,8 +362,8 @@ async def test_reactor_consolidate_fires_after_threshold() -> None:
 async def test_self_learning_disabled_skips_reactor() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(self_learning_enabled=False, reactor_consolidate_after_novel=1)
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        cfg = MemoryConfig(self_learning_enabled=False, reactor_consolidate_after_novel=1)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(5):
             await svc.encode_episode(f"item-{i}", "s1")
         log = await svc.event_log()
@@ -376,8 +376,8 @@ async def test_self_learning_disabled_skips_reactor() -> None:
 async def test_surprise_salience_boosts_when_enabled() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(surprise_salience_boost=0.3, surprise_distance_floor=0.0)
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        cfg = MemoryConfig(surprise_salience_boost=0.3, surprise_distance_floor=0.0)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         # Seed a baseline so the next encode has an existing neighbour to
         # be surprised against (empty namespace = no prediction error).
         await svc.encode_episode("baseline", "s1", salience=0.5)
@@ -392,8 +392,8 @@ async def test_surprise_salience_boosts_when_enabled() -> None:
 async def test_reconsolidation_drift_accounted_when_enabled() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(reconsolidation_alpha=0.1, reconsolidation_min_score=0.0)
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        cfg = MemoryConfig(reconsolidation_alpha=0.1, reconsolidation_min_score=0.0)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         await svc.encode_episode("alpha", "s1")
         await svc.encode_episode("beta", "s1")
         for _ in range(5):
@@ -410,12 +410,12 @@ async def test_reconsolidation_pulls_vector_toward_cue() -> None:
     distance to the recall cue decreases."""
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(
+        cfg = MemoryConfig(
             reconsolidation_alpha=0.4,
             reconsolidation_min_score=0.0,
             reconsolidation_max_total_drift=1.0,
         )
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         await svc.encode_episode("encoded-text", "s1")
         await svc.encode_episode("other-episode", "s1")
         cue_query = "different-cue"
@@ -452,7 +452,7 @@ async def test_surprise_no_boost_when_namespace_is_empty() -> None:
     db = AsyncVectorDB(":memory:")
     try:
         # Default config: surprise_salience_boost=0.1, floor=0.6.
-        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
         r = await svc.encode_episode("first ever", "s1", salience=0.5)
         rows = await svc.episodic.get_documents({"id": r["id"]}, limit=1)
         _, _, md = rows[0]
@@ -468,7 +468,7 @@ async def test_surprise_default_boosts_distant_second_encode() -> None:
     try:
         # hash_embed gives near-orthogonal vectors for distinct text, so
         # cosine distance between unrelated entries is ~1.0 >> floor 0.6.
-        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
         await svc.encode_episode("baseline note", "s1", salience=0.5)
         r = await svc.encode_episode("totally different", "s1", salience=0.5)
         rows = await svc.episodic.get_documents({"id": r["id"]}, limit=1)
@@ -485,7 +485,7 @@ async def test_consolidate_min_age_gate_skips_young_episodes() -> None:
     db = AsyncVectorDB(":memory:")
     try:
         # Default: consolidate_min_age_seconds=60.0.
-        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
         for i in range(4):
             await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5)
             await svc.recall(f"alpha-{i}", session_id="s1", k=1)
@@ -494,12 +494,12 @@ async def test_consolidate_min_age_gate_skips_young_episodes() -> None:
         assert formed == []
 
         # Same data, gate disabled -> consolidation runs.
-        cfg2 = HippocampusConfig(
+        cfg2 = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=0,
         )
         # Reuse the same DB; svc2 sees the same episodes.
-        svc2 = HippocampusService(db, config=cfg2, embed_fn=hash_embed)
+        svc2 = MemoryService(db, config=cfg2, embed_fn=hash_embed)
         formed2 = await svc2.consolidate(session_id="s1", min_cluster_size=2)
         assert formed2, "expected schemas once age gate is removed"
     finally:
@@ -512,11 +512,11 @@ async def test_consolidate_min_retrievals_gate_skips_unaccessed() -> None:
     db = AsyncVectorDB(":memory:")
     try:
         # Disable age gate to isolate the retrievals gate.
-        cfg = HippocampusConfig(
+        cfg = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=1,
         )
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(4):
             await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5)
         # Never recalled -> retrieval_count == 0 < 1 -> filtered out.
@@ -550,7 +550,7 @@ async def test_spreading_activation_boosts_neighbour_with_durable_edge() -> None
         def stub_embed(text: str) -> list[float]:
             return list(vectors[text])
 
-        cfg = HippocampusConfig(
+        cfg = MemoryConfig(
             # Defaults already enable spreading; tighten weight so its
             # contribution dominates the rank-key tie-break.
             spreading_activation_hops=1,
@@ -566,7 +566,7 @@ async def test_spreading_activation_boosts_neighbour_with_durable_edge() -> None
             l_ltp_threshold_hits=1,
             sr_enabled=False,
         )
-        svc = HippocampusService(db, config=cfg, embed_fn=stub_embed)
+        svc = MemoryService(db, config=cfg, embed_fn=stub_embed)
         r_a = await svc.encode_episode("anchor", "s1")
         r_n = await svc.encode_episode("neighbour", "s1")
         r_d = await svc.encode_episode("distractor", "s1")

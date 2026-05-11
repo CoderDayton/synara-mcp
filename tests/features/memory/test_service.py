@@ -1,4 +1,4 @@
-"""Hippocampus service tests.
+"""Memory service tests.
 
 Tests use a deterministic hash-based embedder (no network) so they do not
 depend on the SentenceTransformer download. Identical text always
@@ -18,16 +18,16 @@ import pytest_asyncio
 from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
-from synara.features.hippocampus.ops.consolidate import build_gist
-from synara.features.hippocampus.ops.forget import memory_strength
-from synara.features.hippocampus.primitives.complete import attractor_step, completion_score
-from synara.features.hippocampus.primitives.segment import split_into_segments
-from synara.features.hippocampus.primitives.separate import DGProjector, jaccard
-from synara.features.hippocampus.primitives.successor import SuccessorRepresentation
-from synara.features.hippocampus.service import (
+from synara.features.memory.ops.consolidate import build_gist
+from synara.features.memory.ops.forget import memory_strength
+from synara.features.memory.primitives.complete import attractor_step, completion_score
+from synara.features.memory.primitives.segment import split_into_segments
+from synara.features.memory.primitives.separate import DGProjector, jaccard
+from synara.features.memory.primitives.successor import SuccessorRepresentation
+from synara.features.memory.service import (
     UNCONSOLIDATED,
-    HippocampusConfig,
-    HippocampusService,
+    MemoryConfig,
+    MemoryService,
 )
 
 
@@ -43,15 +43,15 @@ def hash_embed(text: str, dim: int = 32) -> list[float]:
 
 
 @pytest_asyncio.fixture
-async def service() -> AsyncIterator[HippocampusService]:
+async def service() -> AsyncIterator[MemoryService]:
     db = AsyncVectorDB(":memory:")
     try:
-        yield HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        yield MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
     finally:
         await db.close()
 
 
-async def test_encode_assigns_id_and_metadata(service: HippocampusService) -> None:
+async def test_encode_assigns_id_and_metadata(service: MemoryService) -> None:
     r = await service.encode_episode("hello world", "s1", tags=["greet"], salience=0.7)
     assert r["deduped"] is False
     assert r["id"] >= 0
@@ -65,7 +65,7 @@ async def test_encode_assigns_id_and_metadata(service: HippocampusService) -> No
     assert md["id"] == r["id"]
 
 
-async def test_encode_dedup_within_session(service: HippocampusService) -> None:
+async def test_encode_dedup_within_session(service: MemoryService) -> None:
     r1 = await service.encode_episode("the cat sat on the mat", "s1", salience=0.8)
     r2 = await service.encode_episode("the cat sat on the mat", "s1", salience=0.5)
     assert r1["deduped"] is False
@@ -78,7 +78,7 @@ async def test_encode_dedup_within_session(service: HippocampusService) -> None:
 
 
 async def test_encode_does_not_dedup_across_sessions(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     r1 = await service.encode_episode("identical content", "s1")
     r2 = await service.encode_episode("identical content", "s2")
@@ -86,7 +86,7 @@ async def test_encode_does_not_dedup_across_sessions(
     assert r1["id"] != r2["id"]
 
 
-async def test_encode_rejects_bad_input(service: HippocampusService) -> None:
+async def test_encode_rejects_bad_input(service: MemoryService) -> None:
     with pytest.raises(ValidationError):
         await service.encode_episode("", "s1")
     with pytest.raises(ValidationError):
@@ -95,7 +95,7 @@ async def test_encode_rejects_bad_input(service: HippocampusService) -> None:
         await service.encode_episode("ok", "s1", salience=1.5)
 
 
-async def test_encode_merges_signal_metadata(service: HippocampusService) -> None:
+async def test_encode_merges_signal_metadata(service: MemoryService) -> None:
     content = (
         "Traceback (most recent call last):\n"
         "ValueError: bad value\n"
@@ -114,9 +114,9 @@ async def test_encode_merges_signal_metadata(service: HippocampusService) -> Non
 async def test_auto_salience_off_keeps_default_when_omitted() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        svc = HippocampusService(
+        svc = MemoryService(
             db,
-            config=HippocampusConfig(auto_salience=False),
+            config=MemoryConfig(auto_salience=False),
             embed_fn=hash_embed,
         )
         await svc.encode_episode("plain note", "s1")  # no salience kwarg
@@ -129,9 +129,9 @@ async def test_auto_salience_off_keeps_default_when_omitted() -> None:
 async def test_auto_salience_on_uses_derived_when_omitted() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        svc = HippocampusService(
+        svc = MemoryService(
             db,
-            config=HippocampusConfig(auto_salience=True, auto_salience_base=0.3),
+            config=MemoryConfig(auto_salience=True, auto_salience_base=0.3),
             embed_fn=hash_embed,
         )
         # Traceback + diff content should derive well above the 0.3 base.
@@ -149,9 +149,9 @@ async def test_auto_salience_on_uses_derived_when_omitted() -> None:
 async def test_signal_metadata_disabled_by_config() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        svc = HippocampusService(
+        svc = MemoryService(
             db,
-            config=HippocampusConfig(auto_signal_metadata=False),
+            config=MemoryConfig(auto_signal_metadata=False),
             embed_fn=hash_embed,
         )
         await svc.encode_episode("RuntimeError: nope", "s1", salience=0.5)
@@ -164,7 +164,7 @@ async def test_signal_metadata_disabled_by_config() -> None:
 
 
 async def test_recall_returns_results_and_bumps_retrieval(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     await service.encode_episode("alpha note", "s1", salience=0.9)
     await service.encode_episode("beta note", "s1", salience=0.9)
@@ -177,7 +177,7 @@ async def test_recall_returns_results_and_bumps_retrieval(
     assert total_retrievals >= 1
 
 
-async def test_recall_unknown_mode_raises(service: HippocampusService) -> None:
+async def test_recall_unknown_mode_raises(service: MemoryService) -> None:
     with pytest.raises(ValidationError):
         await service.recall("x", mode="bogus")
 
@@ -187,11 +187,11 @@ async def test_consolidate_forms_schemas_and_links_episodes() -> None:
     try:
         # Schema-eligibility gates default to ON; this test predates them
         # and assumes immediate consolidation, so disable both gates here.
-        cfg = HippocampusConfig(
+        cfg = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=0,
         )
-        service = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        service = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(4):
             await service.encode_episode(f"item-A-{i}", "s1", salience=0.5, tags=["a"])
         for i in range(4):
@@ -209,14 +209,14 @@ async def test_consolidate_forms_schemas_and_links_episodes() -> None:
 
 
 async def test_consolidate_returns_empty_when_too_few_candidates(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     await service.encode_episode("only one", "s1")
     assert await service.consolidate(min_cluster_size=2) == []
 
 
 async def test_forget_dry_run_flags_old_low_salience(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     r = await service.encode_episode("ephemeral note", "s1", salience=0.0)
     out = await service.forget(strength_floor=0.5, decay_tau_seconds=1.0, dry_run=True)
@@ -228,7 +228,7 @@ async def test_forget_dry_run_flags_old_low_salience(
     assert stats["episodic_count"] == 1
 
 
-async def test_forget_real_run_deletes(service: HippocampusService) -> None:
+async def test_forget_real_run_deletes(service: MemoryService) -> None:
     r = await service.encode_episode("ephemeral note", "s1", salience=0.0)
     out = await service.forget(strength_floor=0.5, decay_tau_seconds=1.0, dry_run=False)
     assert out["removed"] >= 1
@@ -237,7 +237,7 @@ async def test_forget_real_run_deletes(service: HippocampusService) -> None:
     assert stats["episodic_count"] == 0
 
 
-async def test_reflect_returns_recent_episodes(service: HippocampusService) -> None:
+async def test_reflect_returns_recent_episodes(service: MemoryService) -> None:
     a = await service.encode_episode("first", "s1", salience=0.9, tags=["x"])
     await service.encode_episode("second", "s1", salience=0.9, tags=["x"])
     out = await service.reflect(session_id="s1", k=2)
@@ -246,12 +246,12 @@ async def test_reflect_returns_recent_episodes(service: HippocampusService) -> N
     assert a["id"] in ids
 
 
-async def test_stats_starts_empty(service: HippocampusService) -> None:
+async def test_stats_starts_empty(service: MemoryService) -> None:
     assert await service.stats() == {"episodic_count": 0, "semantic_count": 0}
 
 
 async def test_store_semantic_memory_persists_with_metadata(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     out = await service.store_semantic_memory(
         "Prefer pytest fixtures over manual setup.",
@@ -275,7 +275,7 @@ async def test_store_semantic_memory_persists_with_metadata(
 
 
 async def test_store_semantic_memory_rejects_bad_input(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     with pytest.raises(ValidationError):
         await service.store_semantic_memory("", kind="fact")
@@ -286,7 +286,7 @@ async def test_store_semantic_memory_rejects_bad_input(
 
 
 async def test_recall_semantic_memory_returns_only_semantic_hits(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     # Episode in episodic store + same-text semantic memory in semantic store.
     # recall_semantic_memory must only see the semantic side.
@@ -299,7 +299,7 @@ async def test_recall_semantic_memory_returns_only_semantic_hits(
 
 
 async def test_recall_semantic_memory_filters_by_kind(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     await service.store_semantic_memory("alpha fact", kind="fact")
     pref = await service.store_semantic_memory("alpha preference", kind="preference")
@@ -309,13 +309,13 @@ async def test_recall_semantic_memory_filters_by_kind(
 
 
 async def test_recall_semantic_memory_empty_store_returns_empty(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     assert await service.recall_semantic_memory("anything", k=5) == []
 
 
 async def test_recall_semantic_memory_rejects_bad_input(
-    service: HippocampusService,
+    service: MemoryService,
 ) -> None:
     with pytest.raises(ValidationError):
         await service.recall_semantic_memory("", k=5)
@@ -374,11 +374,11 @@ async def test_consolidate_absorbs_into_existing_schema() -> None:
     try:
         # Disable age/retrieval gates so the absorb path triggers on
         # freshly-encoded, never-recalled episodes (legacy test contract).
-        cfg = HippocampusConfig(
+        cfg = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=0,
         )
-        svc = HippocampusService(db, config=cfg, embed_fn=_bucket_embed)
+        svc = MemoryService(db, config=cfg, embed_fn=_bucket_embed)
         for i in range(3):
             await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5, tags=["a"])
         formed_first = await svc.consolidate(session_id="s1", n_clusters=1, min_cluster_size=2)
@@ -399,7 +399,7 @@ async def test_consolidate_absorbs_into_existing_schema() -> None:
         await db.close()
 
 
-async def test_encode_records_access_history(service: HippocampusService) -> None:
+async def test_encode_records_access_history(service: MemoryService) -> None:
     r = await service.encode_episode("hello", "s1", salience=0.5)
     rows = await service.episodic.get_documents({"session_id": "s1"})
     _, _, md = next(row for row in rows if row[0] == r["id"])
@@ -407,7 +407,7 @@ async def test_encode_records_access_history(service: HippocampusService) -> Non
     assert len(md["access_history"]) == 1
 
 
-async def test_recall_appends_access_history(service: HippocampusService) -> None:
+async def test_recall_appends_access_history(service: MemoryService) -> None:
     r = await service.encode_episode("hello access", "s1", salience=0.5)
     await service.recall(query="hello access", session_id="s1", k=1, mode="episodic")
     rows = await service.episodic.get_documents({"session_id": "s1"})
@@ -457,12 +457,12 @@ async def test_recall_with_completion_iters_returns_results() -> None:
     Hopfield iteration and still returns valid hits."""
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(
+        cfg = MemoryConfig(
             recall_completion_iters=2,
             recall_completion_beta=8.0,
             recall_completion_anchor=0.6,
         )
-        svc = HippocampusService(db, config=cfg, embed_fn=_bucket_embed)
+        svc = MemoryService(db, config=cfg, embed_fn=_bucket_embed)
         for i in range(4):
             await svc.encode_episode(f"alpha-{i}", "s1", salience=0.5, tags=["a"])
         for i in range(4):
@@ -542,14 +542,14 @@ async def test_encode_dg_dedup_catches_paraphrase() -> None:
     try:
         # Tight cosine threshold so cosine alone wouldn't dedup; Jaccard
         # threshold tuned to catch the paraphrase regime (cos ~0.96).
-        cfg = HippocampusConfig(
+        cfg = MemoryConfig(
             dedup_distance=0.001,
             dg_pattern_separation=True,
             dg_expansion=8,
             dg_jaccard_threshold=0.4,
             dg_dedup_candidates=4,
         )
-        svc = HippocampusService(db, config=cfg, embed_fn=_paraphrase_embed)
+        svc = MemoryService(db, config=cfg, embed_fn=_paraphrase_embed)
         r1 = await svc.encode_episode("alpha-original", "s1", salience=0.5)
         r2 = await svc.encode_episode("alpha-paraphrase", "s1", salience=0.5)
         assert r1["deduped"] is False
@@ -564,8 +564,8 @@ async def test_encode_dg_dedup_catches_paraphrase() -> None:
 async def test_encode_stores_dg_support_when_enabled() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(dg_pattern_separation=True)
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        cfg = MemoryConfig(dg_pattern_separation=True)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         r = await svc.encode_episode("hello", "s1", salience=0.5)
         rows = await svc.episodic.get_documents({"session_id": "s1"})
         _, _, md = next(row for row in rows if row[0] == r["id"])
@@ -629,8 +629,8 @@ def test_split_into_segments_windows_overlong_sentence() -> None:
 async def test_encode_long_content_creates_segments() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(theta_segment_max_chars=40, theta_segment_max_items=5)
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        cfg = MemoryConfig(theta_segment_max_chars=40, theta_segment_max_items=5)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         long_content = (
             "First sentence about alpha. Second sentence about beta. "
             "Third sentence about gamma. Fourth sentence about delta."
@@ -656,8 +656,8 @@ async def test_encode_long_content_creates_segments() -> None:
 async def test_fetch_episode_group_returns_ordered_segments() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(theta_segment_max_chars=30, theta_segment_max_items=4)
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        cfg = MemoryConfig(theta_segment_max_chars=30, theta_segment_max_items=4)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         text = "Alpha one. Beta two. Gamma three. Delta four."
         r = await svc.encode_episode(text, "s1", salience=0.5)
         group = await svc.fetch_episode_group(r["group_id"])
@@ -674,8 +674,8 @@ async def test_encode_short_content_keeps_legacy_shape() -> None:
     db = AsyncVectorDB(":memory:")
     try:
         # Threshold high: short note never splits.
-        cfg = HippocampusConfig(theta_segment_max_chars=1024, theta_segment_max_items=7)
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        cfg = MemoryConfig(theta_segment_max_chars=1024, theta_segment_max_items=7)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         r = await svc.encode_episode("just a short note", "s1", salience=0.5)
         assert "group_id" not in r
         assert "segment_ids" not in r
@@ -747,7 +747,7 @@ def test_successor_td_propagates_through_chain() -> None:
 async def test_recall_observes_cooccurrences_into_sr() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
         await svc.encode_episode("alpha note", "s1", salience=0.5)
         await svc.encode_episode("beta note", "s1", salience=0.5)
         # First recall returns both, which folds an edge into SR.
@@ -764,7 +764,7 @@ async def test_recall_anchor_model_does_not_inflate_edges() -> None:
     pairwise-coincident inflation a naive observe-each loop produces."""
     db = AsyncVectorDB(":memory:")
     try:
-        svc = HippocampusService(db, config=HippocampusConfig(), embed_fn=hash_embed)
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
         for tag in ("alpha", "beta", "gamma", "delta"):
             await svc.encode_episode(f"{tag} note", "s1", salience=0.5)
         await svc.recall("alpha note", session_id="s1", k=4, mode="episodic")
@@ -801,8 +801,8 @@ def test_successor_recall_set_chains_across_recalls() -> None:
 async def test_recall_sr_disabled_when_config_off() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        cfg = HippocampusConfig(sr_enabled=False)
-        svc = HippocampusService(db, config=cfg, embed_fn=hash_embed)
+        cfg = MemoryConfig(sr_enabled=False)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         assert svc._sr is None
         await svc.encode_episode("alpha", "s1")
         await svc.recall("alpha", session_id="s1", k=3, mode="episodic")

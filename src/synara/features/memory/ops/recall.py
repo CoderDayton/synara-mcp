@@ -23,7 +23,7 @@ from ..primitives.tracing import record_span as _trace_span
 from ..service import now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as HippocampusService
+    from ..primitives.port import MemoryServicePort as MemoryService
 
 
 # Type alias for a merged hit row.
@@ -31,7 +31,7 @@ _Hit = tuple[int, str, dict[str, Any], float, str]
 
 
 async def run(
-    service: HippocampusService,
+    service: MemoryService,
     *,
     query: str,
     session_id: str | None = None,
@@ -129,7 +129,7 @@ def _cosine_score_from_distance(dist: float | None) -> float:
 
 
 async def _accrue_drift(
-    service: HippocampusService,
+    service: MemoryService,
     row: dict[str, Any],
     *,
     t: float,
@@ -176,7 +176,7 @@ async def _accrue_drift(
 
 
 async def _apply_drift_to_vector(
-    service: HippocampusService,
+    service: MemoryService,
     doc_id: int,
     *,
     cue: list[float],
@@ -206,7 +206,7 @@ async def _apply_drift_to_vector(
 
 
 async def _merge_hits(
-    service: HippocampusService,
+    service: MemoryService,
     q: str | list[float],
     *,
     mode: str,
@@ -262,7 +262,7 @@ async def _empty_hits() -> list[Any]:
 
 
 async def _sr_rank_keys(
-    service: HippocampusService,
+    service: MemoryService,
     merged: list[_Hit],
 ) -> dict[tuple[int, str], float]:
     """Return ``{(doc_id, source): rank_key}`` overrides for SR sort.

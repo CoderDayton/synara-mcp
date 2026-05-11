@@ -1,6 +1,6 @@
 """Interaction events and the self-triggering reactor.
 
-Every public op on ``HippocampusService`` emits an
+Every public op on ``MemoryService`` emits an
 :class:`InteractionEvent` after its main work completes. Events are
 appended to the persistent ``coll.events`` change feed so cross-process
 subscribers and post-mortem inspection both see the same log; the
@@ -97,7 +97,7 @@ _REACTOR_KINDS: frozenset[EventKind] = frozenset({"consolidate", "dream"})
 
 # Persistent event-log entries get this kind prefix to avoid colliding
 # with simplevecdb's own internal events (edge_upsert, rebuild, etc.).
-EVENT_KIND_PREFIX = "hippocampus."
+EVENT_KIND_PREFIX = "memory."
 
 
 def _event_kind(kind: str) -> str:

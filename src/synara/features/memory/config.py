@@ -1,4 +1,4 @@
-"""Hippocampus tunables.
+"""Memory tunables.
 
 Kept in its own module so the service core and the operation-specific
 siblings (encode/recall/consolidate/forget/...) can each import the
@@ -13,11 +13,11 @@ from .primitives.memory_types import MemoryTypeRegistry
 
 
 @dataclass(frozen=True, slots=True)
-class HippocampusConfig:
+class MemoryConfig:
     """Tunable parameters of the memory framework."""
 
-    episodic_collection: str = "hippocampus_episodic"
-    semantic_collection: str = "hippocampus_semantic"
+    episodic_collection: str = "memory_episodic"
+    semantic_collection: str = "memory_semantic"
     # First-class embedding dimensionality. ``None`` (default) lets the
     # service probe the configured embedder once and cache the observed
     # dim. Explicit values are validated against the probe at first use

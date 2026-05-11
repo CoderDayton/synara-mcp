@@ -5,7 +5,7 @@ the duration of a service op. Any layer inside the op (ops/recall,
 primitives/complete, primitives/plasticity, ...) can append a span
 without threading a parameter through every signature.
 
-Tracing is *opt-in* via ``HippocampusConfig.tracing_enabled``. When
+Tracing is *opt-in* via ``MemoryConfig.tracing_enabled``. When
 disabled, :func:`start_request` returns a sentinel that no-ops on
 :meth:`RequestContext.span`, so the overhead of running with tracing
 off is one ContextVar read.
@@ -106,7 +106,7 @@ class RequestContext:
 
 
 _CTX: ContextVar[RequestContext | None] = ContextVar(
-    "synara_hippocampus_request_ctx",
+    "synara_memory_request_ctx",
     default=None,
 )
 

@@ -28,7 +28,7 @@ from synara.core.errors import ValidationError
 from ..service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as HippocampusService
+    from ..primitives.port import MemoryServicePort as MemoryService
 
 
 def memory_strength(
@@ -71,7 +71,7 @@ def _access_times_from_meta(md: dict[str, Any], *, fallback_now: float) -> list[
 
 
 async def run(
-    service: HippocampusService,
+    service: MemoryService,
     *,
     strength_floor: float = 0.05,
     decay_tau_seconds: float | None = None,

@@ -1,4 +1,4 @@
-"""Hippocampus service.
+"""Memory service.
 
 Pure logic: no MCP types here. ``tools.py`` is the only layer that touches
 fastmcp. The service is constructed with a ``simplevecdb.VectorDB`` and an
@@ -38,7 +38,7 @@ from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
 
-from .config import HippocampusConfig
+from .config import MemoryConfig
 from .ops.events import EventBus as _EventBus
 from .ops.events import InteractionEvent as _Event
 from .ops.events import TriggerPolicy as _Policy
@@ -64,13 +64,13 @@ EmbedFn = Callable[[str], Sequence[float] | Awaitable[Sequence[float]]]
 # semantic doc id.
 UNCONSOLIDATED: int = 0
 
-# ``HippocampusConfig`` is re-exported so existing code (and tests) that
+# ``MemoryConfig`` is re-exported so existing code (and tests) that
 # imports it from ``service`` keeps working after the split-out.
 __all__ = [
     "UNCONSOLIDATED",
     "EmbedFn",
-    "HippocampusConfig",
-    "HippocampusService",
+    "MemoryConfig",
+    "MemoryService",
     "now_seconds",
 ]
 
@@ -99,17 +99,17 @@ def _normalise_embed_fn(fn: EmbedFn) -> Callable[[str], Awaitable[Sequence[float
     return _wrapped
 
 
-class HippocampusService:
+class MemoryService:
     """Episodic and semantic memory over two vector collections."""
 
     def __init__(
         self,
         db: AsyncVectorDB,
-        config: HippocampusConfig | None = None,
+        config: MemoryConfig | None = None,
         *,
         embed_fn: EmbedFn | None = None,
     ) -> None:
-        self.config = config or HippocampusConfig()
+        self.config = config or MemoryConfig()
         self.db = db
         # Memory-type registry: explicit override beats the two
         # ``*_collection`` config fields. Collections are materialised
@@ -547,7 +547,7 @@ class HippocampusService:
 
 # Late imports avoid a top-of-file cycle: each sub-module needs
 # UNCONSOLIDATED and ``now_seconds`` (bound above), and references
-# HippocampusService only through TYPE_CHECKING.
+# MemoryService only through TYPE_CHECKING.
 from .ops import consolidate as _consolidate_mod  # noqa: E402
 from .ops import encode as _encode_mod  # noqa: E402
 from .ops import forget as _forget_mod  # noqa: E402

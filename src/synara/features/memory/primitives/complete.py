@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .port import MemoryServicePort as HippocampusService
+    from .port import MemoryServicePort as MemoryService
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +99,7 @@ def attractor_step(
 
 
 async def _gather_candidates(
-    service: HippocampusService,
+    service: MemoryService,
     q: list[float],
     *,
     ep_filter: dict[str, Any] | None,
@@ -132,7 +132,7 @@ async def _gather_candidates(
 
 
 async def run(
-    service: HippocampusService,
+    service: MemoryService,
     q0: list[float],
     *,
     ep_filter: dict[str, Any] | None,

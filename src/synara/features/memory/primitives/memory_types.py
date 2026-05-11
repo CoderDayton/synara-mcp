@@ -2,7 +2,7 @@
 
 A small, explicit replacement for the implicit episodic/semantic split
 that used to live as bare collection-name strings on
-``HippocampusConfig``. New memory kinds (procedural, conceptual, ...) can
+``MemoryConfig``. New memory kinds (procedural, conceptual, ...) can
 be added by registering a :class:`MemoryTypeSpec` instead of touching
 ``encode``, ``consolidate``, and ``service`` in parallel.
 
@@ -51,7 +51,7 @@ class MemoryTypeSpec:
 class MemoryTypeRegistry:
     """Resolved table of memory-type specs.
 
-    Built from a :class:`HippocampusConfig` (see
+    Built from a :class:`MemoryConfig` (see
     :func:`registry_from_config`) or directly by callers that want a
     bespoke layout. Lookup is O(1) and the registry is immutable.
     """

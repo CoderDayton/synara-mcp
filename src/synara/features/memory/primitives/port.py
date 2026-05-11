@@ -1,12 +1,12 @@
 """Narrow service port for ops/.
 
 The ops/ submodules (``encode``, ``recall``, ``consolidate``, ``forget``,
-``reflect``) historically took the whole ``HippocampusService`` as a
+``reflect``) historically took the whole ``MemoryService`` as a
 parameter, which made them un-testable in isolation and tangled every
 new op into the full service surface.
 
 :class:`MemoryServicePort` defines the structural subset the ops
-actually need. ``HippocampusService`` satisfies it by structure, so no
+actually need. ``MemoryService`` satisfies it by structure, so no
 runtime change happens — but tests and alternative implementations can
 now provide a stub that implements just this protocol.
 
@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..config import HippocampusConfig
+    from ..config import MemoryConfig
     from .complete import CompletionResult  # noqa: F401
     from .memory_types import MemoryType, MemoryTypeRegistry
     from .plasticity import PlasticityGraph
@@ -70,12 +70,12 @@ class _Collection(Protocol):
 class MemoryServicePort(Protocol):
     """Structural interface ops/ depend on.
 
-    Implemented by :class:`HippocampusService`; tests can stub the
+    Implemented by :class:`MemoryService`; tests can stub the
     handful of attributes/methods listed here to drive an op in
     isolation.
     """
 
-    config: HippocampusConfig
+    config: MemoryConfig
     episodic: Any
     semantic: Any
     _sr: SuccessorRepresentation | None

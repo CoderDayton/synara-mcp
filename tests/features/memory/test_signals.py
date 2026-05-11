@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from synara.features.hippocampus.primitives.signals import (
+from synara.features.memory.primitives.signals import (
     SALIENCE_WEIGHTS,
     SignalDict,
     derive_salience,
@@ -134,15 +134,15 @@ def test_unsupported_extension_is_ignored() -> None:
 
 
 def test_backtick_identifiers_extracted() -> None:
-    text = "Calling `store_episode` reuses `HippocampusService.recall`."
+    text = "Calling `store_episode` reuses `MemoryService.recall`."
     refs = derive_signals(text)["references"]
     assert "store_episode" in refs
-    assert "HippocampusService.recall" in refs
+    assert "MemoryService.recall" in refs
 
 
 def test_camelcase_outside_backticks_extracted() -> None:
-    refs = derive_signals("The HippocampusConfig field controls X")["references"]
-    assert "HippocampusConfig" in refs
+    refs = derive_signals("The MemoryConfig field controls X")["references"]
+    assert "MemoryConfig" in refs
 
 
 def test_camelcase_noise_words_filtered() -> None:

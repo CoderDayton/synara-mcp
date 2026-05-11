@@ -24,7 +24,7 @@ from simplevecdb import AsyncVectorDB, Quantization
 
 from synara import __version__
 from synara.config import Settings
-from synara.features import hippocampus
+from synara.features import memory
 from synara.features.embedding import build_embedder
 
 _logger = logging.getLogger(__name__)
@@ -59,5 +59,5 @@ def build_server(settings: Settings) -> FastMCP:
         ),
         lifespan=app_lifespan,
     )
-    hippocampus.register(mcp, db, embedder=embedder)
+    memory.register(mcp, db, embedder=embedder)
     return mcp

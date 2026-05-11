@@ -5,8 +5,8 @@ co-acting structural signal flags plus extracted references.
 
 The librarian model
 -------------------
-Callers (LLM agents) dump unstructured content into the hippocampus.
-The hippocampus extracts what the *shape* of the content already
+Callers (LLM agents) dump unstructured content into the memory store.
+The memory store extracts what the *shape* of the content already
 implies — diff markers, traceback patterns, decision verbs, code
 density, file paths, symbol mentions — without making the caller
 declare an event ``kind``. Signals are deliberately **overlapping**
@@ -285,7 +285,7 @@ def derive_salience(signals: Mapping[str, Any], *, base: float = 0.3) -> float:
 #
 # The hardcoded ``derive_signals`` / ``SALIENCE_WEIGHTS`` pair stays the
 # default. Callers that want to add a signal without forking encode.py
-# can plug a :class:`SignalRegistry` into ``HippocampusConfig`` —
+# can plug a :class:`SignalRegistry` into ``MemoryConfig`` —
 # encode.py routes through it when set, otherwise the legacy path runs
 # unchanged.
 

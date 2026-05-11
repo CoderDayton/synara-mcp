@@ -1,4 +1,4 @@
-"""High-level memory operations exposed via ``HippocampusService`` delegates.
+"""High-level memory operations exposed via ``MemoryService`` delegates.
 
 Each module here defines an ``async def run(service, *, ...)`` entry
 point that the service calls. Keeping them in a sibling subpackage

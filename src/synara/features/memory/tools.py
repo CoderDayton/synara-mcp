@@ -1,7 +1,7 @@
-"""MCP tool surface for the hippocampus feature.
+"""MCP tool surface for the memory feature.
 
 Tool descriptions are compressed for LLM consumption: terse parameter
-specs, no prose. Validation lives in ``HippocampusService``.
+specs, no prose. Validation lives in ``MemoryService``.
 
 Surface
 -------
@@ -28,7 +28,7 @@ from fastmcp import Context, FastMCP
 
 from synara.features.embedding import Embedder
 
-from .service import HippocampusService
+from .service import MemoryService
 
 # Shared compact definition. session_id is a caller-defined string
 # namespace, not an MCP/process session.
@@ -48,7 +48,7 @@ async def _ensure_warmed(embedder: Embedder | None, ctx: Context) -> None:
 
 def register_tools(
     mcp: FastMCP,
-    service: HippocampusService,
+    service: MemoryService,
     *,
     embedder: Embedder | None = None,
 ) -> None:

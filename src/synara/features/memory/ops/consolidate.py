@@ -38,7 +38,7 @@ from ..service import UNCONSOLIDATED, now_seconds
 from .forget import memory_strength
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as HippocampusService
+    from ..primitives.port import MemoryServicePort as MemoryService
 
 
 def _replay_score(
@@ -91,9 +91,7 @@ def _schema_confidence(n_sources: int, full_at: int) -> float:
     return min(1.0, max(0, n_sources) / max(1, full_at))
 
 
-async def _nearest_schema(
-    service: HippocampusService, text: str
-) -> tuple[int, float, float] | None:
+async def _nearest_schema(service: MemoryService, text: str) -> tuple[int, float, float] | None:
     # Caller is responsible for the upfront ``service.semantic.count()``
     # check; skipping it here saves an O(N) DB roundtrip across the
     # _absorb candidate loop.
@@ -120,7 +118,7 @@ async def _nearest_schema(
 
 
 async def _absorb(
-    service: HippocampusService,
+    service: MemoryService,
     candidates: Sequence[tuple[int, str, dict[str, Any]]],
     *,
     now: float,
@@ -199,7 +197,7 @@ async def _absorb(
 
 
 async def run(
-    service: HippocampusService,
+    service: MemoryService,
     *,
     session_id: str | None = None,
     n_clusters: int | None = None,

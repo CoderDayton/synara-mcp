@@ -1,4 +1,4 @@
-"""Plasticity-constant simulator for ``HippocampusConfig``.
+"""Plasticity-constant simulator for ``MemoryConfig``.
 
 Standalone behavioural sanity check for the neuroplasticity timescales
 (E-LTP, L-LTP, reconsolidation, LTD, habit thresholds, savings). Does
@@ -20,14 +20,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from synara.features.hippocampus.config import HippocampusConfig  # noqa: I001
+from synara.features.memory.config import MemoryConfig  # noqa: I001
 
 
 _PRUNE_FLOOR = 1e-3
 _MULTI_TARGET_PROB = 0.5
 
 
-def _slow(cfg: HippocampusConfig, real_seconds: float) -> float:
+def _slow(cfg: MemoryConfig, real_seconds: float) -> float:
     """Compress a slow-process duration into app-time."""
     return real_seconds / cfg.time_compression
 
@@ -59,7 +59,7 @@ class Edge:
 class PlasticitySim:
     """Pure-Python model of the plasticity dynamics implied by the config."""
 
-    def __init__(self, cfg: HippocampusConfig, *, seed: int = 0) -> None:
+    def __init__(self, cfg: MemoryConfig, *, seed: int = 0) -> None:
         self.cfg = cfg
         self.rand = random.Random(seed)
         self.t_app = 0.0
@@ -273,7 +273,7 @@ def _summary(sim: PlasticitySim) -> dict[str, float]:
 
 
 def main() -> int:
-    cfg = HippocampusConfig()
+    cfg = MemoryConfig()
     print(
         f"# config: time_compression={cfg.time_compression} "
         f"habit_thr={cfg.habit_threshold_hits} "

@@ -27,11 +27,11 @@ from ..primitives.signals import (
 from ..service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as HippocampusService
+    from ..primitives.port import MemoryServicePort as MemoryService
 
 
 async def run(
-    service: HippocampusService,
+    service: MemoryService,
     *,
     content: str,
     session_id: str,
@@ -134,7 +134,7 @@ def _derive_salience(
 
 
 async def _maybe_surprise_boost(
-    service: HippocampusService,
+    service: MemoryService,
     new_emb: list[float] | None,
     session_id: str,
     salience: float,
@@ -143,7 +143,7 @@ async def _maybe_surprise_boost(
     far in cosine distance from anything else in this namespace.
 
     Defaults to a no-op (``surprise_salience_boost == 0``); the floor and
-    boost are both runtime-tunable via ``HippocampusConfig``.
+    boost are both runtime-tunable via ``MemoryConfig``.
     """
     cfg = service.config
     if cfg.surprise_salience_boost <= 0.0 or new_emb is None:
@@ -162,7 +162,7 @@ async def _maybe_surprise_boost(
 
 
 async def _dedup_jaccard(
-    service: HippocampusService,
+    service: MemoryService,
     new_emb: list[float],
     new_support: tuple[int, ...],
     session_id: str,
@@ -201,7 +201,7 @@ async def _dedup_jaccard(
 
 
 async def _insert_single(
-    service: HippocampusService,
+    service: MemoryService,
     *,
     content: str,
     session_id: str,
@@ -238,7 +238,7 @@ async def _insert_single(
 
 
 async def _insert_segmented(
-    service: HippocampusService,
+    service: MemoryService,
     *,
     segments: list[str],
     session_id: str,
