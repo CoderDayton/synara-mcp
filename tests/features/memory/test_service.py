@@ -799,6 +799,49 @@ def test_successor_recall_set_chains_across_recalls() -> None:
     assert sr.total_edges == edges_after_first + 2.0
 
 
+async def test_recall_is_cross_session_by_default() -> None:
+    """session_id is a hint, not a filter: results span all sessions."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        await svc.encode_episode("shared cue alpha", "old", salience=0.5)
+        await svc.encode_episode("shared cue beta", "now", salience=0.5)
+        hits = await svc.recall("shared cue", session_id="now", k=5, mode="episodic")
+        sessions_returned = {h["metadata"].get("session_id") for h in hits}
+        assert {"old", "now"} <= sessions_returned
+    finally:
+        await db.close()
+
+
+async def test_recall_biases_same_session_at_equal_cosine() -> None:
+    """Same-session episodes win ties via the contextual bonus, but
+    cross-session episodes are still in the result set."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = MemoryConfig(same_session_bonus=0.5, sr_enabled=False)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
+        await svc.encode_episode("identical content", "old", salience=0.5)
+        await svc.encode_episode("identical content", "now", salience=0.5)
+        hits = await svc.recall("identical content", session_id="now", k=2, mode="episodic")
+        assert len(hits) == 2
+        assert hits[0]["metadata"]["session_id"] == "now"
+        assert hits[1]["metadata"]["session_id"] == "old"
+    finally:
+        await db.close()
+
+
+async def test_recall_cross_session_no_caller_session() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        await svc.encode_episode("alpha", "a", salience=0.5)
+        await svc.encode_episode("alpha note", "b", salience=0.5)
+        hits = await svc.recall("alpha", k=5, mode="episodic")
+        assert {h["metadata"].get("session_id") for h in hits} == {"a", "b"}
+    finally:
+        await db.close()
+
+
 async def test_sr_transitions_persist_across_restart(tmp_path: Path) -> None:
     """T-counts written by recall in process A must rehydrate in process B."""
     db_path = str(tmp_path / "sr.db")

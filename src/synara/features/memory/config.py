@@ -184,6 +184,13 @@ class MemoryConfig:
     # final rank key (added on top of the SR omega-weighted boost).
     spreading_activation_weight: float = 0.2
 
+    # Soft context bonus: episodes whose ``session_id`` matches the
+    # caller's current session get this much subtracted from their rank
+    # key (lower = better). Models state-dependent retrieval — same
+    # context biases recall toward in-context memories without
+    # censoring cross-context ones. Set 0 to disable.
+    same_session_bonus: float = 0.05
+
     # Schema-eligibility gates for systems consolidation. An episode is
     # absorbed into a schema only once both are met. ~60 s real-time
     # combined with the default 24x compression maps to ~1 compressed

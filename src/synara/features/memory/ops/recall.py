@@ -45,7 +45,12 @@ async def run(
     if mode not in {"auto", "episodic", "semantic", "hybrid"}:
         raise ValidationError(f"unknown recall mode: {mode}")
 
-    ep_filter: dict[str, Any] | None = {"session_id": session_id} if session_id else None
+    # Recall is always cross-session: ``session_id`` is the caller's
+    # current-session hint, used as the SR window key (so cross-session
+    # bridges form in the caller's context) but never as a hard filter
+    # on the simplevecdb search. Callers that want strict per-session
+    # results should post-filter the returned list themselves.
+    ep_filter: dict[str, Any] | None = None
     with _trace_span("query_arg"):
         q = await service.query_arg(query)
     # CA3 iterative pattern completion: refine the query by
@@ -69,7 +74,7 @@ async def run(
     with _trace_span("merge_hits"):
         merged = await _merge_hits(service, q, mode=mode, k=k, ep_filter=ep_filter)
     with _trace_span("sr_rank"):
-        rank_keys = await _sr_rank_keys(service, merged)
+        rank_keys = await _sr_rank_keys(service, merged, caller_sid=session_id)
     # Key by (doc_id, source) instead of object identity: stable across
     # any future merge-list copying or wrapping.
     merged.sort(key=lambda r: rank_keys.get((r[0], r[4]), r[3]))
@@ -97,11 +102,20 @@ async def run(
     # hit. Avoids the pairwise n*(n-1)/2 inflation that a naive
     # "everything observed at the same t" loop would produce — five hits
     # add four edges, not ten.
+    #
+    # Window is keyed on the *caller's* session, not the recalled
+    # episodes' original sessions. That way recalls in session B that
+    # pull episodes from session A enter B's window, and a subsequent
+    # recall in B chains across via the still-in-window prior anchor —
+    # bridging A and B into one connected graph instead of leaving
+    # per-original-session subgraphs. Falls back to the anchor's
+    # original session only when the caller didn't supply one.
     if service._sr is not None and observed_episodic:
         t = now_seconds()
-        anchor_sid, anchor_id = observed_episodic[0]
+        anchor_id = observed_episodic[0][1]
+        window_sid = session_id or observed_episodic[0][0]
         others = [j for _, j in observed_episodic[1:]]
-        service._sr.observe_recall_set(anchor_sid, anchor_id, others, t)
+        service._sr.observe_recall_set(window_sid, anchor_id, others, t)
         await service._sr.flush()
         # Plasticity layer: reinforce anchor->each-other edge with the
         # cosine-similarity score (1 - distance, clipped). Co-recall is
@@ -265,17 +279,20 @@ async def _empty_hits() -> list[Any]:
 async def _sr_rank_keys(
     service: MemoryService,
     merged: list[_Hit],
+    *,
+    caller_sid: str | None = None,
 ) -> dict[tuple[int, str], float]:
     """Return ``{(doc_id, source): rank_key}`` overrides for SR sort.
 
     We pick the best-cosine episodic anchor ``i*`` and assign each
     episodic candidate the rank key
-    ``(1 - omega) * dist - omega * M[i*, j]``. Rows not in the returned
-    mapping fall back to their raw cosine distance, so published
-    ``distance`` values stay unmodified. Keying by ``(doc_id, source)``
-    keeps the lookup stable even if ``merged`` is rebuilt or copied
-    between this call and the sort, and avoids cross-source key
-    collisions.
+    ``(1 - omega) * dist - omega * M[i*, j] - sa_w * spread[j]
+      - same_session_bonus * 1[md.session_id == caller_sid]``.
+    Rows not in the returned mapping fall back to their raw cosine
+    distance, so published ``distance`` values stay unmodified. Keying
+    by ``(doc_id, source)`` keeps the lookup stable even if ``merged``
+    is rebuilt or copied between this call and the sort, and avoids
+    cross-source key collisions.
     """
     if not merged:
         return {}
@@ -285,12 +302,10 @@ async def _sr_rank_keys(
     anchor_id = min(episodic_hits, key=lambda r: r[1])[0]
     ep_count = await service.episodic.count()
     cfg = service.config
-    # SR omega-weighted boost (existing behaviour).
     omega = service._sr.omega(ep_count) if service._sr is not None else 0.0
     sr_boost: dict[int, float] = {}
     if service._sr is not None and omega > 0.0:
         sr_boost = service._sr.boost(anchor_id, [r[0] for r in episodic_hits])
-    # Spreading activation over the plasticity graph (gated on hops > 0).
     spread: dict[int, float] = {}
     if cfg.spreading_activation_hops > 0 and cfg.spreading_activation_weight > 0.0:
         spread = await service._plasticity.spreading(
@@ -299,14 +314,20 @@ async def _sr_rank_keys(
             hops=cfg.spreading_activation_hops,
             gamma=cfg.spreading_activation_decay,
         )
-    if omega <= 0.0 and not spread:
+    same_sess_bonus = float(cfg.same_session_bonus)
+    use_context = bool(caller_sid) and same_sess_bonus > 0.0
+    if omega <= 0.0 and not spread and not use_context:
         return {}
     keys: dict[tuple[int, str], float] = {}
     sa_w = float(cfg.spreading_activation_weight)
-    for doc_id, _, _, dist, src in merged:
+    for doc_id, _, md, dist, src in merged:
         if src != "episodic":
             continue
         rank = (1.0 - omega) * dist - omega * sr_boost.get(doc_id, 0.0)
         rank -= sa_w * float(spread.get(doc_id, 0.0))
+        if use_context:
+            sid = str(md.get("session_id", "")) if md else ""
+            if sid == caller_sid:
+                rank -= same_sess_bonus
         keys[(doc_id, src)] = rank
     return keys
