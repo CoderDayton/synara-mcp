@@ -182,7 +182,12 @@ class PlasticityGraph:
             new_b = float(e.bonus)
             if math.isfinite(bonus_set_at):
                 new_b *= math.exp(-max(0.0, now - bonus_set_at) / self.e_ltp_decay_seconds)
-            if new_w < self.prune_floor and not ever_habit:
+            # Prune on combined durable + still-decaying transient
+            # potentiation: a bonus-only E-LTP edge (weight 0) is not
+            # dead — it is mid-consolidation, and culling it resets the
+            # in-window hit counter so off-policy dream replay could
+            # never reach the L-LTP fold across cadenced dreams.
+            if new_w + new_b < self.prune_floor and not ever_habit:
                 await self._coll.delete_edge(int(e.src_id), int(e.dst_id), kind=self.kind)
                 pruned += 1
             else:

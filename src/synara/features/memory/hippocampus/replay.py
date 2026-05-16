@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from ..neocortex.forget import _access_times_from_meta, memory_strength
+from ..neocortex.forget import access_times_from_meta, memory_strength
 from ..service import UNCONSOLIDATED
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -66,7 +66,7 @@ async def run(service: MemoryService, *, now: float) -> int:
             continue
         strength = memory_strength(
             salience=sal,
-            access_times=_access_times_from_meta(md, fallback_now=now),
+            access_times=access_times_from_meta(md, fallback_now=now),
             now=now,
             d=cfg.forget_d,
         )

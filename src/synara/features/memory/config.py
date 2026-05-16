@@ -44,6 +44,13 @@ class MemoryConfig:
     # Cosine distance below this threshold counts as a duplicate within a
     # session — encode_episode bumps the existing record instead of inserting.
     dedup_distance: float = 0.05
+    # Minimum stripped content length for embedding-based dedup to run.
+    # Distinct short episodes crowd into the same cosine cone (at the
+    # same similarity as true paraphrases), so neither cosine nor DG
+    # can separate them; a false merge there is irreversible data loss.
+    # Below this floor, dedup is skipped and the episode is always
+    # stored. 0 disables the floor (always attempt dedup).
+    min_dedup_chars: int = 8
     # Power-law (Wickelgren/Wixted) decay exponent used by ``forget``:
     #   S(t) = salience * sum_k (1 + (t - t_k))^(-d)
     # d ~ 0.5 fits behavioural retention curves better than the exponential

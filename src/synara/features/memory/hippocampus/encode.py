@@ -59,9 +59,17 @@ async def run(
     new_support: tuple[int, ...] = ()
     use_dg = service.config.dg_pattern_separation and new_emb is not None
     dedup_hit: dict[str, Any] | None = None
+    # Below the content-length floor, embedding-based dedup is
+    # unreliable (distinct short episodes crowd into the same cosine
+    # cone, where neither cosine nor DG can separate them) and a false
+    # merge is irreversible data loss, so skip dedup and always store.
+    skip_dedup = len(content.strip()) < cfg.min_dedup_chars
     if use_dg and new_emb is not None:
         new_support = service._ensure_projector(len(new_emb)).support(new_emb)
-        dedup_hit = await _dedup_jaccard(service, new_emb, new_support, session_id)
+        if not skip_dedup:
+            dedup_hit = await _dedup_jaccard(service, new_emb, new_support, session_id)
+    elif skip_dedup:
+        pass
     else:
         q_arg: str | list[float] = (
             new_emb if new_emb is not None else await service.query_arg(content)

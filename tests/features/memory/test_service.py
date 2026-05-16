@@ -562,6 +562,44 @@ async def test_encode_dg_dedup_catches_paraphrase() -> None:
         await db.close()
 
 
+def _crowding_embed(text: str, dim: int = 16) -> list[float]:
+    """Models short-text embedding crowding: genuinely distinct tokens
+    of <=4 chars collapse onto one shared embedding (the regime where
+    neither cosine nor DG can separate them); longer text embeds by
+    content hash."""
+    key = "__short__" if len(text.strip()) <= 4 else text
+    seed = int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
+    v = np.random.default_rng(seed).standard_normal(dim).astype(np.float32)
+    n = float(np.linalg.norm(v))
+    out = (v / n) if n > 0 else v
+    return [float(x) for x in out.tolist()]
+
+
+async def test_encode_does_not_false_merge_distinct_short_episodes() -> None:
+    """Two genuinely distinct short episodes that crowd onto the same
+    embedding must NOT be merged: below the dedup content-length floor,
+    embedding-based dedup is unreliable and a false merge is
+    irreversible data loss, so each is stored."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = MemoryConfig(dg_pattern_separation=True, min_dedup_chars=8)
+        svc = MemoryService(db, config=cfg, embed_fn=_crowding_embed)
+        r1 = await svc.encode_episode("abc", "s1", salience=0.5)
+        r2 = await svc.encode_episode("xyz", "s1", salience=0.5)
+        assert r1["deduped"] is False
+        assert r2["deduped"] is False
+        assert r2["id"] != r1["id"]
+        # Control: above the floor, identical embeddings still dedup, so
+        # the floor narrows dedup rather than disabling it.
+        r3 = await svc.encode_episode("longcontent one", "s2", salience=0.5)
+        r4 = await svc.encode_episode("longcontent one", "s2", salience=0.5)
+        assert r3["deduped"] is False
+        assert r4["deduped"] is True
+        assert r4["id"] == r3["id"]
+    finally:
+        await db.close()
+
+
 async def test_encode_stores_dg_support_when_enabled() -> None:
     db = AsyncVectorDB(":memory:")
     try:

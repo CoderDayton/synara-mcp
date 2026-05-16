@@ -211,6 +211,38 @@ async def test_plasticity_habit_edge_persists_at_zero_weight(db: AsyncVectorDB) 
     assert await g.edge_state(7, 8) is not None
 
 
+async def test_plasticity_dream_cadence_folds_repeated_replay_durable(
+    db: AsyncVectorDB,
+) -> None:
+    """Repeated dream replay of one trace must fold it durable (L-LTP).
+
+    Models the ``_reactor_dream`` ordering: ``ltd_pass`` runs before
+    each off-policy replay ``reinforce``. A replay edge is bonus-only
+    (weight 0) until ``l_ltp_threshold_hits`` in-window reinforcements
+    fold it. The intervening LTD pass must not cull a still-potentiated
+    (E-LTP bonus above floor) edge, or the in-window counter resets
+    every dream and the fold can never fire.
+    """
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _make_graph(
+        coll,
+        habit_threshold_hits=99,  # never a habit -> only weight protects it
+        l_ltp_threshold_hits=3,
+        e_ltp_decay_seconds=7200.0,
+        ltd_decay_per_idle_day=0.02,
+    )
+    # Three dreams 1800s apart (idle cadence; well inside the 2h E-LTP
+    # window), each: LTD pass, then one off-policy replay reinforce.
+    for k in range(3):
+        t = float(k) * 1800.0
+        await g.ltd_pass(now=t)
+        await g.reinforce(1, 2, score=0.5, now=t)
+    state = await g.edge_state(1, 2)
+    assert state is not None, "replay edge culled before L-LTP could fold it"
+    assert state["weight"] > 0.0, "repeated replay never folded to durable weight"
+
+
 async def test_plasticity_spreading_returns_zero_when_disabled(db: AsyncVectorDB) -> None:
     coll = db.collection("ep")
     await _seed_docs(coll, [1, 2])

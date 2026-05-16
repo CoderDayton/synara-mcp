@@ -55,7 +55,7 @@ def memory_strength(
     return float(salience) * total
 
 
-def _access_times_from_meta(md: dict[str, Any], *, fallback_now: float) -> list[float]:
+def access_times_from_meta(md: dict[str, Any], *, fallback_now: float) -> list[float]:
     """Extract access-time list from episode metadata.
 
     Newer: explicit access_history. Older: [encoded_at] + last_accessed
@@ -92,7 +92,7 @@ async def run(
     rows = await service.episodic.get_documents(filter_dict=None, limit=max_scan)
     weak: list[int] = []
     for ep_id, _text, md in rows:
-        access_times = _access_times_from_meta(md, fallback_now=now)
+        access_times = access_times_from_meta(md, fallback_now=now)
         strength = memory_strength(
             salience=float(md.get("salience", 0.0)),
             access_times=access_times,
