@@ -51,6 +51,13 @@ class MemoryConfig:
     # Below this floor, dedup is skipped and the episode is always
     # stored. 0 disables the floor (always attempt dedup).
     min_dedup_chars: int = 8
+    # Hard caps on untrusted MCP-tool input. Without these a client can
+    # push a multi-MB ``content`` (silently truncated by the embedder's
+    # max_seq_length, so the stored vector misrepresents the text) or a
+    # huge ``tags`` list that bloats every recall/forget metadata scan.
+    # 0 disables the respective cap.
+    max_content_chars: int = 50_000
+    max_tags: int = 64
     # Power-law (Wickelgren/Wixted) decay exponent used by ``forget``:
     #   S(t) = salience * sum_k (1 + (t - t_k))^(-d)
     # d ~ 0.5 fits behavioural retention curves better than the exponential

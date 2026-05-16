@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
@@ -52,6 +53,8 @@ from .memory_types import (
     default_registry,
 )
 from .tracing import start_request as _start_request
+
+_LOG = logging.getLogger(__name__)
 
 # Either a sync embedder ``f(text) -> vec`` or an async one
 # ``async f(text) -> vec``. The service normalises both to async at
@@ -204,10 +207,33 @@ class MemoryService:
         )
         await self._bus.record(event)
         if self.config.self_learning_enabled:
-            await self._bus.react(event)
+            # The reactor (consolidate/dream replay) reads the SR, so it
+            # must be rehydrated first. Guarding here covers every entry
+            # point — including ones that don't touch the SR directly
+            # (consolidate/forget/reflect/semantic) but can still trip
+            # the reactor via the event counters. Idempotent after the
+            # first load.
+            await self._ensure_sr_loaded()
+            # Reactor callbacks are background side-effects. A failure
+            # in consolidation/dream replay must not surface as an error
+            # on the unrelated user operation (encode/recall) that
+            # happened to trip the trigger.
+            try:
+                await self._bus.react(event)
+            except Exception:
+                _LOG.exception("reactor failed for event kind=%s", kind)
 
     async def _reactor_consolidate(self, _event: Any) -> None:
         """Reactor callback: cluster pending episodes globally."""
+        # Advance the trigger gate *before* the work. If consolidation
+        # raises (e.g. embedding backend down), the counter must not
+        # stay saturated, or every subsequent encode re-fires a failing
+        # pass. Advancing the cooldown clock too bounds a persistently
+        # failing backend to one retry per cooldown window. The trailing
+        # ``_emit`` re-applies the same reset idempotently.
+        st = self._bus.state
+        st.last_consolidate_at = _now_real()
+        st.novel_encodes_since_consolidate = 0
         await _consolidate_mod.run(self, session_id=None, n_clusters=None, min_cluster_size=None)
         await self._emit("consolidate", session_id=None, payload={"trigger": "reactor"})
 

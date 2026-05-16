@@ -13,7 +13,13 @@ dependencies = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "ruff>=0.15.12",
-    "simplevecdb[server]>=2.6.0",
+    # Capped below the next major: the memory feature reaches into
+    # simplevecdb's private ``_collection`` (edges.upsert,
+    # events.append/prune) for operations the async surface doesn't
+    # expose. A major release may restructure those internals, which
+    # would fail only at runtime, so block it at the dependency level
+    # until the coupling is replaced with public API.
+    "simplevecdb[server]>=2.6.0,<3",
 ]
 
 [project.scripts]

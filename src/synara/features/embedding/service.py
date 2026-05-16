@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol
 
 import httpx
@@ -79,7 +79,10 @@ class EmbeddingConfig:
 
     model: str | None = None
     url: str | None = None
-    api_key: str | None = None
+    # repr=False: this dataclass is yielded into the FastMCP lifespan
+    # context and may land in tracebacks/log dumps — keep the secret
+    # out of its auto-generated repr.
+    api_key: str | None = field(default=None, repr=False)
     timeout_seconds: float = 30.0
     dim: int | None = None
     batch_size: int = 64
@@ -201,7 +204,10 @@ class LocalBackend:
         if not texts:
             return []
         if self._model is None:
-            self.warmup()
+            # warmup() loads (and on first run downloads) the model — a
+            # multi-second, multi-GB blocking call. Off-load it so the
+            # event loop is not frozen on the first embed request.
+            await asyncio.to_thread(self.warmup)
         return await asyncio.to_thread(self._encode_to_lists, list(texts))
 
     def _is_on_cuda(self) -> bool:
@@ -305,13 +311,28 @@ class RemoteBackend:
 
     async def _post(self, payload: dict[str, object]) -> dict[str, object]:
         client = self._ensure_client()
-        response = await client.post(self._endpoint, json=payload, headers=self._headers)
+        try:
+            response = await client.post(self._endpoint, json=payload, headers=self._headers)
+        except httpx.HTTPError as exc:
+            # Connect/timeout/protocol failures must surface as the
+            # documented EmbeddingError, not a raw httpx exception that
+            # callers catching EmbeddingError would miss.
+            raise EmbeddingError(
+                f"embedding endpoint {self._endpoint} request failed: {exc!r}"
+            ) from exc
         if response.status_code >= _HTTP_ERROR_FLOOR:
             raise EmbeddingError(
                 f"embedding endpoint {self._endpoint} returned "
                 f"{response.status_code}: {response.text[:200]}"
             )
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            # A 2xx with a non-JSON body (e.g. an HTML proxy page).
+            raise EmbeddingError(
+                f"embedding endpoint {self._endpoint} returned a non-JSON body: "
+                f"{response.text[:200]}"
+            ) from exc
         if not isinstance(body, dict):
             raise EmbeddingError("embedding response was not a JSON object")
         return body
@@ -334,8 +355,21 @@ class RemoteBackend:
             data = body.get("data")
             if not isinstance(data, list) or len(data) != len(chunk):
                 raise EmbeddingError(f"expected {len(chunk)} embeddings, got {data!r:.80}")
-            # OpenAI guarantees an ``index`` field — sort to be safe.
-            for item in sorted(data, key=lambda r: int(r.get("index", 0))):
+
+            # OpenAI guarantees an ``index`` field; sort by it to
+            # restore request order. A missing index must raise, not
+            # default to 0 — defaulting silently collapses every
+            # un-indexed item onto position 0 and corrupts the
+            # text->vector alignment of the stored embeddings.
+            def _index_of(r: dict[str, object]) -> int:
+                idx = r.get("index")
+                if isinstance(idx, bool) or not isinstance(idx, (int, float)):
+                    raise EmbeddingError(
+                        "embedding entry missing numeric 'index'; cannot guarantee vector order"
+                    )
+                return int(idx)
+
+            for item in sorted(data, key=_index_of):
                 vector = item.get("embedding")
                 if not isinstance(vector, list):
                     raise EmbeddingError("embedding entry missing 'embedding' list")

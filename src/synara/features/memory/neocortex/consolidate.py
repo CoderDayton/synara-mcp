@@ -30,6 +30,7 @@ sharp-wave ripples (SWR) followed by neocortical schema integration:
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
@@ -132,9 +133,12 @@ async def _absorb(
     absorb_dist = service.config.consolidate_absorb_distance
     beta = service.config.schema_margin_beta
 
+    # Each _nearest_schema call (embed + vector search) is independent,
+    # so fan them out concurrently instead of blocking the event loop on
+    # up to ``max_scan`` sequential round-trips inside the reactor.
+    nearests = await asyncio.gather(*(_nearest_schema(service, text) for _, text, _ in candidates))
     scored: list[tuple[float, int, str, int, float]] = []
-    for ep_id, text, md in candidates:
-        nearest = await _nearest_schema(service, text)
+    for (ep_id, text, md), nearest in zip(candidates, nearests, strict=True):
         if nearest is None:
             continue
         sch_id, d1, d2 = nearest

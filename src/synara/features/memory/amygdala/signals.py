@@ -88,6 +88,9 @@ _TOOL_CALL_RE = re.compile(
 # Fenced code block openers/closers; count // 2 yields full blocks.
 _CODE_FENCE_RE = re.compile(r"^```[\w+-]*\s*$", re.MULTILINE)
 
+# Upper bound on extracted references stored per episode (see usage).
+_MAX_REFERENCES = 100
+
 # Sentence-ending question mark — ``?`` followed by whitespace or end
 # of string. Conservative to avoid matching nullable-type syntax like
 # ``String?`` or shell globs.
@@ -206,7 +209,11 @@ def derive_signals(content: str) -> SignalDict:
     }
     urls = {_clean_url(m.group(0)) for m in _URL_RE.finditer(text)}
     issue_refs = {m.group(0) for m in _ISSUE_REF_RE.finditer(text)}
-    references = sorted(file_paths | bt_idents | camel_idents | urls | issue_refs)
+    # Cap the reference list: it is written into every episode's
+    # metadata and re-serialised on every recall/forget scan. The
+    # salience bonus only checks ``len(references) >= 3``, so precision
+    # beyond a small bound buys nothing but metadata bloat.
+    references = sorted(file_paths | bt_idents | camel_idents | urls | issue_refs)[:_MAX_REFERENCES]
 
     return {
         "has_diff_markers": bool(_DIFF_RE.search(text)),

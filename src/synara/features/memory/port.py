@@ -64,6 +64,17 @@ class _Collection(Protocol):
     ) -> None: ...
     async def increment_metadata(self, doc_id: int, deltas: dict[str, Any]) -> None: ...
     async def delete_by_ids(self, ids: Sequence[int]) -> None: ...
+    async def get_embeddings_by_ids(
+        self,
+        ids: Sequence[int],
+    ) -> dict[int, Sequence[float]]: ...
+    async def update_embedding(
+        self,
+        doc_id: int,
+        vector: Sequence[float],
+        *,
+        source: str = ...,
+    ) -> None: ...
 
 
 @runtime_checkable

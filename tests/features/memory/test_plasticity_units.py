@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
@@ -167,3 +168,20 @@ def test_replay_score_margin_suppresses_stable_episode() -> None:
     stable = _replay_score(md, d_near=1.0, margin=0.9, beta=4.0, now=1.0, d=0.5)
     assert stable < near
     assert stable >= 1e-9
+
+
+# ---- concurrency (Critical C1) --------------------------------------
+async def test_concurrent_reinforce_does_not_lose_updates(
+    db: AsyncVectorDB,
+) -> None:
+    """Concurrent reinforce on the same directed edge must serialise:
+    the read-modify-write is not atomic at the edge store, so without
+    the per-edge lock the racing upserts would lose hit increments."""
+    coll = db.collection("ep")
+    await _seed(coll, [1, 2])
+    g = _make_graph(coll, l_ltp_threshold_hits=10_000)  # never fold; count hits
+    n = 25
+    await asyncio.gather(*(g.reinforce(1, 2, score=0.5, now=float(k)) for k in range(n)))
+    state = await g.edge_state(1, 2)
+    assert state is not None
+    assert state["hits"] == n

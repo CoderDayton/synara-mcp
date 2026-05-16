@@ -556,3 +556,57 @@ def test_build_embedder_picks_local_when_no_url() -> None:
 def test_build_embedder_picks_remote_when_url_set() -> None:
     embedder = build_embedder(EmbeddingConfig(url="http://x", api_key="k"))
     assert isinstance(embedder._backend, RemoteBackend)
+
+
+# ------------------------------------------------------ error-contract (C7/Imp)
+async def test_remote_backend_wraps_network_error_as_embedding_error() -> None:
+    """Connect/timeout failures must surface as EmbeddingError, not raw httpx."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        backend = RemoteBackend("http://x", client=client)
+        with pytest.raises(EmbeddingError, match="request failed"):
+            await Embedder(backend).embed("hi")
+
+
+async def test_remote_backend_wraps_non_json_body_as_embedding_error() -> None:
+    """A 2xx with a non-JSON body (e.g. an HTML proxy page) -> EmbeddingError."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>not json</html>")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        backend = RemoteBackend("http://x", client=client)
+        with pytest.raises(EmbeddingError, match="non-JSON"):
+            await Embedder(backend).embed("hi")
+
+
+async def test_remote_backend_raises_on_missing_index() -> None:
+    """Missing 'index' must raise, not silently collapse vector order."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {"object": "embedding", "embedding": [1.0]},
+                    {"object": "embedding", "embedding": [2.0]},
+                ],
+                "model": "default",
+                "usage": {},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        backend = RemoteBackend("http://x", client=client)
+        with pytest.raises(EmbeddingError, match="index"):
+            await Embedder(backend).embed_batch(["a", "b"])
+
+
+def test_embedding_config_api_key_absent_from_repr() -> None:
+    """The Bearer token must not leak through the dataclass repr."""
+    cfg = EmbeddingConfig(url="http://x", api_key="super-secret-token")
+    assert "super-secret-token" not in repr(cfg)

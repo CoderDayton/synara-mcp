@@ -30,6 +30,11 @@ from ..service import UNCONSOLIDATED, now_seconds
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..port import MemoryServicePort as MemoryService
 
+# Neutral salience for episodes missing the field. Matches the base in
+# ``amygdala.signals.derive_salience`` so an un-tagged episode decays
+# like a default-tagged one rather than being prune-on-sight.
+_DEFAULT_SALIENCE = 0.3
+
 
 def memory_strength(
     salience: float,
@@ -93,8 +98,14 @@ async def run(
     weak: list[int] = []
     for ep_id, _text, md in rows:
         access_times = access_times_from_meta(md, fallback_now=now)
+        # Absent salience must not mean "delete me": salience is a
+        # multiplicative factor in ``memory_strength``, so a 0.0 default
+        # forces strength to 0.0 regardless of recency/access and makes
+        # any episode lacking the field a guaranteed prune candidate
+        # (direct DB writes, fixtures, pre-field episodes). Fall back to
+        # the same neutral base ``derive_salience`` assigns (0.3).
         strength = memory_strength(
-            salience=float(md.get("salience", 0.0)),
+            salience=float(md.get("salience", _DEFAULT_SALIENCE)),
             access_times=access_times,
             now=now,
             d=service.config.forget_d,

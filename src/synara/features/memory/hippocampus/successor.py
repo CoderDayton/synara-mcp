@@ -117,8 +117,12 @@ class SuccessorRepresentation:
         """Persist any pending edge updates to ``coll.edges``."""
         if self._coll is None or not self._pending:
             return
-        pending = list(self._pending)
-        self._pending.clear()
+        # Detach the pending set in one rebinding (no await between the
+        # read and the reassignment, so it is atomic under asyncio).
+        # Edges recorded during the awaits below land in the fresh set
+        # and are picked up by the next flush instead of being dropped.
+        pending = self._pending
+        self._pending = set()
         coll = self._coll
         for i, j in pending:
             count = int(self._T_counts[i][j])

@@ -85,6 +85,12 @@ class PlasticityGraph:
         self.ltd_decay_per_idle_day = float(ltd_decay_per_idle_day)
         self.time_compression = float(time_compression)
         self.prune_floor = float(prune_floor)
+        # Serialise the read-modify-write in ``reinforce`` per directed
+        # edge: ``edges.upsert`` is a full-row overwrite, so two
+        # concurrent recalls sharing an anchor would otherwise lose the
+        # earlier increment. Lock creation has no ``await`` between the
+        # lookup and the insert, so it is atomic under asyncio.
+        self._edge_locks: dict[tuple[int, int], asyncio.Lock] = {}
 
     async def _upsert(
         self,
@@ -118,6 +124,11 @@ class PlasticityGraph:
         if i == j:
             return
         score = max(0.0, min(1.0, float(score)))
+        lock = self._edge_locks.setdefault((i, j), asyncio.Lock())
+        async with lock:
+            await self._reinforce_locked(i, j, score=score, now=now)
+
+    async def _reinforce_locked(self, i: int, j: int, *, score: float, now: float) -> None:
         e = await self._read_one(i, j)
         if e is None:
             cur_w, cur_b, cur_hits = 0.0, 0.0, 0

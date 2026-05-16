@@ -27,7 +27,23 @@ from .segment import split_into_segments
 from .separate import jaccard as _dg_jaccard
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..config import MemoryConfig
     from ..port import MemoryServicePort as MemoryService
+
+
+def _check_input_caps(
+    cfg: MemoryConfig,
+    content: str,
+    tags: Sequence[str] | None,
+) -> None:
+    """Reject oversized untrusted MCP-tool input before it is stored."""
+    if cfg.max_content_chars and len(content) > cfg.max_content_chars:
+        raise ValidationError(
+            f"content exceeds max_content_chars ({cfg.max_content_chars}); "
+            "split it before storing so the embedding represents the full text"
+        )
+    if cfg.max_tags and tags is not None and len(tags) > cfg.max_tags:
+        raise ValidationError(f"too many tags (>{cfg.max_tags})")
 
 
 async def run(
@@ -43,6 +59,7 @@ async def run(
     if not session_id:
         raise ValidationError("session_id must be non-empty")
     cfg = service.config
+    _check_input_caps(cfg, content, tags)
     registry = cfg.signal_registry if isinstance(cfg.signal_registry, SignalRegistry) else None
     signals = _derive_signals(content, registry) if cfg.auto_signal_metadata else None
     if salience is None:

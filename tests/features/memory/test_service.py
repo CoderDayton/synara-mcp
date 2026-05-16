@@ -23,6 +23,7 @@ from synara.features.memory.hippocampus.complete import attractor_step, completi
 from synara.features.memory.hippocampus.segment import split_into_segments
 from synara.features.memory.hippocampus.separate import DGProjector, jaccard
 from synara.features.memory.hippocampus.successor import SuccessorRepresentation
+from synara.features.memory.neocortex import consolidate as consolidate_mod
 from synara.features.memory.neocortex.consolidate import build_gist
 from synara.features.memory.neocortex.forget import memory_strength
 from synara.features.memory.service import (
@@ -920,5 +921,81 @@ async def test_recall_sr_disabled_when_config_off() -> None:
         assert svc._sr is None
         await svc.encode_episode("alpha", "s1")
         await svc.recall("alpha", session_id="s1", k=3, mode="episodic")
+    finally:
+        await db.close()
+
+
+# --------------------------------------------------- input caps (Important #8)
+async def test_encode_rejects_oversized_content() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(max_content_chars=20), embed_fn=hash_embed)
+        await svc.encode_episode("short enough", "s1")  # under the cap: OK
+        with pytest.raises(ValidationError, match="max_content_chars"):
+            await svc.encode_episode("x" * 21, "s1")
+    finally:
+        await db.close()
+
+
+async def test_encode_rejects_too_many_tags() -> None:
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(max_tags=2), embed_fn=hash_embed)
+        await svc.encode_episode("ok", "s1", tags=["a", "b"])  # at the cap: OK
+        with pytest.raises(ValidationError, match="too many tags"):
+            await svc.encode_episode("ok2", "s1", tags=["a", "b", "c"])
+    finally:
+        await db.close()
+
+
+# ------------------------------------- forget salience default (Critical C5)
+async def test_forget_does_not_prune_episode_missing_salience() -> None:
+    """An episode whose metadata lacks ``salience`` must not be a
+    guaranteed prune candidate: absent salience falls back to a neutral
+    base, not 0.0 (which would force strength to 0)."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        # Write directly, bypassing encode (which always derives salience)
+        # to simulate a direct DB write / pre-field / fixture episode.
+        ids = await svc.episodic.add_texts(
+            ["orphan trace with no salience field"],
+            metadatas=[{"session_id": "s1"}],
+            embeddings=[hash_embed("orphan trace with no salience field")],
+        )
+        orphan_id = int(ids[0])
+        result = await svc.forget(dry_run=True)
+        assert orphan_id not in result["candidate_ids"]
+    finally:
+        await db.close()
+
+
+# ----------------------------- reactor isolation + counter reset (C3 / C4)
+async def test_failed_reactor_consolidate_is_isolated_and_resets_counter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising background consolidation must not surface on the user's
+    encode call (C3), and the novel-encode counter must be reset so the
+    next encode does not immediately re-fire the failing pass (C4)."""
+
+    async def boom(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise RuntimeError("consolidation backend down")
+
+    monkeypatch.setattr(consolidate_mod, "run", boom)
+
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = MemoryConfig(
+            reactor_consolidate_after_novel=1,
+            reactor_consolidate_cooldown_seconds=0.0,
+        )
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
+        # The encode trips the consolidate trigger; the callback raises
+        # but the user-facing call must still succeed.
+        result = await svc.encode_episode("trigger reactor", "s1")
+        assert result["id"] >= 0
+        # C4: counter was advanced before the failing work, so it is not
+        # left saturated (which would re-trigger on every later encode).
+        assert svc._bus.state.novel_encodes_since_consolidate == 0
     finally:
         await db.close()
