@@ -75,6 +75,7 @@ logs/
 *~
 .project
 .pydevproject
+CLAUDE.md
 
 # OS
 .DS_Store
