@@ -174,8 +174,8 @@ def register_tools(
         )
         verb = "would prune" if dry_run else "pruned"
         candidate_count = len(result.get("candidate_ids") or [])
-        deleted_count = result.get("deleted") or 0
-        n = candidate_count if dry_run else deleted_count
+        removed_count = result.get("removed") or 0
+        n = candidate_count if dry_run else removed_count
         await ctx.info(f"{verb} {n} episode(s)")
         return result
 
