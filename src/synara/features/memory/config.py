@@ -108,10 +108,10 @@ class MemoryConfig:
     # When True the service emits ``InteractionEvent`` records per op
     # and runs the reactor (auto-consolidate / auto-dream) inside the
     # originating call. Plasticity bookkeeping (E-LTP/L-LTP/habits) runs
-    # whenever this is True; behavioural effects (reconsolidation drift,
-    # spreading activation, surprise salience, age/retrieval gates) are
-    # individually gated below and default to OFF so they never alter
-    # observed behaviour without explicit opt-in.
+    # whenever this is True; behavioural effects are individually gated
+    # below. Reconsolidation drift and spreading activation are ON by
+    # default; surprise salience and the age/retrieval gates default to
+    # OFF so they never alter observed behaviour without explicit opt-in.
     self_learning_enabled: bool = True
 
     # ``time_compression`` shifts the felt pace of SLOW processes
@@ -139,13 +139,16 @@ class MemoryConfig:
     # Real window ~6h (Nader 2000); 6h compressed 24x lands at ~15 min
     # of conversation, which is a sensible "still in the same chat" gate.
     reconsolidation_window_seconds: float = 21600.0
-    # Per-recall blend factor for reconsolidation drift accounting.
-    # When > 0, recall accumulates per-episode drift in metadata
-    # (``drift_total`` / ``drift_locked``) but does NOT yet mutate the
-    # stored vector - simplevecdb's collection API exposes no embedding
-    # update primitive, so true vector rewrite needs a delete+re-add
-    # path with foreign-key fixups (deferred). Defaults to 0 (off).
-    reconsolidation_alpha: float = 0.0
+    # Per-recall blend factor for reconsolidation (Nader 2000). When
+    # > 0, an in-window recall accumulates per-episode drift in metadata
+    # (``drift_total`` / ``drift_locked``) AND pulls the stored vector a
+    # fraction ``alpha * score`` toward the cue via
+    # ``episodic.update_embedding`` (buffered through pending.update;
+    # promoted to HNSW by the next consolidate ``flush_pending``).
+    # Default 0.05: a strong recall drifts ~5%, so the 0.15 total cap is
+    # reached after ~3 corroborating recalls, then the episode locks.
+    # Set 0 to disable (pure read-only recall).
+    reconsolidation_alpha: float = 0.05
     # Hard cap on cumulative drift (1 - cosine(v_original, v_current))
     # before reconsolidation is locked out for this episode.
     reconsolidation_max_total_drift: float = 0.15
@@ -250,3 +253,14 @@ class MemoryConfig:
     reactor_dream_after_events: int = 128
     reactor_dream_after_idle_seconds: float = 1800.0
     reactor_event_log_capacity: int = 1024
+
+    # Off-policy replay during the dream pass (SWR rehearsal). Before
+    # the LTD pass the reactor reactivates the ``dream_replay_top_k``
+    # highest power-law-strength unconsolidated episodes, groups them by
+    # originating session, and reinforces the within-session
+    # associations with gain ``dream_replay_gain * mean_salience``
+    # (McGaugh arousal modulation). ``dream_replay_top_k=0`` disables
+    # replay (LTD-only dream, the legacy behaviour).
+    dream_replay_top_k: int = 16
+    dream_replay_min_salience: float = 0.0
+    dream_replay_gain: float = 0.3

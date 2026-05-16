@@ -212,9 +212,22 @@ class MemoryService:
         await self._emit("consolidate", session_id=None, payload={"trigger": "reactor"})
 
     async def _reactor_dream(self, _event: Any) -> None:
-        """Reactor callback: LTD pass over the plasticity graph."""
-        pruned = await self._plasticity.ltd_pass(now=_now_real())
-        await self._emit("dream", session_id=None, payload={"pruned_edges": pruned})
+        """Reactor callback: LTD decay, then off-policy SWR replay.
+
+        Decay runs *first* so the rehearsal that follows is not culled
+        by the same pass (a fresh replay edge is E-LTP/bonus-only with
+        zero durable weight, which ``ltd_pass`` would otherwise prune).
+        One replay is transient potentiation; repeated dreams of the
+        same high-priority trace fold it durable via L-LTP.
+        """
+        t = _now_real()
+        pruned = await self._plasticity.ltd_pass(now=t)
+        replayed = await _replay_mod.run(self, now=t)
+        await self._emit(
+            "dream",
+            session_id=None,
+            payload={"pruned_edges": pruned, "replayed": replayed},
+        )
 
     async def event_log(self) -> list[Any]:
         """Return a snapshot of the recent interaction events (for inspection)."""
@@ -567,6 +580,7 @@ class MemoryService:
 # MemoryService only through TYPE_CHECKING.
 from .hippocampus import encode as _encode_mod  # noqa: E402
 from .hippocampus import recall as _recall_mod  # noqa: E402
+from .hippocampus import replay as _replay_mod  # noqa: E402
 from .neocortex import consolidate as _consolidate_mod  # noqa: E402
 from .neocortex import forget as _forget_mod  # noqa: E402
 from .neocortex import reflect as _reflect_mod  # noqa: E402

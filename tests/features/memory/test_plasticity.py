@@ -585,3 +585,58 @@ async def test_spreading_activation_boosts_neighbour_with_durable_edge() -> None
         assert ids_in_order.index(r_n["id"]) < ids_in_order.index(r_d["id"])
     finally:
         await db.close()
+
+
+async def test_dream_replay_reinforces_offpolicy_associations() -> None:
+    """The dream reactor rehearses high-priority unconsolidated episodes
+    off-policy: within-session associations are reinforced without any
+    live recall, and the dream event reports the replayed count."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        # High consolidate threshold keeps episodes UNCONSOLIDATED so the
+        # replay pass has a population to rehearse.
+        cfg = MemoryConfig(
+            reactor_consolidate_after_novel=999,
+            dg_pattern_separation=False,  # keep 3 distinct episodes
+            dream_replay_top_k=16,
+            dream_replay_gain=0.3,
+        )
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
+        for word in ("alpha", "bravo", "charlie"):
+            await svc.encode_episode(word, "s1", salience=0.9)
+
+        # No recall has happened -> no plasticity edges exist yet.
+        assert (await svc._plasticity.stats())["edges"] == 0.0
+
+        await svc._reactor_dream(None)
+
+        # Off-policy rehearsal created the within-session edges.
+        assert (await svc._plasticity.stats())["edges"] >= 1.0
+        log = await svc.event_log()
+        dream = next(e for e in reversed(log) if e.kind == "dream")
+        assert dream.payload["replayed"] == 2  # anchor + 2 targets
+    finally:
+        await db.close()
+
+
+async def test_dream_replay_disabled_when_top_k_zero() -> None:
+    """``dream_replay_top_k=0`` restores the legacy LTD-only dream."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = MemoryConfig(
+            reactor_consolidate_after_novel=999,
+            dg_pattern_separation=False,
+            dream_replay_top_k=0,
+        )
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
+        for word in ("alpha", "bravo", "charlie"):
+            await svc.encode_episode(word, "s1", salience=0.9)
+
+        await svc._reactor_dream(None)
+
+        assert (await svc._plasticity.stats())["edges"] == 0.0
+        log = await svc.event_log()
+        dream = next(e for e in reversed(log) if e.kind == "dream")
+        assert dream.payload["replayed"] == 0
+    finally:
+        await db.close()

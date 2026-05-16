@@ -126,9 +126,9 @@ async def run(
             jrow = out_lookup.get(j)
             score = _cosine_score_from_distance(jrow["distance"]) if jrow is not None else 0.5
             await service._plasticity.reinforce(anchor_id, j, score=score, now=t)
-        # Reconsolidation drift accounting: bumps drift_total in the
-        # episode's metadata when the alpha is set. Vector rewrite is
-        # deferred (see config note); this only records the bound.
+        # Reconsolidation (Nader 2000): when alpha is set, bump
+        # drift_total and pull the stored vector toward the cue
+        # (buffered; flushed to HNSW by the next consolidate pass).
         if service.config.reconsolidation_alpha > 0.0 and anchor_row is not None:
             cue = q if isinstance(q, list) else None
             await _accrue_drift(service, anchor_row, t=t, cue=cue)
