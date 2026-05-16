@@ -19,12 +19,12 @@ import pytest_asyncio
 from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
-from synara.features.memory.ops.consolidate import build_gist
-from synara.features.memory.ops.forget import memory_strength
-from synara.features.memory.primitives.complete import attractor_step, completion_score
-from synara.features.memory.primitives.segment import split_into_segments
-from synara.features.memory.primitives.separate import DGProjector, jaccard
-from synara.features.memory.primitives.successor import SuccessorRepresentation
+from synara.features.memory.hippocampus.complete import attractor_step, completion_score
+from synara.features.memory.hippocampus.segment import split_into_segments
+from synara.features.memory.hippocampus.separate import DGProjector, jaccard
+from synara.features.memory.hippocampus.successor import SuccessorRepresentation
+from synara.features.memory.neocortex.consolidate import build_gist
+from synara.features.memory.neocortex.forget import memory_strength
 from synara.features.memory.service import (
     UNCONSOLIDATED,
     MemoryConfig,

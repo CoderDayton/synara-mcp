@@ -18,12 +18,12 @@ import numpy as np
 
 from synara.core.errors import ValidationError
 
-from ..primitives import complete as _complete_mod
-from ..primitives.tracing import record_span as _trace_span
 from ..service import now_seconds
+from ..tracing import record_span as _trace_span
+from . import complete as _complete_mod
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as MemoryService
+    from ..port import MemoryServicePort as MemoryService
 
 
 # Type alias for a merged hit row.

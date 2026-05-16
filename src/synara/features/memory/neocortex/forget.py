@@ -28,7 +28,7 @@ from synara.core.errors import ValidationError
 from ..service import UNCONSOLIDATED, now_seconds
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as MemoryService
+    from ..port import MemoryServicePort as MemoryService
 
 
 def memory_strength(

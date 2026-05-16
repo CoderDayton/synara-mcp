@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from synara.features.memory.primitives.signals import (
+from synara.features.memory.amygdala.signals import (
     SALIENCE_WEIGHTS,
     SignalDict,
     derive_salience,

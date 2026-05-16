@@ -30,17 +30,17 @@ from simplevecdb import AsyncVectorDB
 
 from synara.features.embedding import Embedder
 
-from .primitives.memory_types import (
+from .amygdala.signals import SignalRegistry, SignalSpec
+from .memory_types import (
     MemoryType,
     MemoryTypeRegistry,
     MemoryTypeSpec,
     default_registry,
 )
-from .primitives.port import MemoryServicePort
-from .primitives.signals import SignalRegistry, SignalSpec
-from .primitives.tracing import RequestContext, start_request
+from .port import MemoryServicePort
 from .service import EmbedFn, MemoryConfig, MemoryService
 from .tools import register_tools
+from .tracing import RequestContext, start_request
 
 __all__ = [
     "EmbedFn",

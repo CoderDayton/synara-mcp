@@ -38,20 +38,20 @@ from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
 
+from .basal_ganglia.events import EventBus as _EventBus
+from .basal_ganglia.events import InteractionEvent as _Event
+from .basal_ganglia.events import TriggerPolicy as _Policy
+from .basal_ganglia.events import now_seconds as _now_real
 from .config import MemoryConfig
-from .ops.events import EventBus as _EventBus
-from .ops.events import InteractionEvent as _Event
-from .ops.events import TriggerPolicy as _Policy
-from .ops.events import now_seconds as _now_real
-from .primitives.memory_types import (
+from .hippocampus.plasticity import PlasticityGraph as _Plasticity
+from .hippocampus.separate import DGProjector as _DGProjector
+from .hippocampus.successor import SuccessorRepresentation as _SR
+from .memory_types import (
     MemoryType,
     MemoryTypeRegistry,
     default_registry,
 )
-from .primitives.plasticity import PlasticityGraph as _Plasticity
-from .primitives.separate import DGProjector as _DGProjector
-from .primitives.successor import SuccessorRepresentation as _SR
-from .primitives.tracing import start_request as _start_request
+from .tracing import start_request as _start_request
 
 # Either a sync embedder ``f(text) -> vec`` or an async one
 # ``async f(text) -> vec``. The service normalises both to async at
@@ -565,8 +565,8 @@ class MemoryService:
 # Late imports avoid a top-of-file cycle: each sub-module needs
 # UNCONSOLIDATED and ``now_seconds`` (bound above), and references
 # MemoryService only through TYPE_CHECKING.
-from .ops import consolidate as _consolidate_mod  # noqa: E402
-from .ops import encode as _encode_mod  # noqa: E402
-from .ops import forget as _forget_mod  # noqa: E402
-from .ops import recall as _recall_mod  # noqa: E402
-from .ops import reflect as _reflect_mod  # noqa: E402
+from .hippocampus import encode as _encode_mod  # noqa: E402
+from .hippocampus import recall as _recall_mod  # noqa: E402
+from .neocortex import consolidate as _consolidate_mod  # noqa: E402
+from .neocortex import forget as _forget_mod  # noqa: E402
+from .neocortex import reflect as _reflect_mod  # noqa: E402

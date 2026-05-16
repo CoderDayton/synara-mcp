@@ -17,17 +17,17 @@ from typing import TYPE_CHECKING, Any
 
 from synara.core.errors import ValidationError
 
-from ..primitives.segment import split_into_segments
-from ..primitives.separate import jaccard as _dg_jaccard
-from ..primitives.signals import (
+from ..amygdala.signals import (
     SignalRegistry,
     derive_salience,
     derive_signals,
 )
 from ..service import UNCONSOLIDATED, now_seconds
+from .segment import split_into_segments
+from .separate import jaccard as _dg_jaccard
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as MemoryService
+    from ..port import MemoryServicePort as MemoryService
 
 
 async def run(

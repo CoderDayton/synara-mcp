@@ -38,7 +38,7 @@ from ..service import UNCONSOLIDATED, now_seconds
 from .forget import memory_strength
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as MemoryService
+    from ..port import MemoryServicePort as MemoryService
 
 
 def _replay_score(

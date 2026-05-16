@@ -11,14 +11,14 @@ import pytest
 import pytest_asyncio
 from simplevecdb import AsyncVectorDB
 
-from synara.features.memory.config import MemoryConfig
-from synara.features.memory.ops.events import (
+from synara.features.memory.basal_ganglia.events import (
     EventBus,
     InteractionEvent,
     ReactorState,
     TriggerPolicy,
 )
-from synara.features.memory.primitives.plasticity import PlasticityGraph
+from synara.features.memory.config import MemoryConfig
+from synara.features.memory.hippocampus.plasticity import PlasticityGraph
 from synara.features.memory.service import MemoryService
 
 

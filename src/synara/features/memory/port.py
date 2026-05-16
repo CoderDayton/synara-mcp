@@ -21,12 +21,12 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..config import MemoryConfig
-    from .complete import CompletionResult  # noqa: F401
+    from .config import MemoryConfig
+    from .hippocampus.complete import CompletionResult  # noqa: F401
+    from .hippocampus.plasticity import PlasticityGraph
+    from .hippocampus.separate import DGProjector
+    from .hippocampus.successor import SuccessorRepresentation
     from .memory_types import MemoryType, MemoryTypeRegistry
-    from .plasticity import PlasticityGraph
-    from .separate import DGProjector
-    from .successor import SuccessorRepresentation
 
 
 @runtime_checkable

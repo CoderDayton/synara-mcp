@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from synara.core.errors import ValidationError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..primitives.port import MemoryServicePort as MemoryService
+    from ..port import MemoryServicePort as MemoryService
 
 
 async def run(

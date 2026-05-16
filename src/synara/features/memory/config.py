@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .primitives.memory_types import MemoryTypeRegistry
+from .memory_types import MemoryTypeRegistry
 
 
 @dataclass(frozen=True, slots=True)
