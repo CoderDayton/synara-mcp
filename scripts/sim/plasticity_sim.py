@@ -225,10 +225,15 @@ def profile_steady(sim: PlasticitySim) -> None:
 
 def profile_bursty(sim: PlasticitySim) -> None:
     _seed_core(sim)
+    # Bursts must be *dense* (many turns packed before each gap) so the
+    # cumulative hit count on a topic<->core edge can clear
+    # ``habit_threshold_hits`` despite the 3-day idle gaps. A thin day
+    # (e.g. 50 turns) never reaches the cumulative threshold, which made
+    # the "habits despite gaps" sanity check vacuous rather than failing.
     _drive(
         sim,
         days=10,
-        turns_per_day=50,
+        turns_per_day=120,
         core_focus=0.85,
         idle_days_between_blocks=3.0,
         block_days=1,
@@ -285,7 +290,7 @@ def main() -> int:
     )
     runs = [
         ("steady-30d-30tpd", profile_steady),
-        ("bursty-10x50t-3dgap", profile_bursty),
+        ("bursty-10x120t-3dgap", profile_bursty),
         ("sparse-60d-2tpd", profile_sparse),
         ("disuse-then-resume", profile_disuse_then_resume),
     ]

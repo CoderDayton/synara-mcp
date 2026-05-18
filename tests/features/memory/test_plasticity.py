@@ -672,3 +672,141 @@ async def test_dream_replay_disabled_when_top_k_zero() -> None:
         assert dream.payload["replayed"] == 0
     finally:
         await db.close()
+
+
+# ----- Sim-parity profile regression ----------------------------------
+#
+# scripts/sim/plasticity_sim.py validates the *intended* dynamics of the
+# shipped MemoryConfig constants in a standalone Python model. These
+# tests assert the same four qualitative sanity properties hold against
+# the real async PlasticityGraph driven with the real default constants
+# (esp. habit_threshold_hits=66), so a constant change that breaks the
+# sim is also caught in the runtime. Hits are concentrated on one edge
+# (the sim spreads them over ~15) to keep the cumulative threshold
+# reachable at unit-test volume; `now` is in the sim's app-second units
+# (sec_per_turn_app = 86400 / time_compression / turns_per_day).
+
+
+def _cfg_graph(coll: object) -> PlasticityGraph:
+    """PlasticityGraph wired from the shipped MemoryConfig defaults."""
+    c = MemoryConfig()
+    return PlasticityGraph(
+        collection=coll,
+        sr=None,
+        e_ltp_decay_seconds=c.e_ltp_decay_seconds,
+        l_ltp_threshold_hits=c.l_ltp_threshold_hits,
+        habit_threshold_hits=c.habit_threshold_hits,
+        habit_ltd_multiplier=c.habit_ltd_multiplier,
+        habit_savings_factor=c.habit_savings_factor,
+        ltd_decay_per_idle_day=c.ltd_decay_per_idle_day,
+        time_compression=c.time_compression,
+    )
+
+
+def _step_app(turns_per_day: int) -> float:
+    return (86400.0 / MemoryConfig().time_compression) / turns_per_day
+
+
+def _idle_app(real_days: float) -> float:
+    return real_days * 86400.0 / MemoryConfig().time_compression
+
+
+async def test_sim_steady_profile_forms_a_habit(db: AsyncVectorDB) -> None:
+    """steady (dense, no gaps) crosses the cumulative habit threshold."""
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _cfg_graph(coll)
+    thr = MemoryConfig().habit_threshold_hits
+    step = _step_app(30)  # 30 turns/day, as profile_steady
+    for k in range(thr + 8):
+        await g.reinforce(1, 2, score=0.85, now=k * step)
+    assert await g.is_habit(1, 2)
+    s = await g.edge_state(1, 2)
+    assert s is not None
+    assert s["hits"] >= thr
+    assert s["weight"] > 0.0  # L-LTP folded within the E-LTP window
+
+
+async def test_sim_bursty_profile_forms_a_habit_despite_gaps(
+    db: AsyncVectorDB,
+) -> None:
+    """Dense bursts separated by 3 real-day idle gaps still latch a
+    habit: the hit count is cumulative and gap-independent, and folded
+    weight survives the gap via habit-protected LTD. This is the runtime
+    analogue of the sim's bursty profile after the density fix."""
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _cfg_graph(coll)
+    thr = MemoryConfig().habit_threshold_hits
+    step = _step_app(120)  # dense block, as the fixed profile_bursty
+    now = 0.0
+    blocks = 5
+    per_block = thr // blocks + 4  # total > thr across the gaps
+    for _ in range(blocks):
+        for _ in range(per_block):
+            await g.reinforce(1, 2, score=0.85, now=now)
+            now += step
+        now += _idle_app(3.0)  # 3 real-day gap
+        await g.ltd_pass(now=now)
+    assert await g.is_habit(1, 2)
+    s = await g.edge_state(1, 2)
+    assert s is not None  # not pruned despite the gaps
+    assert s["weight"] > 0.0
+
+
+async def test_sim_sparse_profile_never_forms_a_habit(
+    db: AsyncVectorDB,
+) -> None:
+    """Sparse usage (few, widely spaced reinforcements) stays well under
+    the cumulative threshold and never latches a habit."""
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _cfg_graph(coll)
+    now = 0.0
+    for _ in range(12):  # << habit_threshold_hits (66)
+        await g.reinforce(1, 2, score=0.85, now=now)
+        now += _idle_app(2.0)
+        await g.ltd_pass(now=now)
+    assert not await g.is_habit(1, 2)
+
+
+async def test_sim_disuse_then_resume_habit_survives_gap(
+    db: AsyncVectorDB,
+) -> None:
+    """A latched habit survives long disuse (habit-protected LTD keeps
+    weight > 0 and the savings flag), while a parallel weak non-habit
+    edge is pruned over the same idle. Mirrors the sim's
+    disuse-then-resume check (habW > 0)."""
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2, 3, 4])
+    g = _cfg_graph(coll)
+    thr = MemoryConfig().habit_threshold_hits
+    step = _step_app(30)
+    now = 0.0
+    for _ in range(thr + 4):
+        await g.reinforce(1, 2, score=0.85, now=now)
+        now += step
+    # Weak, never-consolidated companion edge.
+    await g.reinforce(3, 4, score=0.85, now=now)
+    await g.reinforce(3, 4, score=0.85, now=now + step)
+    assert await g.is_habit(1, 2)
+
+    # 90 real days of disuse, then the offline LTD pass.
+    now += _idle_app(90.0)
+    await g.ltd_pass(now=now)
+
+    s_habit = await g.edge_state(1, 2)
+    assert s_habit is not None  # habit edge persists
+    assert s_habit["ever_habit"]
+    assert s_habit["weight"] > 0.0  # habit_ltd_multiplier protected it
+    assert await g.edge_state(3, 4) is None  # weak edge pruned
+    w_trough = s_habit["weight"]
+
+    # Resume: relearning lifts the habit back above its post-disuse
+    # trough (savings vs a non-habit edge is covered separately by
+    # test_plasticity_habit_savings_amplifies_post_lapse_relearn).
+    for _ in range(MemoryConfig().l_ltp_threshold_hits):
+        await g.reinforce(1, 2, score=0.85, now=now)
+        now += step
+    w_after = (await g.edge_state(1, 2))["weight"]  # type: ignore[index]
+    assert w_after > w_trough
