@@ -88,3 +88,6 @@ desktop.ini
 *.db
 data/
 refs/
+
+# Generated simulation artifacts
+scripts/sim/*_report.html
