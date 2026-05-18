@@ -32,7 +32,7 @@ _logger = logging.getLogger(__name__)
 
 def build_server(settings: Settings) -> FastMCP:
     if settings.db_path != ":memory:":
-        Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(settings.db_path).resolve().parent.mkdir(parents=True, exist_ok=True)
     db = AsyncVectorDB(settings.db_path, quantization=Quantization.INT8)
     embedder = build_embedder(settings.embedding)
 

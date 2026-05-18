@@ -114,6 +114,10 @@ class MemoryService:
     ) -> None:
         self.config = config or MemoryConfig()
         self.db = db
+        # Serializes consolidation: the reactor trigger and an explicit
+        # consolidate() call can otherwise interleave their
+        # consolidated_into metadata writes on the same episodes.
+        self._consolidate_lock = asyncio.Lock()
         # Memory-type registry: explicit override beats the two
         # ``*_collection`` config fields. Collections are materialised
         # in registration order, so additional kinds just need a spec.
@@ -234,7 +238,10 @@ class MemoryService:
         st = self._bus.state
         st.last_consolidate_at = _now_real()
         st.novel_encodes_since_consolidate = 0
-        await _consolidate_mod.run(self, session_id=None, n_clusters=None, min_cluster_size=None)
+        async with self._consolidate_lock:
+            await _consolidate_mod.run(
+                self, session_id=None, n_clusters=None, min_cluster_size=None
+            )
         await self._emit("consolidate", session_id=None, payload={"trigger": "reactor"})
 
     async def _reactor_dream(self, _event: Any) -> None:
@@ -462,12 +469,13 @@ class MemoryService:
         n_clusters: int | None = None,
         min_cluster_size: int | None = None,
     ) -> list[dict[str, Any]]:
-        result = await _consolidate_mod.run(
-            self,
-            session_id=session_id,
-            n_clusters=n_clusters,
-            min_cluster_size=min_cluster_size,
-        )
+        async with self._consolidate_lock:
+            result = await _consolidate_mod.run(
+                self,
+                session_id=session_id,
+                n_clusters=n_clusters,
+                min_cluster_size=min_cluster_size,
+            )
         await self._emit(
             "consolidate",
             session_id=session_id,
@@ -531,6 +539,10 @@ class MemoryService:
     ) -> dict[str, Any]:
         if not content.strip():
             raise ValidationError("content must be non-empty")
+        if self.config.max_content_chars and len(content) > self.config.max_content_chars:
+            raise ValidationError(
+                f"content exceeds max_content_chars ({self.config.max_content_chars})"
+            )
         if not 0.0 <= confidence <= 1.0:
             raise ValidationError("confidence must be in [0, 1]")
         if not kind or not kind.strip():
@@ -573,8 +585,14 @@ class MemoryService:
     ) -> list[dict[str, Any]]:
         if not query.strip():
             raise ValidationError("query must be non-empty")
+        if self.config.max_content_chars and len(query) > self.config.max_content_chars:
+            raise ValidationError(
+                f"query exceeds max_content_chars ({self.config.max_content_chars})"
+            )
         if k <= 0:
             return []
+        if self.config.max_recall_k and k > self.config.max_recall_k:
+            raise ValidationError(f"k exceeds max_recall_k ({self.config.max_recall_k})")
         if await self.semantic.count() == 0:
             return []
         q = await self.query_arg(query)

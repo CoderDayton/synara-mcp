@@ -20,6 +20,7 @@ consolidated before they vanish.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -90,8 +91,10 @@ async def run(
     # ``d`` rather than a time constant. We allow callers to override
     # ``d`` indirectly: tau <= 0 still raises so misconfigured callers
     # get an immediate error instead of silently surviving.
-    if decay_tau_seconds is not None and decay_tau_seconds <= 0.0:
-        raise ValidationError("decay_tau_seconds must be positive")
+    if decay_tau_seconds is not None and (
+        not math.isfinite(decay_tau_seconds) or decay_tau_seconds <= 0.0
+    ):
+        raise ValidationError("decay_tau_seconds must be a positive, finite number")
 
     now = now_seconds()
     rows = await service.episodic.get_documents(filter_dict=None, limit=max_scan)

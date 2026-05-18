@@ -22,6 +22,7 @@ remote, leave it unset for local.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol
@@ -29,6 +30,11 @@ from typing import Any, ClassVar, Protocol
 import httpx
 
 _HTTP_ERROR_FLOOR = 400
+# Hard ceiling on a single embedding HTTP response body. httpx buffers
+# the whole body in memory, so without a cap a hostile or misconfigured
+# endpoint (or a proxy error page) can drive an unbounded allocation. A
+# normal batch of embeddings is well under this.
+_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
 class EmbeddingError(RuntimeError):
@@ -312,7 +318,10 @@ class RemoteBackend:
     async def _post(self, payload: dict[str, object]) -> dict[str, object]:
         client = self._ensure_client()
         try:
-            response = await client.post(self._endpoint, json=payload, headers=self._headers)
+            async with client.stream(
+                "POST", self._endpoint, json=payload, headers=self._headers
+            ) as response:
+                raw = await self._read_capped(response)
         except httpx.HTTPError as exc:
             # Connect/timeout/protocol failures must surface as the
             # documented EmbeddingError, not a raw httpx exception that
@@ -320,22 +329,46 @@ class RemoteBackend:
             raise EmbeddingError(
                 f"embedding endpoint {self._endpoint} request failed: {exc!r}"
             ) from exc
+        snippet = raw[:200].decode("utf-8", "replace")
         if response.status_code >= _HTTP_ERROR_FLOOR:
             raise EmbeddingError(
-                f"embedding endpoint {self._endpoint} returned "
-                f"{response.status_code}: {response.text[:200]}"
+                f"embedding endpoint {self._endpoint} returned {response.status_code}: {snippet}"
             )
         try:
-            body = response.json()
+            body = json.loads(raw)
         except ValueError as exc:
             # A 2xx with a non-JSON body (e.g. an HTML proxy page).
             raise EmbeddingError(
-                f"embedding endpoint {self._endpoint} returned a non-JSON body: "
-                f"{response.text[:200]}"
+                f"embedding endpoint {self._endpoint} returned a non-JSON body: {snippet}"
             ) from exc
         if not isinstance(body, dict):
             raise EmbeddingError("embedding response was not a JSON object")
         return body
+
+    async def _read_capped(self, response: httpx.Response) -> bytes:
+        """Read the response body, aborting past ``_MAX_RESPONSE_BYTES``.
+
+        Rejects an oversized ``Content-Length`` up front, then enforces
+        the same ceiling while streaming so a chunked body without a
+        declared length cannot slip past.
+        """
+        declared = response.headers.get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > _MAX_RESPONSE_BYTES:
+            raise EmbeddingError(
+                f"embedding endpoint {self._endpoint} response too large: "
+                f"{declared} bytes exceeds {_MAX_RESPONSE_BYTES}-byte cap"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > _MAX_RESPONSE_BYTES:
+                raise EmbeddingError(
+                    f"embedding endpoint {self._endpoint} response exceeded "
+                    f"{_MAX_RESPONSE_BYTES}-byte cap"
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:

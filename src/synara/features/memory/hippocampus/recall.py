@@ -42,6 +42,11 @@ async def run(
         raise ValidationError("query must be non-empty")
     if k <= 0:
         return []
+    cfg = service.config
+    if cfg.max_content_chars and len(query) > cfg.max_content_chars:
+        raise ValidationError(f"query exceeds max_content_chars ({cfg.max_content_chars})")
+    if cfg.max_recall_k and k > cfg.max_recall_k:
+        raise ValidationError(f"k exceeds max_recall_k ({cfg.max_recall_k})")
     if mode not in {"auto", "episodic", "semantic", "hybrid"}:
         raise ValidationError(f"unknown recall mode: {mode}")
 

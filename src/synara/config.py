@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,7 @@ from synara.features.embedding import EmbeddingConfig
 
 Transport = Literal["stdio", "http", "sse", "streamable-http"]
 _VALID_TRANSPORTS: tuple[Transport, ...] = ("stdio", "http", "sse", "streamable-http")
+_TIMEOUT_CEILING_SECONDS = 86_400
 
 
 def default_db_path() -> str:
@@ -20,7 +22,7 @@ def default_db_path() -> str:
     """
     base = os.environ.get("XDG_CACHE_HOME")
     cache_root = Path(base) if base else Path.home() / ".cache"
-    return str(cache_root / "synara-mcp" / "synara.db")
+    return str((cache_root / "synara-mcp" / "synara.db").resolve())
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,8 +44,15 @@ class Settings:
             timeout_seconds = float(raw_timeout)
         except ValueError as exc:
             raise ValueError(f"SYNARA_EMBEDDING_TIMEOUT={raw_timeout!r} must be a number") from exc
+        if not math.isfinite(timeout_seconds):
+            raise ValueError(f"SYNARA_EMBEDDING_TIMEOUT={raw_timeout!r} must be finite")
         if timeout_seconds <= 0:
             raise ValueError(f"SYNARA_EMBEDDING_TIMEOUT={raw_timeout!r} must be positive")
+        if timeout_seconds > _TIMEOUT_CEILING_SECONDS:
+            raise ValueError(
+                f"SYNARA_EMBEDDING_TIMEOUT={raw_timeout!r} exceeds "
+                f"{_TIMEOUT_CEILING_SECONDS}s ceiling"
+            )
 
         dim = _positive_int_env("SYNARA_EMBEDDING_DIM")
         batch_size = _positive_int_env("SYNARA_EMBEDDING_BATCH_SIZE")
@@ -65,7 +74,7 @@ class Settings:
         )
 
 
-def _positive_int_env(name: str) -> int | None:
+def _positive_int_env(name: str, *, max_value: int = 1_000_000) -> int | None:
     raw = os.environ.get(name)
     if raw is None or raw == "":
         return None
@@ -75,4 +84,6 @@ def _positive_int_env(name: str) -> int | None:
         raise ValueError(f"{name}={raw!r} must be an integer") from exc
     if value <= 0:
         raise ValueError(f"{name}={raw!r} must be positive")
+    if value > max_value:
+        raise ValueError(f"{name}={raw!r} exceeds maximum ({max_value})")
     return value

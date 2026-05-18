@@ -39,6 +39,7 @@ from ..service import UNCONSOLIDATED, now_seconds
 from .forget import memory_strength
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..config import MemoryConfig
     from ..port import MemoryServicePort as MemoryService
 
 
@@ -200,6 +201,25 @@ async def _absorb(
     return absorbed_ids, formed
 
 
+def _cap_candidates(
+    cfg: MemoryConfig,
+    candidates: list[tuple[int, str, dict[str, Any]]],
+) -> list[tuple[int, str, dict[str, Any]]]:
+    """Bound peak memory + clustering cost on unbounded episode growth.
+
+    Keeps the most-retrieved episodes — they carry the strongest
+    consolidation signal. Cap of 0 disables the limit.
+    """
+    cap = cfg.consolidate_max_candidates
+    if not cap or len(candidates) <= cap:
+        return candidates
+    return sorted(
+        candidates,
+        key=lambda c: int(c[2].get("retrieval_count", 0)),
+        reverse=True,
+    )[:cap]
+
+
 async def run(
     service: MemoryService,
     *,
@@ -235,6 +255,7 @@ async def run(
                 continue
             eligible.append((ep_id, text, md))
         candidates = eligible
+    candidates = _cap_candidates(cfg, candidates)
     floor = min_cluster_size or cfg.consolidate_min_cluster
     if len(candidates) < floor:
         return []
@@ -252,7 +273,7 @@ async def run(
         return formed
 
     n = n_clusters or max(1, int(math.sqrt(len(remaining))))
-    n = max(1, min(n, len(remaining)))
+    n = max(1, min(n, len(remaining), cfg.consolidate_max_n_clusters or n))
     try:
         result = await service.episodic.cluster(
             n_clusters=n,

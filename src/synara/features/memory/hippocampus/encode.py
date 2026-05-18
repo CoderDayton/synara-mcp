@@ -34,9 +34,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 def _check_input_caps(
     cfg: MemoryConfig,
     content: str,
+    session_id: str,
     tags: Sequence[str] | None,
 ) -> None:
     """Reject oversized untrusted MCP-tool input before it is stored."""
+    if cfg.max_session_id_chars and len(session_id) > cfg.max_session_id_chars:
+        raise ValidationError(
+            f"session_id exceeds max_session_id_chars ({cfg.max_session_id_chars})"
+        )
     if cfg.max_content_chars and len(content) > cfg.max_content_chars:
         raise ValidationError(
             f"content exceeds max_content_chars ({cfg.max_content_chars}); "
@@ -59,7 +64,7 @@ async def run(
     if not session_id:
         raise ValidationError("session_id must be non-empty")
     cfg = service.config
-    _check_input_caps(cfg, content, tags)
+    _check_input_caps(cfg, content, session_id, tags)
     registry = cfg.signal_registry if isinstance(cfg.signal_registry, SignalRegistry) else None
     signals = _derive_signals(content, registry) if cfg.auto_signal_metadata else None
     if salience is None:

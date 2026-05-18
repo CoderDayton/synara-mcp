@@ -58,6 +58,14 @@ class MemoryConfig:
     # 0 disables the respective cap.
     max_content_chars: int = 50_000
     max_tags: int = 64
+    # Cap on caller-requested result count (recall / reflect / semantic
+    # recall). Unbounded k lets a client force an arbitrarily large
+    # vector-DB fetch + result allocation. 0 disables the cap.
+    max_recall_k: int = 1_000
+    # Cap on the session_id namespace string. session_id keys dedup, the
+    # SR window, and metadata; an unbounded value bloats every scan and
+    # the durable edge table. 0 disables the cap.
+    max_session_id_chars: int = 1_024
     # Power-law (Wickelgren/Wixted) decay exponent used by ``forget``:
     #   S(t) = salience * sum_k (1 + (t - t_k))^(-d)
     # d ~ 0.5 fits behavioural retention curves better than the exponential
@@ -69,6 +77,14 @@ class MemoryConfig:
     access_history_cap: int = 32
     # Minimum cluster size that yields a semantic schema during consolidation.
     consolidate_min_cluster: int = 2
+    # Hard cap on candidate episodes loaded into one consolidation pass.
+    # Unbounded accumulation would load every unconsolidated episode into
+    # memory and into sklearn k-means at once (OOM risk). When exceeded,
+    # the highest-retrieval-count candidates are kept. 0 disables the cap.
+    consolidate_max_candidates: int = 5_000
+    # Hard cap on the k-means cluster count, bounding clustering cost
+    # regardless of candidate volume. 0 disables the cap.
+    consolidate_max_n_clusters: int = 256
     # Cosine distance below which an unconsolidated episode is *absorbed*
     # into the nearest existing schema (instead of contributing to a new
     # cluster). Implements schema-fitting fast-track consolidation

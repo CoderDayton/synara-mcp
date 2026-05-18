@@ -21,6 +21,13 @@ async def run(
         raise ValidationError("session_id must be non-empty")
     if k <= 0:
         raise ValidationError("k must be positive")
+    cfg = service.config
+    if cfg.max_session_id_chars and len(session_id) > cfg.max_session_id_chars:
+        raise ValidationError(
+            f"session_id exceeds max_session_id_chars ({cfg.max_session_id_chars})"
+        )
+    if cfg.max_recall_k and k > cfg.max_recall_k:
+        raise ValidationError(f"k exceeds max_recall_k ({cfg.max_recall_k})")
 
     episodes = await service.episodic.get_documents(
         {"session_id": session_id}, limit=max(50, k * 5)
