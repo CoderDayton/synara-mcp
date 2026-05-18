@@ -39,3 +39,12 @@ When configured with a remote OpenAI-compatible embedding endpoint
 (`SYNARA_EMBEDDING_URL`), episode text is sent to that endpoint — treat
 that endpoint as part of your trust boundary. Never commit API keys;
 `SYNARA_EMBEDDING_API_KEY` is read from the environment only.
+
+Input from MCP tool callers is treated as untrusted. As defense in
+depth: `content` / `tags` / `session_id` / `query` lengths and the
+result count (`k`) are bounded by `MemoryConfig` caps; numeric
+parameters reject non-finite (`NaN`/`Inf`) values; the configured DB
+path is resolved before use; concurrent consolidation is serialized;
+and the remote embedding endpoint's HTTP response body is size-capped.
+These limits bound resource use and bad input — they are not a
+substitute for trusting your configured embedding endpoint.
