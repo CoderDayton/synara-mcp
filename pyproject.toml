@@ -22,6 +22,17 @@ dependencies = [
     "simplevecdb[server]>=2.6.0,<3",
 ]
 
+[project.optional-dependencies]
+# Parallel FastAPI admin console. Kept out of the default install so the
+# core MCP server stays lean; the dashboard package is import-safe
+# (stdlib-only __init__, FastAPI imported lazily) so a default install
+# never loads these.
+dashboard = [
+    "fastapi>=0.136",
+    "uvicorn>=0.46",
+    "sse-starlette>=3.4",
+]
+
 [project.scripts]
 synara-mcp = "synara.main:main"
 

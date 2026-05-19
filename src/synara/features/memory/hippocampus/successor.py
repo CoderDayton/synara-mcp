@@ -226,6 +226,44 @@ class SuccessorRepresentation:
     def total_edges(self) -> float:
         return self._total_edges
 
+    # ------------------------------------------------------------------ removal
+
+    def evict_nodes(self, ids: set[int]) -> None:
+        """Drop episode ids from in-memory SR state.
+
+        Required when the underlying episode documents are deleted while
+        the process is live: ``coll.edges`` has an ``ON DELETE CASCADE``
+        FK to documents, so durable SR edges vanish with the doc — but a
+        lingering ``_pending`` entry, ``_T`` row/column, or ``_sessions``
+        window referencing a now-deleted id would make the next
+        :meth:`flush` upsert a FK-violating edge. Removes outgoing rows,
+        incoming columns, the ``M`` row/column, queued pending pairs, and
+        window entries; ``_total_edges`` is decremented by the removed
+        tally (clamped at 0).
+        """
+        if not ids:
+            return
+        for x in ids:
+            row = self._T_counts.pop(x, None)
+            if row is not None:
+                self._total_edges -= sum(row.values())
+            self._T_row_sum.pop(x, None)
+            self._M.pop(x, None)
+        for i, row in self._T_counts.items():
+            for x in ids & row.keys():
+                removed = row.pop(x)
+                self._T_row_sum[i] -= removed
+                self._total_edges -= removed
+        for mrow in self._M.values():
+            for x in ids & mrow.keys():
+                mrow.pop(x, None)
+        self._total_edges = max(self._total_edges, 0.0)
+        self._pending = {(i, j) for (i, j) in self._pending if i not in ids and j not in ids}
+        for win in self._sessions.values():
+            kept = [(e, t) for (e, t) in win.queue if e not in ids]
+            win.queue.clear()
+            win.queue.extend(kept)
+
     def _reset_for_tests(self, **kwargs: Any) -> None:  # pragma: no cover
         """Reset in-memory state (test helper, not used in production)."""
         self.__post_init__()

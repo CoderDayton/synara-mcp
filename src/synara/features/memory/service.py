@@ -388,6 +388,41 @@ class MemoryService:
         items.sort(key=lambda r: r["position"])
         return items
 
+    async def delete_episode(
+        self,
+        episode_id: int,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete an episode (and its theta-segment group) from the store.
+
+        Removes the episodic documents via ``delete_by_ids``. Durable
+        SR/plasticity edges (``coll.edges``) have an ``ON DELETE
+        CASCADE`` FK to documents, so they vanish automatically with the
+        doc. Plasticity holds no in-memory state. SR, however, keeps an
+        in-memory tally/pending/window: those ids are evicted via
+        :meth:`SuccessorRepresentation.evict_nodes` *before* the delete
+        so a subsequent :meth:`SuccessorRepresentation.flush` cannot
+        upsert a FK-violating edge for a now-deleted id. (``forget`` has
+        the same latent exposure but escapes it because forgotten ids
+        are typically inactive; a mid-session admin delete is not.) No
+        reactor event is emitted: a targeted admin delete should not feed
+        the consolidation/dream trigger.
+        """
+        target = await self.episodic.get_documents({"id": episode_id})
+        if not target:
+            raise ValidationError(f"episode {episode_id} not found")
+        _doc_id, _text, md = target[0]
+        group_id = int(md.get("episode_group_id", episode_id))
+        members = await self.fetch_episode_group(group_id, session_id=session_id)
+        member_ids = {int(r["id"]) for r in members}
+        member_ids.add(int(episode_id))
+        ordered = sorted(member_ids)
+        if self._sr is not None:
+            self._sr.evict_nodes(set(ordered))
+        await self.episodic.delete_by_ids(ordered)
+        return {"deleted_ids": ordered, "count": len(ordered)}
+
     # ------------------------------------------------------------------ stats
     async def stats(self) -> dict[str, int]:
         return {
