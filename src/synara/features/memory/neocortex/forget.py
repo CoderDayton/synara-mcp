@@ -124,6 +124,15 @@ async def run(
 
     removed = 0
     if weak and not dry_run:
+        # coll.edges has ON DELETE CASCADE to documents: deleting these
+        # docs vaporises their durable SR edges, but a lingering
+        # in-memory _T/_pending/window entry would make the next SR
+        # flush upsert a FK-violating edge for a now-deleted id. Evict
+        # before the delete — the same invariant
+        # MemoryService.delete_episode relies on (SuccessorRepresentation
+        # .evict_nodes). Plasticity holds no in-memory state.
+        if service._sr is not None:
+            service._sr.evict_nodes(set(weak))
         await service.episodic.delete_by_ids(weak)
         removed = len(weak)
     return {

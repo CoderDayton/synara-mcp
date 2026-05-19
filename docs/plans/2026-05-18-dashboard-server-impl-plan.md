@@ -154,9 +154,23 @@ group, evicts SR nodes, `delete_by_ids`, no reactor emit). Plasticity
 needs nothing (stateless in-memory; FK-cascaded). Proof: 4 new tests
 (single, whole-group, missing→`ValidationError`, recall-after-delete
 no-FK-crash); full suite 326 passed, mypy strict clean (66 files), 0
-regressions. `forget` shares the latent FK exposure but escapes it
-because forgotten ids are typically inactive — left as-is to avoid
-unrequested scope creep; noted here as known.
+regressions.
+
+**2.1c ✅ COMPLETE 2026-05-19 — `forget` FK exposure resolved.** The
+2.1b note ("`forget` shares the latent FK exposure but escapes it
+because forgotten ids are typically inactive") was disproven by a
+failing test: a live `forget(dry_run=False)` on an episode still in the
+SR session window, followed by a recall, raised the *same*
+`sqlite3.IntegrityError: FOREIGN KEY constraint failed` at the SR flush
+(`recall.py:124`). Root cause is identical to the pre-fix
+`delete_episode`: `forget.run` called `delete_by_ids(weak)` with no SR
+eviction. Fix: `service._sr.evict_nodes(set(weak))` before
+`delete_by_ids` in `forget.run` (port-declared `_sr`, mirrors
+`delete_episode`); `delete_episode` docstring's now-false parenthetical
+corrected. Proof: new `tests/features/memory/test_forget_sr_safety.py`
+(red before fix → green after), full gate ruff/mypy(76)/bandit clean,
+340 passed, 0 regressions. No remaining known FK exposure on any
+destructive path.
 
 **2.2 — Routes (delegating to `MemoryService`)**
 - Target: `routes/health.py stats.py memories.py graph.py admin.py

@@ -403,11 +403,10 @@ class MemoryService:
         in-memory tally/pending/window: those ids are evicted via
         :meth:`SuccessorRepresentation.evict_nodes` *before* the delete
         so a subsequent :meth:`SuccessorRepresentation.flush` cannot
-        upsert a FK-violating edge for a now-deleted id. (``forget`` has
-        the same latent exposure but escapes it because forgotten ids
-        are typically inactive; a mid-session admin delete is not.) No
-        reactor event is emitted: a targeted admin delete should not feed
-        the consolidation/dream trigger.
+        upsert a FK-violating edge for a now-deleted id. (``forget``
+        relies on the same invariant and evicts identically before its
+        own ``delete_by_ids``.) No reactor event is emitted: a targeted
+        admin delete should not feed the consolidation/dream trigger.
         """
         target = await self.episodic.get_documents({"id": episode_id})
         if not target:
