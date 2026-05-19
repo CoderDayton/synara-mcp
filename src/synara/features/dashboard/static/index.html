@@ -6,8 +6,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <title>Synara Dashboard</title>
-    <script type="module" crossorigin src="./assets/index-JhXLziOg.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-3dr2cm9S.css">
+    <!-- Pre-paint theme bootstrap: reconcile the saved preference before
+         first paint so a saved "light" choice doesn't flash the hardcoded
+         dark default. Key/logic mirror theme-toggle.tsx (saved ?? "dark"). -->
+    <script>
+      try {
+        var dark =
+          localStorage.getItem("synara.dashboard.theme") !== "light";
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark
+          ? "dark"
+          : "light";
+      } catch (e) {
+        /* storage unavailable — hardcoded class="dark" remains the fallback */
+      }
+    </script>
+    <script type="module" crossorigin src="./assets/index-Cnvxhpxo.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-C6MN0jNX.css">
   </head>
   <body>
     <div id="root"></div>

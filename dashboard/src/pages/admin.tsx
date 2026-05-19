@@ -91,18 +91,16 @@ function ForgetCard() {
           />
           Dry run (preview only)
         </label>
-        <Button
-          onClick={run}
-          disabled={m.isPending}
-          variant={dryRun ? "secondary" : "destructive"}
-        >
-          {m.isPending ? "Running…" : dryRun ? "Preview" : "Forget now"}
-        </Button>
-        {!dryRun && (
-          <Badge variant="destructive" className="ml-2 align-middle">
-            destructive
-          </Badge>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            onClick={run}
+            disabled={m.isPending}
+            variant={dryRun ? "secondary" : "destructive"}
+          >
+            {m.isPending ? "Running…" : dryRun ? "Preview" : "Forget now"}
+          </Button>
+          {!dryRun && <Badge variant="destructive">destructive</Badge>}
+        </div>
         <ResultBlock value={m.data} />
       </CardContent>
     </Card>

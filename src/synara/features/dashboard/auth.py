@@ -27,7 +27,11 @@ def make_auth_dependency(config: DashboardConfig) -> AuthDependency:
             return
         header = request.headers.get("Authorization", "")
         scheme, _, presented = header.partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(presented, token):
+        # compare_digest on str rejects non-ASCII with TypeError; compare
+        # the UTF-8 bytes so a hostile token yields 401, not an unhandled 500.
+        if scheme.lower() != "bearer" or not hmac.compare_digest(
+            presented.encode(), token.encode()
+        ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid or missing bearer token",

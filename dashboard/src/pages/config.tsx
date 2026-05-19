@@ -68,9 +68,17 @@ export default function Config() {
                   ["Embedding", `${h.embedding_backend} · ${h.embedding_model}`],
                   ["DB path", h.db_path],
                 ].map(([k, v]) => (
-                  <div key={k} className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">{k}</dt>
-                    <dd className="truncate font-mono text-xs">{v}</dd>
+                  <div
+                    key={k}
+                    className="flex items-baseline justify-between gap-3"
+                  >
+                    <dt className="shrink-0 text-muted-foreground">{k}</dt>
+                    <dd
+                      className="min-w-0 truncate font-mono text-xs"
+                      title={String(v)}
+                    >
+                      {v}
+                    </dd>
                   </div>
                 ))}
               </dl>

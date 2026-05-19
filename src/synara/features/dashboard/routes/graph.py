@@ -58,7 +58,7 @@ async def _bfs_sr(
         for node in frontier:
             if len(nodes) >= max_nodes:
                 break
-            for e in await coll.get_edges(src=node, kind="sr"):
+            for e in await coll.get_edges(src=node, kind="sr", limit=max_nodes):
                 edges.append(_edge_dict(e, weighted=False))
                 d = int(e.dst_id)
                 if d not in nodes and len(nodes) < max_nodes:

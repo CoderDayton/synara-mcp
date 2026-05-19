@@ -22,6 +22,9 @@ router = APIRouter(tags=["memories"])
 _Service = Annotated[MemoryService, Depends(get_service)]
 
 _MAX_LIMIT = 200
+# Offset-paginate by fetching offset+limit rows then slicing; cap the
+# offset so a single query param cannot trigger a full-table memory load.
+_MAX_OFFSET = 100_000
 
 
 @router.get("/memories")
@@ -30,7 +33,7 @@ async def list_memories(
     kind: Literal["episodic", "semantic"] = "episodic",
     q: str | None = None,
     limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=_MAX_OFFSET)] = 0,
 ) -> dict[str, Any]:
     if q:
         if kind == "semantic":
