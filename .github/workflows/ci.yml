@@ -46,5 +46,8 @@ jobs:
       - name: bandit
         run: uv run --frozen bandit -q -r src
 
+      - name: dashboard build freshness
+        run: uv run --frozen python scripts/check_dashboard_build.py
+
       - name: pytest
         run: uv run --frozen pytest
