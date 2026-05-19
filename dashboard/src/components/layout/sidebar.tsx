@@ -33,16 +33,20 @@ function StatusFooter() {
   const { data, isError } = useHealth();
   const ok = !!data && !isError;
   return (
-    <div className="rounded-lg border border-sidebar-border bg-sidebar-accent/40 p-3 text-xs sm:p-4">
+    <div className="rounded-xl border border-sidebar-border/70 bg-card/50 p-3 text-xs shadow-card sm:p-4">
       <div className="flex items-center gap-2 font-medium">
         <span
           className={cn(
-            "size-2 rounded-full",
-            ok ? "bg-success" : "bg-destructive",
+            "size-2 rounded-full ring-4",
+            ok
+              ? "bg-success ring-success/20"
+              : "bg-destructive ring-destructive/20",
           )}
           aria-hidden
         />
-        {ok ? "Connected" : "Offline"}
+        <span className={ok ? "text-success" : "text-destructive"}>
+          {ok ? "Connected" : "Offline"}
+        </span>
       </div>
       {data && (
         <dl className="mt-2 space-y-1 text-muted-foreground">
@@ -68,12 +72,14 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { data } = useHealth();
   return (
     <div className="flex h-full flex-col gap-6 p-4 sm:p-5">
-      <div className="flex items-center gap-2.5">
-        <div className="grid size-9 place-items-center rounded-lg bg-primary text-primary-foreground">
+      <div className="flex items-center gap-3">
+        <div className="grid size-9 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary/65 text-white shadow-glow ring-1 ring-inset ring-white/15">
           <ActivityIcon className="size-5" aria-hidden />
         </div>
         <div className="leading-tight">
-          <div className="font-semibold tracking-tight">Synara</div>
+          <div className="text-[0.95rem] font-semibold tracking-tight">
+            Synara
+          </div>
           <div className="text-xs text-muted-foreground">
             {data ? `v${data.version}` : "memory console"}
           </div>
@@ -83,7 +89,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <nav className="flex-1 space-y-5" aria-label="Primary">
         {NAV.map((section) => (
           <div key={section.group}>
-            <div className="px-2 pb-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
               {section.group}
             </div>
             <ul className="space-y-1">
@@ -95,17 +101,28 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                     onClick={onNavigate}
                     className={({ isActive }) =>
                       cn(
-                        "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                        "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                        "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring",
                         isActive
-                          ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                          : "text-sidebar-foreground/80",
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground before:absolute before:inset-y-1.5 before:left-0 before:w-1 before:rounded-r-full before:bg-primary"
+                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
                       )
                     }
                   >
-                    <item.icon className="size-4 shrink-0" aria-hidden />
-                    {item.label}
+                    {({ isActive }) => (
+                      <>
+                        <item.icon
+                          className={cn(
+                            "size-4 shrink-0 transition-colors",
+                            isActive
+                              ? "text-primary"
+                              : "text-muted-foreground group-hover:text-sidebar-foreground",
+                          )}
+                          aria-hidden
+                        />
+                        {item.label}
+                      </>
+                    )}
                   </NavLink>
                 </li>
               ))}

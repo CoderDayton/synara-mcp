@@ -91,7 +91,7 @@ export default function Overview() {
               {items.map((it) => (
                 <li
                   key={it.id}
-                  className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+                  className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 text-sm transition-colors hover:bg-muted/50"
                 >
                   <span className="mr-2 font-mono text-xs text-muted-foreground">
                     #{it.id}

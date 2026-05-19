@@ -207,7 +207,7 @@ export default function Graph() {
       )}
 
       <Activity mode={data && elements.length > 0 ? "visible" : "hidden"}>
-        <div className="h-[60vh] overflow-hidden rounded-lg border border-border bg-card sm:h-[65vh] lg:h-[70vh]">
+        <div className="h-[60vh] overflow-hidden rounded-xl border border-border/60 bg-card shadow-card sm:h-[65vh] lg:h-[70vh]">
           <CytoscapeComponent
             elements={elements}
             stylesheet={STYLESHEET}

@@ -112,7 +112,7 @@ export default function Memories() {
       )}
 
       {rows.length > 0 && (
-        <div className="overflow-x-auto rounded-lg border border-border">
+        <div className="overflow-hidden rounded-xl border border-border/60 bg-card shadow-card [&_th]:text-[0.7rem] [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-wider [&_th]:text-muted-foreground [&_thead]:bg-muted/40">
           <Table>
             <TableHeader>
               <TableRow>

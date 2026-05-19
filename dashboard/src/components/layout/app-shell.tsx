@@ -13,9 +13,9 @@ export function AppShell() {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="min-h-svh bg-background lg:grid lg:grid-cols-[16rem_1fr]">
+    <div className="min-h-svh lg:grid lg:grid-cols-[16rem_1fr]">
       {/* Desktop sidebar */}
-      <aside className="sticky top-0 hidden h-svh border-r border-sidebar-border bg-sidebar lg:block">
+      <aside className="sticky top-0 hidden h-svh border-r border-sidebar-border/70 bg-sidebar lg:block">
         <SidebarContent />
       </aside>
 
@@ -28,14 +28,14 @@ export function AppShell() {
             className="absolute inset-0 bg-black/60"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute inset-y-0 left-0 w-64 max-w-[80vw] border-r border-sidebar-border bg-sidebar shadow-xl">
+          <div className="absolute inset-y-0 left-0 w-64 max-w-[80vw] border-r border-sidebar-border/70 bg-sidebar shadow-pop">
             <SidebarContent onNavigate={() => setOpen(false)} />
           </div>
         </div>
       )}
 
       <div className="flex min-w-0 flex-col">
-        <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur sm:h-16 sm:px-6">
+        <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/60 bg-background/70 px-4 backdrop-blur-xl sm:h-16 sm:px-6">
           <Button
             variant="ghost"
             size="icon"
