@@ -73,7 +73,7 @@ Restart the client. The first run downloads the local embedding model (once) unl
 An optional read/write admin console (memory browser, SR/plasticity graph, forget/consolidate/reflect, live stats) runs **in-process on the same event loop** as the MCP server — gated behind the `[dashboard]` extra and an env flag, so a default install never pulls in FastAPI/uvicorn.
 
 ```bash
-SYNARA_DASHBOARD=true uvx --from "synara-mcp[dashboard]" synara-mcp
+SYNARA_DASHBOARD=true uvx 'synara-mcp[dashboard]'
 ```
 
 It binds `127.0.0.1:8765` by default — open <http://127.0.0.1:8765>. On loopback the bearer token is optional; **any non-loopback bind requires `SYNARA_DASHBOARD_TOKEN`** or startup fails. See the `SYNARA_DASHBOARD*` rows under [Configuration](#configuration). The console works under any transport, including `stdio` (it never writes to stdout).
