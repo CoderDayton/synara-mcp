@@ -74,7 +74,7 @@ Restart the client. The first run downloads the local embedding model unless a r
 | `reflect_session` | Summarise a session's episodes |
 | `store_semantic_memory` | Store a durable semantic fact |
 | `recall_semantic_memory` | Retrieve semantic facts |
-| `memory_stats` | Counts, edges, and reactor state |
+| `memory_stats` | Episodic and semantic memory counts |
 
 ---
 

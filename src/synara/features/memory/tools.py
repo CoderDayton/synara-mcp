@@ -57,12 +57,13 @@ def register_tools(
         description=(
             "Store one episode (raw trace) in the episodic store. Dedups "
             "near-dups within session_id (bumps retrieval_count instead "
-            "of inserting).\n"
+            "of inserting); very short content skips dedup and always "
+            "inserts.\n"
             "content: non-empty text to embed/store.\n"
             f"{_SID}\n"
             "tags: optional list[str] labels; used only by reflect "
             "seeding + schema tag union. Not a filter.\n"
-            "salience: 0..1, default 0.5. Higher = slower Ebbinghaus "
+            "salience: 0..1, default 0.5. Higher = slower power-law "
             "decay + bias to be schema headline."
         ),
     )
@@ -121,7 +122,8 @@ def register_tools(
             "Cluster unconsolidated episodes -> semantic schemas. Marks "
             "sources consolidated_into=<schema_id>.\n"
             f"{_SID} Optional; omit to consolidate across all namespaces.\n"
-            "n_clusters: int, default ceil(sqrt(num_candidates)).\n"
+            "n_clusters: int, default floor(sqrt(remaining after "
+            "schema absorption)), capped.\n"
             "min_cluster_size: drop smaller clusters, default 2."
         ),
     )
@@ -147,12 +149,14 @@ def register_tools(
     @mcp.tool(
         name="forget_episodes",
         description=(
-            "Ebbinghaus pruning over the episodic store. "
-            "strength = salience*exp(-age/tau) + retrievals*boost. "
-            "Consolidated pruned at floor; unconsolidated at floor/2.\n"
+            "Power-law pruning over the episodic store. "
+            "strength = salience * sum_k (1 + age_k)^-d over retrieval "
+            "times; consolidated pruned at floor, unconsolidated at "
+            "floor/2.\n"
             "strength_floor: 0..1, default 0.05.\n"
-            "decay_tau_seconds: positive float, default config "
-            "(~1 week).\n"
+            "decay_tau_seconds: kept for API compat only; does NOT tune "
+            "decay (model uses a fixed exponent d). Must be positive if "
+            "set.\n"
             "dry_run: default true (returns candidate_ids, no delete). "
             "false = delete."
         ),
