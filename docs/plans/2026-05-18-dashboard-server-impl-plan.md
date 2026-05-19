@@ -302,6 +302,38 @@ v4 + shadcn)**
 
 ---
 
+**PHASE 4 ✅ COMPLETE 2026-05-19.**
+
+- **4.1** — `dashboard/` scaffolded: Bun 1.3.11 · Vite 8.0.13 · React
+  19.2.6 · TS 6.0.3 · Tailwind v4 (CSS-first `@theme inline`) · shadcn
+  (new-york/neutral) · TanStack Query · react-router 7 · recharts ·
+  **Cytoscape 3.33 + fcose** (replaced @xyflow/react per user). Vite
+  `outDir → ../src/synara/features/dashboard/static`, `base "./"`.
+  Proof: `bun run build → exit 0`, static/ populated.
+- **4.2** — Hand-typed API client from the captured `/api` contract
+  (`openapi_url=None`), auth-aware TanStack hooks; responsive shell
+  (sidebar/topbar/theme/token), 5 pages (Overview/Memories/Graph/Admin/
+  Config), Graph lazy + `<Activity>`, dark-first WCAG-AA design system,
+  recharts+cytoscape code-split (entry 827→480 KB, 250→147 KB gz).
+  Proof: `tsc -b → 0`, `vitest run → 4/4` (bearer-header injection;
+  delete requires explicit confirm), `bun run build → 0`.
+- **4.3** — FastAPI `StaticFiles` SPA mount in `dashboard/app.py`
+  (unauthenticated shell — token entered in UI; `/api` keeps
+  precedence; doc paths stay hard-404 so the catch-all cannot resurface
+  an OpenAPI surface; path-traversal-safe). Built `static/` committed.
+  `scripts/check_dashboard_build.py` freshness guard (source-input hash
+  vs build-time manifest `static/.assets-hash`) wired as `postbuild`
+  and a lefthook pre-commit/pre-push job. Proof: ruff/format/mypy(77)
+  /bandit clean, **346 passed** (+6 SPA tests incl. traversal &
+  api-precedence; prior `test_no_openapi_surface` kept green by the
+  doc-path 404), guard fails exit 2 on simulated drift / 0 fresh.
+
+Backend change scope note: the static mount lives entirely in the
+optional `[dashboard]` extra (lazy-imported package) — **zero default
+wheel/import impact**; it is not a new `/api` endpoint.
+
+---
+
 ## Phase 5 — Final gates & docs
 
 - Full toolchain: `ruff format`, `ruff check --fix src tests`,

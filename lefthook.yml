@@ -20,6 +20,9 @@ pre-commit:
     - name: bandit
       run: uv run --no-sync bandit -q -r src
 
+    - name: dashboard-build-fresh
+      run: uv run --no-sync python scripts/check_dashboard_build.py
+
     - name: pytest
       run: uv run --no-sync pytest -q
 
@@ -37,6 +40,9 @@ pre-push:
 
     - name: bandit
       run: uv run --no-sync bandit -q -r src
+
+    - name: dashboard-build-fresh
+      run: uv run --no-sync python scripts/check_dashboard_build.py
 
     - name: pytest
       run: uv run --no-sync pytest
