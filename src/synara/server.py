@@ -13,6 +13,7 @@ through the MCP context.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -45,8 +46,27 @@ def build_server(settings: Settings) -> FastMCP:
 
     @lifespan
     async def app_lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+        # Dashboard (if enabled) runs as a task on this same loop and is
+        # drained when the AsyncExitStack unwinds — *before* the finally
+        # closes db/embedder, so no in-flight request hits a closed DB.
         try:
-            yield {"db": db, "embedder": embedder, "settings": settings}
+            async with contextlib.AsyncExitStack() as stack:
+                if settings.dashboard.enabled:
+                    from synara.features.dashboard import (  # noqa: PLC0415
+                        build_dashboard_app,
+                    )
+                    from synara.features.dashboard.runner import (  # noqa: PLC0415
+                        run_dashboard,
+                    )
+
+                    dash_app = build_dashboard_app(
+                        settings=settings,
+                        db=db,
+                        embedder=embedder,
+                        service=service,
+                    )
+                    await stack.enter_async_context(run_dashboard(dash_app, settings.dashboard))
+                yield {"db": db, "embedder": embedder, "settings": settings}
         finally:
             await embedder.aclose()
             await db.close()
@@ -59,5 +79,5 @@ def build_server(settings: Settings) -> FastMCP:
         ),
         lifespan=app_lifespan,
     )
-    memory.register(mcp, db, embedder=embedder)
+    service = memory.register(mcp, db, embedder=embedder)
     return mcp

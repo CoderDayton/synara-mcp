@@ -242,6 +242,18 @@ documented: 2.2b (edit/params-PATCH/dream/SSE), 2.3 stdio-safety→3.1.
 
 ---
 
+**PHASE 3 ✅ COMPLETE 2026-05-18** — `dashboard/runner.py`
+(`run_dashboard` asynccontextmanager: uvicorn `Server.serve()` as a
+named task on the FastMCP loop; `log_config=None` + `access_log=False`
+for stdio-safety; bounded drain → cancel on exit). `server.py`:
+captures `service = memory.register(...)` (was discarded), wires the
+dashboard via `AsyncExitStack` so it drains *before* the `finally`
+closes embedder/db. stdio-safety test delivered here (deferred from
+2.3): `test_server_dashboard.py` asserts `captured stdout == ""`.
+Proof: 2 lifecycle tests pass (disabled→no task; enabled→real HTTP,
+stdout-clean, no leak, stopped post-exit); full suite 337 passed,
+mypy strict 75 files, bandit clean, 0 regressions.
+
 ## Phase 4 — Frontend
 
 **4.1 — Scaffold `dashboard/` (Bun + Vite + React 19.2 + TS + Tailwind
