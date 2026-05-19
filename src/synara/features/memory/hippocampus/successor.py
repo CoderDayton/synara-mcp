@@ -44,6 +44,14 @@ if TYPE_CHECKING:
 
 DEFAULT_KIND = "sr"
 
+# Co-occurrence is GLOBAL, not partitioned by session. All episode
+# accesses share one observation window so episodes co-occurring across
+# sessions fold into T by the exact same rule as intra-session ones —
+# the store is one interconnected graph, not per-session islands. The
+# session_id arg is retained for call-site compatibility but no longer
+# keys the window.
+_GLOBAL_WINDOW = ""
+
 
 @dataclass(slots=True)
 class _Window:
@@ -146,7 +154,7 @@ class SuccessorRepresentation:
         fold into T and propagate through M via TD(0). Edge changes are
         queued for the next :meth:`flush` call.
         """
-        win = self._sessions.setdefault(session_id, _Window())
+        win = self._sessions.setdefault(_GLOBAL_WINDOW, _Window())
         cutoff = t - self.window_seconds
         while win.queue and win.queue[0][1] < cutoff:
             win.queue.popleft()
@@ -168,7 +176,7 @@ class SuccessorRepresentation:
         Anchor enters the in-session window for future chain edges.
         Avoids the n*(n-1)/2 inflation a naive pairwise loop produces.
         """
-        win = self._sessions.setdefault(session_id, _Window())
+        win = self._sessions.setdefault(_GLOBAL_WINDOW, _Window())
         cutoff = t - self.window_seconds
         while win.queue and win.queue[0][1] < cutoff:
             win.queue.popleft()

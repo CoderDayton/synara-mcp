@@ -1,9 +1,7 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
-import { ArrowRight, Brain, GitBranch, Layers, Sparkles } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
 import { useHealth, useMemories, useStats } from "@/lib/queries";
 import { ErrorState, Loading } from "@/components/common/states";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const StoreChart = lazy(() => import("@/components/overview/store-chart"));
@@ -28,18 +26,32 @@ const PIPELINE: Array<{ label: string; sub: string }> = [
 
 const MCP_SNIPPET = `{
   "mcpServers": {
-    "synara": {
-      "command": "uvx",
-      "args": ["synara-mcp"]
-    }
+    "synara": { "command": "uvx", "args": ["synara-mcp"] }
   }
 }`;
 
-function Pill({ children }: { children: ReactNode }) {
+/* Flat console panel — hairline border, mono header bar, no float. */
+function Panel({
+  title,
+  aside,
+  children,
+  className = "",
+}: {
+  title: string;
+  aside?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/40 px-2.5 py-1 font-mono text-xs text-muted-foreground">
-      {children}
-    </span>
+    <section
+      className={`flex flex-col border border-border/70 bg-card ${className}`}
+    >
+      <header className="flex items-center justify-between gap-3 border-b border-border/70 px-5 py-3">
+        <span className="eyebrow">{title}</span>
+        {aside}
+      </header>
+      <div className="flex-1 p-5">{children}</div>
+    </section>
   );
 }
 
@@ -55,7 +67,8 @@ export default function Overview() {
   const h = health.data;
   const ep = s?.episodic_count ?? 0;
   const sem = s?.semantic_count ?? 0;
-  const hasData = ep + sem > 0;
+  const total = ep + sem;
+  const hasData = total > 0;
   const chart = [
     { name: "Episodic", count: ep },
     { name: "Semantic", count: sem },
@@ -65,222 +78,184 @@ export default function Overview() {
       ? (recent.data.items as Array<{ id: number; content?: string }>)
       : [];
 
+  const status: Array<[string, string]> = [
+    ["state", h ? "online" : "—"],
+    ...(h
+      ? ([
+          ["transport", h.transport],
+          ["version", `v${h.version}`],
+          ["uptime", `${Math.round(h.uptime_seconds)}s`],
+          ["embedding", `${h.embedding_backend}/${h.embedding_model}`],
+        ] as Array<[string, string]>)
+      : []),
+  ];
+
+  const kpis: Array<[string, number, string]> = [
+    ["Episodic", ep, "raw traces"],
+    ["Semantic", sem, "distilled schemas"],
+    ["Total", total, "addressable memories"],
+  ];
+
   return (
-    <div className="space-y-6">
-      {/* Status band — identity + live state + headline counts */}
-      <section className="relative overflow-hidden rounded-2xl border border-border/60 bg-card shadow-card">
+    <div className="space-y-px">
+      {/* ── HERO ─────────────────────────────────────────────── */}
+      <section className="relative overflow-hidden border border-border/70 bg-card">
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0"
           style={{
             backgroundImage:
-              "radial-gradient(70% 130% at 88% -20%, color-mix(in oklab, var(--primary) 16%, transparent), transparent 60%)",
+              "radial-gradient(80% 140% at 92% -30%, color-mix(in oklab, var(--primary) 22%, transparent), transparent 58%)",
           }}
         />
-        <div className="relative flex flex-col gap-8 p-6 sm:p-8 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-              <span className="size-1.5 animate-pulse rounded-full bg-primary" />
-              Neural memory server
-            </div>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-              Synara
-            </h1>
-            <p className="mt-2 max-w-md text-sm text-muted-foreground">
-              Episodic + semantic memory over MCP, ranked by a
-              successor-representation prior over recall.
-            </p>
-            <div className="mt-5 flex flex-wrap items-center gap-2">
-              <Pill>
-                <span className="size-1.5 rounded-full bg-success" />
-                {h ? "online" : "—"}
-              </Pill>
-              {h && (
-                <>
-                  <Pill>{h.transport}</Pill>
-                  <Pill>v{h.version}</Pill>
-                  <Pill>{Math.round(h.uptime_seconds)}s up</Pill>
-                  <Pill>
-                    {h.embedding_backend} · {h.embedding_model}
-                  </Pill>
-                </>
-              )}
-            </div>
+        <div className="relative px-6 py-10 sm:px-10 sm:py-14">
+          <div className="eyebrow flex items-center gap-2 text-primary">
+            <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+            Neural memory server
           </div>
-          <div className="grid shrink-0 grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60">
-            {(
-              [
-                { label: "Episodic", value: ep, icon: Brain },
-                { label: "Semantic", value: sem, icon: Layers },
-              ] satisfies Array<{
-                label: string;
-                value: number;
-                icon: LucideIcon;
-              }>
-            ).map(({ label, value, icon: Icon }) => (
-              <div key={label} className="bg-card px-7 py-5">
-                <div className="flex items-center gap-1.5 text-[0.7rem] font-semibold uppercase tracking-[0.13em] text-muted-foreground">
-                  <Icon className="size-3.5 text-primary" aria-hidden />
-                  {label}
-                </div>
-                <div className="mt-3 font-mono text-4xl font-semibold tracking-tight tabular-nums">
-                  {value.toLocaleString()}
-                </div>
+          <h1 className="display mt-5 text-[clamp(2.6rem,1.6rem+5vw,5rem)] leading-[0.95]">
+            Synara
+          </h1>
+          <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted-foreground">
+            Episodic + semantic memory over MCP, ranked by a
+            successor-representation prior over recall.
+          </p>
+          <dl className="mt-8 flex flex-wrap gap-x-8 gap-y-3">
+            {status.map(([k, v]) => (
+              <div key={k} className="flex flex-col gap-1">
+                <dt className="eyebrow">{k}</dt>
+                <dd className="font-mono text-sm text-foreground/90">{v}</dd>
               </div>
             ))}
-          </div>
+          </dl>
         </div>
       </section>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Main: composition chart, or a real "connect a client" guide */}
-        <Card className="lg:col-span-2">
-          <CardHeader className="flex-row items-start justify-between gap-4">
-            <div>
-              <CardTitle>
-                {hasData ? "Store composition" : "Get started"}
-              </CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {hasData
-                  ? "Episodic traces vs. distilled semantic schemas"
-                  : "The store is empty — point an MCP client at this server"}
-              </p>
+      {/* ── KPI STRIP ───────────────────────────────────────── */}
+      <section className="grid grid-cols-1 border border-border/70 bg-card sm:grid-cols-3">
+        {kpis.map(([label, value, sub], i) => (
+          <div
+            key={label}
+            className={`px-6 py-7 ${
+              i > 0 ? "border-border/70 sm:border-l" : ""
+            } ${i > 0 ? "border-t sm:border-t-0" : ""}`}
+          >
+            <div className="eyebrow">{label}</div>
+            <div className="metric mt-3 text-5xl tracking-tight sm:text-6xl">
+              {value.toLocaleString()}
             </div>
-            {hasData && (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-[0.7rem] font-medium text-primary ring-1 ring-inset ring-primary/20">
+            <div className="mt-2 text-xs text-muted-foreground">{sub}</div>
+          </div>
+        ))}
+      </section>
+
+      {/* ── COMPOSITION + PIPELINE ──────────────────────────── */}
+      <div className="grid grid-cols-1 gap-px lg:grid-cols-3">
+        <Panel
+          title={hasData ? "Store composition" : "Get started"}
+          className="lg:col-span-2"
+          aside={
+            hasData ? (
+              <span className="eyebrow flex items-center gap-1.5 text-primary">
                 <span className="size-1.5 animate-pulse rounded-full bg-primary" />
                 live
               </span>
-            )}
-          </CardHeader>
-          <CardContent>
-            {hasData ? (
-              <div className="h-64 sm:h-72">
-                <Suspense
-                  fallback={<Skeleton className="size-full rounded-md" />}
-                >
-                  <StoreChart data={chart} />
-                </Suspense>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <ol className="space-y-3 text-sm">
-                  <li className="flex gap-3">
-                    <span className="grid size-5 shrink-0 place-items-center rounded-full bg-primary/15 font-mono text-[0.7rem] text-primary ring-1 ring-inset ring-primary/25">
-                      1
-                    </span>
-                    Add Synara to your MCP client config:
-                  </li>
-                </ol>
-                <pre className="overflow-x-auto rounded-lg border border-border/60 bg-background/60 p-4 font-mono text-xs leading-relaxed text-foreground/90">
-                  {MCP_SNIPPET}
-                </pre>
-                <ol
-                  className="space-y-3 text-sm"
-                  start={2}
-                  style={{ listStyle: "none" }}
-                >
-                  <li className="flex gap-3">
-                    <span className="grid size-5 shrink-0 place-items-center rounded-full bg-primary/15 font-mono text-[0.7rem] text-primary ring-1 ring-inset ring-primary/25">
-                      2
-                    </span>
-                    Call{" "}
-                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-primary">
-                      store_episode
-                    </code>{" "}
-                    — traces, the successor graph and stats populate here
-                    live.
-                  </li>
-                </ol>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            ) : undefined
+          }
+        >
+          {hasData ? (
+            <div className="h-64 sm:h-72">
+              <Suspense fallback={<Skeleton className="size-full" />}>
+                <StoreChart data={chart} />
+              </Suspense>
+            </div>
+          ) : (
+            <div className="space-y-4 text-sm">
+              <p className="text-muted-foreground">
+                The store is empty — point an MCP client at this server, then
+                call{" "}
+                <code className="bg-muted px-1.5 py-0.5 font-mono text-xs text-primary">
+                  store_episode
+                </code>
+                .
+              </p>
+              <pre className="overflow-x-auto border border-border/70 bg-background/60 p-4 font-mono text-xs leading-relaxed text-foreground/90">
+                {MCP_SNIPPET}
+              </pre>
+            </div>
+          )}
+        </Panel>
 
-        {/* Memory pipeline — domain identity, not a generic widget */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <GitBranch className="size-4 text-primary" aria-hidden />
-              Memory pipeline
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ol className="relative space-y-4 before:absolute before:left-[7px] before:top-2 before:bottom-2 before:w-px before:bg-border">
-              {PIPELINE.map((stage) => (
-                <li
-                  key={stage.label}
-                  className="relative flex gap-3 pl-0"
-                >
-                  <span className="z-10 mt-1 size-3.5 shrink-0 rounded-full border-2 border-primary bg-card" />
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium">{stage.label}</div>
-                    <div className="font-mono text-xs text-muted-foreground">
-                      {stage.sub}
-                    </div>
+        <Panel title="Memory pipeline">
+          <ol className="relative space-y-5 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-border">
+            {PIPELINE.map((stage) => (
+              <li key={stage.label} className="relative flex gap-4">
+                <span className="z-10 mt-1 size-2.5 shrink-0 rounded-full bg-primary ring-4 ring-primary/15" />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">{stage.label}</div>
+                  <div className="font-mono text-xs text-muted-foreground">
+                    {stage.sub}
                   </div>
-                </li>
-              ))}
-            </ol>
-          </CardContent>
-        </Card>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </Panel>
       </div>
 
-      {/* MCP tool surface — always-useful, on-brand content */}
-      <Card>
-        <CardHeader className="flex-row items-center justify-between gap-4">
-          <CardTitle className="flex items-center gap-2">
-            <Sparkles className="size-4 text-primary" aria-hidden />
-            MCP tools
-          </CardTitle>
+      {/* ── MCP TOOL SURFACE ────────────────────────────────── */}
+      <Panel
+        title="MCP tools"
+        aside={
           <span className="font-mono text-xs text-muted-foreground">
             {TOOLS.length} exposed
           </span>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        }
+      >
+        <div className="grid grid-cols-1 gap-px bg-border/70 sm:grid-cols-2 lg:grid-cols-4">
           {TOOLS.map(([name, desc]) => (
             <div
               key={name}
-              className="group rounded-lg border border-border/60 bg-muted/25 p-3 transition-colors hover:border-primary/30 hover:bg-muted/40"
+              className="group bg-card p-4 transition-colors hover:bg-muted/40"
             >
               <div className="truncate font-mono text-xs font-medium text-primary">
                 {name}
               </div>
-              <div className="mt-1.5 text-xs text-muted-foreground">
+              <div className="mt-2 text-xs leading-relaxed text-muted-foreground">
                 {desc}
               </div>
             </div>
           ))}
-        </CardContent>
-      </Card>
+        </div>
+      </Panel>
 
+      {/* ── RECENT ──────────────────────────────────────────── */}
       {items.length > 0 && (
-        <Card>
-          <CardHeader className="flex-row items-center justify-between gap-4">
-            <CardTitle>Recent episodes</CardTitle>
-            <ArrowRight
+        <Panel
+          title="Recent episodes"
+          aside={
+            <ArrowUpRight
               className="size-4 text-muted-foreground"
               aria-hidden
             />
-          </CardHeader>
-          <CardContent>
-            <ul className="space-y-1.5">
-              {items.map((it) => (
-                <li
-                  key={it.id}
-                  className="flex items-start gap-3 rounded-lg border border-transparent px-3 py-2.5 text-sm transition-colors hover:border-border/60 hover:bg-muted/40"
-                >
-                  <span className="mt-0.5 shrink-0 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.7rem] text-muted-foreground tabular-nums ring-1 ring-inset ring-border/60">
-                    #{it.id}
-                  </span>
-                  <span className="line-clamp-2 text-foreground/90">
-                    {it.content ?? "—"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
+          }
+        >
+          <ul className="divide-y divide-border/60">
+            {items.map((it) => (
+              <li
+                key={it.id}
+                className="flex items-start gap-4 py-3 text-sm first:pt-0 last:pb-0"
+              >
+                <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+                  #{it.id}
+                </span>
+                <span className="line-clamp-2 text-foreground/90">
+                  {it.content ?? "—"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
       )}
     </div>
   );

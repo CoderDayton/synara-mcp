@@ -37,6 +37,7 @@ export default function Config() {
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="System"
         title="Configuration"
         subtitle="Effective MemoryConfig and runtime — read-only by design."
       />
@@ -54,7 +55,7 @@ export default function Config() {
         </AlertDescription>
       </Alert>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:gap-6 lg:grid-cols-3">
         <Card>
           <CardHeader>
             <CardTitle>Runtime</CardTitle>

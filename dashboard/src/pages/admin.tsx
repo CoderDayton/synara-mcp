@@ -250,10 +250,11 @@ export default function Admin() {
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="Operations"
         title="Admin"
         subtitle="Sanctioned maintenance operations. Effects are immediate and shared with the live MCP server."
       />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:gap-6 lg:grid-cols-2">
         <ForgetCard />
         <ConsolidateCard />
         <div className="lg:col-span-2">

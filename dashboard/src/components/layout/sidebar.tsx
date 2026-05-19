@@ -3,7 +3,6 @@ import {
   Activity as ActivityIcon,
   Brain,
   LayoutDashboard,
-  Network,
   Settings2,
   Wrench,
 } from "lucide-react";
@@ -16,7 +15,6 @@ const NAV = [
     items: [
       { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
       { to: "/memories", label: "Memories", icon: Brain, end: false },
-      { to: "/graph", label: "Graph", icon: Network, end: false },
     ],
   },
   {
@@ -80,7 +78,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <div className="text-[0.95rem] font-semibold tracking-tight">
             Synara
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div className="font-mono text-[0.7rem] tracking-wide text-muted-foreground">
             {data ? `v${data.version}` : "memory console"}
           </div>
         </div>
@@ -89,9 +87,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <nav className="flex-1 space-y-5" aria-label="Primary">
         {NAV.map((section) => (
           <div key={section.group}>
-            <div className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
-              {section.group}
-            </div>
+            <div className="eyebrow px-3 pb-2.5">{section.group}</div>
             <ul className="space-y-1">
               {section.items.map((item) => (
                 <li key={item.to}>

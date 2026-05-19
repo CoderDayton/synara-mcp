@@ -1,4 +1,3 @@
-import { lazy } from "react";
 import {
   createBrowserRouter,
   Navigate,
@@ -10,10 +9,6 @@ import Overview from "@/pages/overview";
 import Memories from "@/pages/memories";
 import Admin from "@/pages/admin";
 import Config from "@/pages/config";
-
-// Graph pulls in cytoscape + fcose (heavy) — split it out of the main
-// chunk; the route element keeps it warm via <Activity> once visited.
-const Graph = lazy(() => import("@/pages/graph"));
 
 function RouteError() {
   const err = useRouteError();
@@ -42,7 +37,6 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Overview /> },
       { path: "memories", element: <Memories /> },
-      { path: "graph", element: <Graph /> },
       { path: "admin", element: <Admin /> },
       { path: "config", element: <Config /> },
       { path: "*", element: <Navigate to="/" replace /> },

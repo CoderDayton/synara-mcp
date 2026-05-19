@@ -743,11 +743,20 @@ def test_successor_observe_outside_window_skips_edge() -> None:
     assert sr.boost(1, [2]) == {2: 0.0}
 
 
-def test_successor_observe_does_not_cross_sessions() -> None:
+def test_successor_observe_is_global_across_sessions() -> None:
+    # The observation window is GLOBAL, not partitioned by session_id:
+    # episodes co-occurring within window_seconds fold into T by the same
+    # rule even when seen under different session ids (one interconnected
+    # graph, not per-session islands).
     sr = SuccessorRepresentation(window_seconds=10.0)
     sr.observe("s1", 1, t=0.0)
     sr.observe("s2", 2, t=1.0)
-    assert sr.total_edges == 0.0
+    assert sr.total_edges == 1.0
+    assert sr.boost(1, [2])[2] > 0.0
+    # Temporal gating itself is unchanged: outside the window no edge
+    # forms, regardless of session.
+    sr.observe("s3", 3, t=100.0)
+    assert sr.total_edges == 1.0
 
 
 def test_successor_omega_cold_start_ramp() -> None:

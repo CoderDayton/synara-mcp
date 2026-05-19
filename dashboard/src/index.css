@@ -12,7 +12,7 @@
    surfaces; large numerals use a tabular mono stack. */
 
 :root {
-  --radius: 0.7rem;
+  --radius: 0.35rem;
 
   --background: oklch(0.985 0.002 286);
   --foreground: oklch(0.2 0.006 286);
@@ -156,10 +156,9 @@
 
   /* Elevation: hairline top highlight + soft layered drop. The inset
      highlight is what reads as "lifted" on dark surfaces. */
-  --shadow-card: inset 0 1px 0 0 var(--surface-highlight),
-    0 1px 2px -1px oklch(0 0 0 / 0.4), 0 4px 14px -6px oklch(0 0 0 / 0.38);
-  --shadow-pop: inset 0 1px 0 0 var(--surface-highlight),
-    0 4px 12px -2px oklch(0 0 0 / 0.45), 0 16px 36px -10px oklch(0 0 0 / 0.55);
+  --shadow-card: 0 1px 0 0 oklch(0 0 0 / 0.22);
+  --shadow-pop: 0 1px 0 0 oklch(0 0 0 / 0.3),
+    0 24px 50px -16px oklch(0 0 0 / 0.7);
   --shadow-glow: 0 0 0 1px oklch(0.66 0.2 291 / 0.35),
     0 8px 26px -8px oklch(0.66 0.2 291 / 0.5);
 
@@ -199,7 +198,8 @@
   h2,
   h3 {
     text-wrap: balance;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.025em;
+    font-weight: 650;
   }
   ::selection {
     background: oklch(0.66 0.2 291 / 0.3);
@@ -235,5 +235,34 @@
     background-color: var(--card);
     border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
     box-shadow: var(--shadow-card);
+  }
+
+  /* Signature mono micro-label. Sits above every section/card title and
+     on sidebar group labels — the single strongest identity cue. */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+
+  /* Display heading: tighter, larger, fluid. Pairs with an .eyebrow. */
+  .display {
+    font-weight: 680;
+    letter-spacing: -0.032em;
+    text-wrap: balance;
+    font-size: clamp(1.7rem, 1.25rem + 1.7vw, 2.5rem);
+    line-height: 1.05;
+  }
+
+  /* Numeric readout: tabular mono so figures stay column-aligned. */
+  .metric {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
   }
 }
