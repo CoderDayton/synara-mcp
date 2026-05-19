@@ -38,28 +38,33 @@ In order of impact:
 
 ## Installation
 
-Run from source with [uv](https://docs.astral.sh/uv/):
+Run it with [uvx](https://docs.astral.sh/uv/), no install step:
+
+```bash
+uvx synara-mcp
+```
+
+`uvx` builds a throwaway environment and launches the server — nothing lands in your global Python. For development, install from source into a managed venv instead:
 
 ```bash
 uv sync
 uv run --no-sync synara-mcp
 ```
 
-Add to your MCP client config (e.g. Claude Code `~/.claude.json`):
+Wire it into your MCP client (e.g. Claude Code `~/.claude.json`):
 
 ```json
 {
   "mcpServers": {
     "synara": {
-      "command": "uv",
-      "args": ["run", "--no-sync", "synara-mcp"],
-      "cwd": "/absolute/path/to/synara-mcp"
+      "command": "uvx",
+      "args": ["synara-mcp"]
     }
   }
 }
 ```
 
-Restart the client. The first run downloads the local embedding model unless a remote endpoint is configured.
+Restart the client. The first run downloads the local embedding model (once) unless a remote endpoint is configured.
 
 ---
 
@@ -78,9 +83,21 @@ Restart the client. The first run downloads the local embedding model unless a r
 
 ---
 
+## Good to know
+
+**Synara needs zero setup, keeps memory local, and runs its own upkeep — the rest is detail.**
+
+**It maintains itself.** A background reactor consolidates related episodes into semantic schemas, forgets weak traces on a power-law curve, and replays salient ones during idle "dream" cycles. Recall is cross-session by default — `session_id` biases ranking, it does not wall memories off. You store and recall; the housekeeping is automatic.
+
+**Your data stays put.** Memories live in a local `simplevecdb` file under your cache directory, and embeddings run on-device unless you set `SYNARA_EMBEDDING_URL`. A remote embedding endpoint is the only thing that ever sees your text — treat it as part of your trust boundary; the API key is read from the environment and never logged. Set `SYNARA_DB_PATH=:memory:` for a store that vanishes on exit.
+
+**It fails safe.** Invalid configuration is refused at startup, not silently ignored. `forget_episodes` is dry-run by default, so you see what would be pruned before anything is deleted. Tool input (`content`, `tags`, `k`, `session_id`) and remote embedding responses are size-capped, so a runaway caller or endpoint can't exhaust memory.
+
+---
+
 ## Configuration
 
-All optional, read from the environment at startup. See `.env.example` for the full list.
+Every variable is optional and read from the process environment at startup — Synara runs with none set. Full reference, bounds, and copy-paste recipes: **[docs/env_variables.md](docs/env_variables.md)**. The annotated [`.env.example`](.env.example) is a ready-to-edit template.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -107,15 +124,13 @@ The successor representation is a discounted transition graph over episode IDs (
 
 ## Development
 
+Setup, the local gate (ruff / mypy / bandit / pytest), conventions, and the PR checklist are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. The short version:
+
 ```bash
-uv run --no-sync pytest -q          # tests
-uv run --no-sync ruff format .      # format
-uv run --no-sync ruff check --fix src tests
-uv run --no-sync mypy               # strict types
-uv run --no-sync bandit -q -r src   # security lint
+uv sync && uv run --no-sync pytest -q
 ```
 
-`lefthook install` wires the full set into pre-commit / pre-push.
+`lefthook install` wires the full gate into pre-commit / pre-push.
 
 ---
 
