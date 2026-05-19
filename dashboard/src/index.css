@@ -163,8 +163,10 @@
   --shadow-glow: 0 0 0 1px oklch(0.66 0.2 291 / 0.35),
     0 8px 26px -8px oklch(0.66 0.2 291 / 0.5);
 
-  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Mono",
-    "Roboto Mono", Menlo, Consolas, monospace;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "SF Mono", ui-monospace,
+    "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
 }
 
 @layer base {
@@ -176,8 +178,11 @@
     -webkit-tap-highlight-color: transparent;
   }
   body {
-    @apply bg-background text-foreground antialiased;
-    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1, "cv11" 1, "ss01" 1;
+    letter-spacing: -0.011em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
     /* Fixed ambient wash behind all routes — subtle accent bloom that
        never scrolls, so the page never reads as a flat default. */
     background-image: var(--ambient);
@@ -188,6 +193,7 @@
   h2,
   h3 {
     text-wrap: balance;
+    letter-spacing: -0.02em;
   }
   ::selection {
     background: oklch(0.66 0.2 291 / 0.3);

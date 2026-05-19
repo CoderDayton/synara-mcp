@@ -1,13 +1,42 @@
 import { lazy, Suspense } from "react";
+import type { LucideIcon } from "lucide-react";
 import { Brain, Clock, Database, Layers } from "lucide-react";
 import { useHealth, useMemories, useStats } from "@/lib/queries";
 import { PageHeader } from "@/components/common/page-header";
-import { StatCard } from "@/components/common/stat-card";
 import { ErrorState, Loading } from "@/components/common/states";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const StoreChart = lazy(() => import("@/components/overview/store-chart"));
+
+function Metric({
+  label,
+  value,
+  hint,
+  icon: Icon,
+}: {
+  label: string;
+  value: string | number;
+  hint?: string;
+  icon: LucideIcon;
+}) {
+  return (
+    <div className="bg-card p-5 transition-colors hover:bg-card/60 sm:p-6">
+      <div className="flex items-center gap-1.5 text-[0.7rem] font-semibold uppercase tracking-[0.13em] text-muted-foreground">
+        <Icon className="size-3.5 text-primary" aria-hidden />
+        {label}
+      </div>
+      <div className="mt-3 truncate font-mono text-3xl font-semibold tracking-tight tabular-nums sm:text-[2.5rem] sm:leading-none">
+        {value}
+      </div>
+      {hint && (
+        <div className="mt-2 truncate text-xs text-muted-foreground">
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Overview() {
   const stats = useStats();
@@ -35,26 +64,27 @@ export default function Overview() {
         subtitle="Live state of the Synara memory server."
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
+      {/* Instrument cluster — hairline-separated metric columns */}
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60 shadow-card lg:grid-cols-4">
+        <Metric
           label="Episodic"
-          value={s?.episodic_count ?? "—"}
+          value={(s?.episodic_count ?? "—").toLocaleString?.() ?? "—"}
           icon={Brain}
           hint="raw traces"
         />
-        <StatCard
+        <Metric
           label="Semantic"
-          value={s?.semantic_count ?? "—"}
+          value={(s?.semantic_count ?? "—").toLocaleString?.() ?? "—"}
           icon={Layers}
           hint="distilled schemas"
         />
-        <StatCard
+        <Metric
           label="Embedding"
           value={h?.embedding_backend ?? "—"}
           icon={Database}
           hint={h?.embedding_model}
         />
-        <StatCard
+        <Metric
           label="Uptime"
           value={h ? `${Math.round(h.uptime_seconds)}s` : "—"}
           icon={Clock}
@@ -62,10 +92,19 @@ export default function Overview() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Store composition</CardTitle>
+          <CardHeader className="flex-row items-start justify-between gap-4 [.border-b]:pb-6">
+            <div>
+              <CardTitle>Store composition</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Episodic traces vs. distilled semantic schemas
+              </p>
+            </div>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-[0.7rem] font-medium text-primary ring-1 ring-inset ring-primary/20">
+              <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+              live
+            </span>
           </CardHeader>
           <CardContent className="h-64 sm:h-72">
             <Suspense
@@ -83,20 +122,20 @@ export default function Overview() {
           <CardContent className="space-y-2">
             {recent.error && <ErrorState error={recent.error} />}
             {!recent.error && items.length === 0 && (
-              <p className="py-6 text-center text-sm text-muted-foreground">
+              <p className="py-10 text-center text-sm text-muted-foreground">
                 No episodes yet.
               </p>
             )}
-            <ul className="space-y-2">
+            <ul className="space-y-1.5">
               {items.map((it) => (
                 <li
                   key={it.id}
-                  className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5 text-sm transition-colors hover:bg-muted/50"
+                  className="group flex items-start gap-3 rounded-lg border border-transparent px-3 py-2.5 text-sm transition-colors hover:border-border/60 hover:bg-muted/40"
                 >
-                  <span className="mr-2 font-mono text-xs text-muted-foreground">
+                  <span className="mt-0.5 shrink-0 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.7rem] text-muted-foreground tabular-nums ring-1 ring-inset ring-border/60">
                     #{it.id}
                   </span>
-                  <span className="line-clamp-2 align-middle">
+                  <span className="line-clamp-2 text-foreground/90">
                     {it.content ?? "—"}
                   </span>
                 </li>
