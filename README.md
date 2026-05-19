@@ -106,6 +106,10 @@ Every variable is optional and read from the process environment at startup — 
 | `SYNARA_DB_PATH` | `$XDG_CACHE_HOME/synara-mcp/synara.db` | Store path; `:memory:` for ephemeral |
 | `SYNARA_EMBEDDING_MODEL` | local HF model | Embedding model id |
 | `SYNARA_EMBEDDING_URL` | _(unset)_ | Set to an OpenAI-compatible base URL for remote embeddings |
+| `SYNARA_DASHBOARD` | `false` | Enable the parallel web admin console (`[dashboard]` extra) |
+| `SYNARA_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (loopback-only by default) |
+| `SYNARA_DASHBOARD_PORT` | `8765` | Dashboard bind port |
+| `SYNARA_DASHBOARD_TOKEN` | _(unset)_ | Bearer token; optional on loopback, required for any non-loopback bind |
 
 ---
 

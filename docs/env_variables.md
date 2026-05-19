@@ -29,6 +29,10 @@ or an unknown transport raises at startup instead of silently degrading.
 | `SYNARA_EMBEDDING_DIM` | _(probed)_ | integer, `1 … 1000000` | always |
 | `SYNARA_EMBEDDING_BATCH_SIZE` | `64` | integer, `1 … 1000000` | always |
 | `SYNARA_EMBEDDING_MAX_SEQ_LENGTH` | _(model default)_ | integer, `1 … 1000000` | local only |
+| `SYNARA_DASHBOARD` | `false` | boolean (`true/false/1/0/yes/no/on/off`) | always |
+| `SYNARA_DASHBOARD_HOST` | `127.0.0.1` | bind address | dashboard only |
+| `SYNARA_DASHBOARD_PORT` | `8765` | integer, `1 … 65535` | dashboard only |
+| `SYNARA_DASHBOARD_TOKEN` | _(unset)_ | bearer token string | dashboard only |
 
 ---
 
@@ -170,6 +174,62 @@ SYNARA_EMBEDDING_MAX_SEQ_LENGTH=8192
 
 ---
 
+## Dashboard
+
+An optional web admin console that runs in the **same process and on the
+same lifecycle** as the MCP server: it starts when the server starts and
+shuts down with it. It exposes memory browsing, the successor/plasticity
+graph, live stats, and maintenance triggers. Off by default. Requires the
+optional extra:
+
+```bash
+pip install "synara-mcp[dashboard]"
+```
+
+### `SYNARA_DASHBOARD`
+
+Master gate. Nothing dashboard-related starts unless this is truthy.
+Accepts `true/false`, `1/0`, `yes/no`, `on/off` (case-insensitive); any
+other value is rejected at startup. Default `false`.
+
+```bash
+SYNARA_DASHBOARD=true
+```
+
+### `SYNARA_DASHBOARD_HOST`
+
+Bind address. Defaults to `127.0.0.1` — reachable only from the local
+machine, which is the safe choice for a write-capable console. Loopback
+hosts (`127.0.0.1`, `localhost`, `::1`) need no token. Binding any other
+address **requires** `SYNARA_DASHBOARD_TOKEN`; without it the server
+refuses to start rather than silently expose admin endpoints.
+
+```bash
+SYNARA_DASHBOARD_HOST=127.0.0.1
+```
+
+### `SYNARA_DASHBOARD_PORT`
+
+TCP port the console listens on. Integer, `1` to `65535`. Default `8765`.
+
+```bash
+SYNARA_DASHBOARD_PORT=8765
+```
+
+### `SYNARA_DASHBOARD_TOKEN`
+
+Bearer secret required to use the console. Optional when bound to
+loopback; **mandatory** before any non-loopback bind is permitted. Sent
+by the client as `Authorization: Bearer <token>` and compared in
+constant time. Never written to the logs; read from the environment
+only — do not commit it.
+
+```bash
+SYNARA_DASHBOARD_TOKEN=$(openssl rand -hex 32)
+```
+
+---
+
 ## Recipes
 
 **Default — zero config, fully local.** Set nothing. Synara downloads
@@ -202,6 +262,12 @@ SYNARA_DB_PATH=:memory:
 ```bash
 SYNARA_TRANSPORT=streamable-http
 SYNARA_LOG_LEVEL=DEBUG
+```
+
+**Local admin dashboard** (loopback, no token needed):
+
+```bash
+SYNARA_DASHBOARD=true
 ```
 
 ---

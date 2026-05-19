@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from synara.features.dashboard.config import DashboardConfig
 from synara.features.embedding import EmbeddingConfig
 
 Transport = Literal["stdio", "http", "sse", "streamable-http"]
@@ -31,6 +32,7 @@ class Settings:
     transport: Transport
     db_path: str = field(default_factory=default_db_path)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
 
     @classmethod
     def from_env(cls, argv: list[str] | None = None) -> Settings:
@@ -71,6 +73,7 @@ class Settings:
                 batch_size=batch_size if batch_size is not None else 64,
                 max_seq_length=max_seq_length,
             ),
+            dashboard=DashboardConfig.from_env(),
         )
 
 
