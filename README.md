@@ -68,6 +68,18 @@ Restart the client. The first run downloads the local embedding model (once) unl
 
 ---
 
+## Web dashboard
+
+An optional read/write admin console (memory browser, SR/plasticity graph, forget/consolidate/reflect, live stats) runs **in-process on the same event loop** as the MCP server — gated behind the `[dashboard]` extra and an env flag, so a default install never pulls in FastAPI/uvicorn.
+
+```bash
+SYNARA_DASHBOARD=true uvx --from "synara-mcp[dashboard]" synara-mcp
+```
+
+It binds `127.0.0.1:8765` by default — open <http://127.0.0.1:8765>. On loopback the bearer token is optional; **any non-loopback bind requires `SYNARA_DASHBOARD_TOKEN`** or startup fails. See the `SYNARA_DASHBOARD*` rows under [Configuration](#configuration). The console works under any transport, including `stdio` (it never writes to stdout).
+
+---
+
 ## Tools
 
 | Tool | Purpose |
@@ -135,6 +147,15 @@ uv sync && uv run --no-sync pytest -q
 ```
 
 `lefthook install` wires the full gate into pre-commit / pre-push.
+
+The dashboard SPA lives in `dashboard/` (Bun + Vite + React). Its production build is committed to `src/synara/features/dashboard/static/` and shipped in the wheel; editing the UI means rebuilding it:
+
+```bash
+cd dashboard && bun install && bun run dev    # API proxied to :8765
+cd dashboard && bun run build                 # → committed static/, refreshes the build manifest
+```
+
+A `dashboard-build-fresh` hook (pre-commit, pre-push, CI) fails if `dashboard/` sources change without a matching rebuild, so a stale UI can't ship.
 
 ---
 

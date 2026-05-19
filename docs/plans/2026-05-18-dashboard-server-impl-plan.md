@@ -343,6 +343,21 @@ wheel/import impact**; it is not a new `/api` endpoint.
   usage.
 - Proof: `VERIFICATION: full lefthook pre-push set → all green`.
 
+**PHASE 5 ✅ COMPLETE 2026-05-19.** Full toolchain green: ruff check +
+format, mypy strict (77 files), bandit, freshness guard, **346 passed**
+(`-m slow` excluded). `.env.example` already carried the
+`SYNARA_DASHBOARD*` block; README gained a "Web dashboard" section
+(`[dashboard]` extra + `uvx --from`, loopback/token rule, stdio-safe)
+and a Development note (bun dev/build workflow + the freshness hook).
+`CLAUDE.md` is **gitignored in this repo** (`.gitignore:78`) and its
+Layout already lists `features/dashboard/` — no tracked change needed;
+local copy left as-is. Cosmetic: Vite scaffold `icons.svg` dropped,
+`favicon.svg` replaced with the brand mark + `index.html` link.
+
+**DASHBOARD FEATURE COMPLETE** — Phases 0–5 done. Deferred & documented
+(each its own gated change): 2.2b `PATCH /memories/{id}`, `PATCH
+/params`, `POST /admin/dream`, SSE `GET /events`.
+
 ---
 
 ## Sequencing & stop conditions
