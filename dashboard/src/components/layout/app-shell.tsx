@@ -7,7 +7,31 @@ import { Loading } from "@/components/common/states";
 import { ThemeToggle } from "@/components/common/theme-toggle";
 import { TokenDialog } from "@/components/common/token-dialog";
 import { SidebarContent } from "@/components/layout/sidebar";
+import { useHealth } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+
+function ConnectionPill() {
+  const { data, isError } = useHealth();
+  const ok = !!data && !isError;
+  return (
+    <div className="hidden items-center gap-2 rounded-full border border-border/60 bg-card/60 px-3 py-1.5 text-xs shadow-card sm:flex">
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          ok ? "animate-pulse bg-success" : "bg-destructive",
+        )}
+        aria-hidden
+      />
+      <span className="font-medium">{ok ? "Connected" : "Offline"}</span>
+      {data && (
+        <span className="font-mono text-muted-foreground">
+          {data.transport} · v{data.version} ·{" "}
+          {Math.round(data.uptime_seconds)}s
+        </span>
+      )}
+    </div>
+  );
+}
 
 export function AppShell() {
   const [open, setOpen] = useState(false);
@@ -46,6 +70,7 @@ export function AppShell() {
           >
             {open ? <X className="size-5" /> : <Menu className="size-5" />}
           </Button>
+          <ConnectionPill />
           <div className="flex-1" />
           <TokenDialog />
           <ThemeToggle />

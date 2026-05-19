@@ -108,7 +108,14 @@ export default function Memories() {
       {isLoading && <Loading />}
       {error && <ErrorState error={error} />}
       {!isLoading && !error && rows.length === 0 && (
-        <Empty label={isSearch ? "No matches." : "Store is empty."} />
+        <Empty
+          label={isSearch ? "No matches" : "Store is empty"}
+          hint={
+            isSearch
+              ? "No memories scored against that query. Try broader terms or the other store."
+              : `No ${kind} memories yet. Call store_episode from a connected MCP client to populate this store.`
+          }
+        />
       )}
 
       {rows.length > 0 && (

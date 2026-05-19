@@ -185,9 +185,15 @@
     text-rendering: optimizeLegibility;
     /* Fixed ambient wash behind all routes — subtle accent bloom that
        never scrolls, so the page never reads as a flat default. */
-    background-image: var(--ambient);
+    background-image:
+      radial-gradient(
+        color-mix(in oklab, var(--foreground) 6%, transparent) 1px,
+        transparent 1px
+      ),
+      var(--ambient);
+    background-size: 22px 22px, 100% 100%;
     background-attachment: fixed;
-    background-repeat: no-repeat;
+    background-repeat: repeat, no-repeat;
   }
   h1,
   h2,

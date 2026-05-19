@@ -203,7 +203,10 @@ export default function Graph() {
       {isLoading && <Loading label="Loading graph" />}
       {error && <ErrorState error={error} />}
       {data && elements.length === 0 && (
-        <Empty label="No edges to display — encode and recall to build the SR." />
+        <Empty
+          label="No successor edges yet"
+          hint="The transition graph is built from episode co-occurrence within a session window. Encode a few episodes and recall them, then render."
+        />
       )}
 
       <Activity mode={data && elements.length > 0 ? "visible" : "hidden"}>
