@@ -91,3 +91,6 @@ refs/
 
 # Generated simulation artifacts
 scripts/sim/*_report.html
+
+# Playwright MCP scratch (screenshots, snapshots, console logs)
+.playwright-mcp/
