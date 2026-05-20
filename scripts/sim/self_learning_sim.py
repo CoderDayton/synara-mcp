@@ -33,9 +33,9 @@ Run:  uv run --no-sync python scripts/sim/self_learning_sim.py
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
-import html as _html
 import importlib
 import itertools
 import logging
@@ -45,25 +45,40 @@ import sys
 import time
 from pathlib import Path
 
-logging.disable(logging.CRITICAL)
+# Default: mute INFO/DEBUG/WARNING runtime chatter during the ~1500-session
+# run while still surfacing real errors. --verbose dials this back up.
+logging.disable(logging.WARNING)
 
+# Two sys.path inserts: the src tree (synara/...) and this script's own
+# directory (so `from _report import ...` works without making scripts/sim
+# a package).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from simplevecdb import AsyncVectorDB  # noqa: E402
+# ruff: noqa: E402  (sys.path tweaks above must precede imports)
+from _report import Snapshot, render_html
+from simplevecdb import AsyncVectorDB
 
-from synara.features.memory import MemoryConfig  # noqa: E402
-from synara.features.memory.service import MemoryService  # noqa: E402
+from synara.features.memory import MemoryConfig
+from synara.features.memory.service import MemoryService
 
 # ---- topical offline embedder ---------------------------------------
 
 DIM = 64
 N_TOPICS = 8
-_RNG = random.Random(20260518)
+# Populated by _build_centroids() from the CLI seed before any embedding
+# is requested. Kept module-level so topical_embed() (passed as embed_fn
+# to MemoryService) can stay a plain function.
 _CENTROIDS: list[list[float]] = []
-for _ in range(N_TOPICS):
-    v = [_RNG.gauss(0.0, 1.0) for _ in range(DIM)]
-    n = math.sqrt(sum(x * x for x in v)) or 1.0
-    _CENTROIDS.append([x / n for x in v])
+
+
+def _build_centroids(seed: int) -> None:
+    rng = random.Random(seed)
+    _CENTROIDS.clear()
+    for _ in range(N_TOPICS):
+        v = [rng.gauss(0.0, 1.0) for _ in range(DIM)]
+        n = math.sqrt(sum(x * x for x in v)) or 1.0
+        _CENTROIDS.append([x / n for x in v])
 
 
 def _topic_of(text: str) -> int:
@@ -84,20 +99,22 @@ def topical_embed(text: str) -> list[float]:
     return [x / n for x in v]
 
 
-# ---- simulation -----------------------------------------------------
+# ---- simulation defaults --------------------------------------------
+# These are the CLI defaults; the live values used at runtime live on
+# the parsed argparse.Namespace inside main().
 
-DAYS = 60
-SESSIONS_PER_DAY = 6
-EP_PER_SESSION = 4
-SNAPSHOT_EVERY = 10
-FORGET_EVERY = 15
+DEFAULT_DAYS = 60
+DEFAULT_SESSIONS_PER_DAY = 6
+DEFAULT_EP_PER_SESSION = 4
+DEFAULT_SNAPSHOT_EVERY = 10
+DEFAULT_FORGET_EVERY = 15
 # Per topic, a small set of durable high-salience "knowledge" anchors
 # encoded once. Every same-topic session re-recalls them: the fixed
 # anchor<->anchor plasticity edges accumulate hits across the whole
 # run (-> habits latch) while the recall refreshes their access in
 # virtual time (-> they survive forgetting). Unique per-session work
 # and the salience-0.02 noise are the forgettable churn.
-ANCHORS_PER_TOPIC = 3
+DEFAULT_ANCHORS_PER_TOPIC = 3
 ANCHOR_SALIENCE = 0.97
 # Frequency-dependent consolidation: only the highest-frequency topic(s)
 # earn durable anchors. Tail topics see filler only -> their traces are
@@ -105,7 +122,9 @@ ANCHOR_SALIENCE = 0.97
 # concentrates on the hub the agent actually practised. This is the
 # emergent property, not a probe hack: a learner masters its most-used
 # domain and lets rarely-revisited ones fade.
-_CORE_TOPICS = 1
+DEFAULT_CORE_TOPICS = 1
+DEFAULT_CENTROID_SEED = 20260518
+DEFAULT_SIM_SEED = 7
 
 # Zipfian topic interest: a few topics recur far more than the tail,
 # so recurring structure (habits, schemas) has something to latch onto.
@@ -128,6 +147,18 @@ def _instrument_reactor(svc: MemoryService) -> tuple[list[int], list[int]]:
     """
     cons = [0]
     dreams = [0]
+    for attr in ("_reactor_consolidate", "_reactor_dream", "_bus"):
+        if not hasattr(svc, attr):
+            raise AttributeError(
+                f"MemoryService.{attr} not found; reactor instrumentation "
+                "would silently no-op. Rename in production code?"
+            )
+    for attr in ("on_consolidate", "on_dream"):
+        if not hasattr(svc._bus, attr):
+            raise AttributeError(
+                f"MemoryService._bus.{attr} not found; reactor instrumentation "
+                "would silently no-op. Rename in production code?"
+            )
     orig_c = svc._reactor_consolidate
     orig_d = svc._reactor_dream
 
@@ -144,9 +175,7 @@ def _instrument_reactor(svc: MemoryService) -> tuple[list[int], list[int]]:
     return cons, dreams
 
 
-async def _snapshot(
-    svc: MemoryService, day: int, cons: list[int], dreams: list[int]
-) -> tuple[float, ...]:
+async def _snapshot(svc: MemoryService, day: int, cons: list[int], dreams: list[int]) -> Snapshot:
     await svc._ensure_sr_loaded()
     st = await svc.stats()
     pl = await svc._plasticity.stats()
@@ -158,26 +187,26 @@ async def _snapshot(
     p_edges = int(pl["edges"])
     max_hits = int(pl["max_total_hits"])
     # Derived ratios expose what raw counts hide:
-    #  ep/sch  - episodes distilled per schema (compression; lower=tighter)
-    #  srE/srR - SR fan-out per node           (graph densification)
-    #  mH/pE   - hits on the busiest edge / edge (concentration)
+    #  ep_per_sch - episodes distilled per schema (compression; lower=tighter)
+    #  sr_dens    - SR fan-out per node           (graph densification)
+    #  edge_conc  - hits on the busiest edge / edge (concentration)
     ep_per_sch = round(epis / sem, 2) if sem else 0.0
     sr_dens = round(sr_edges / sr_rows, 2) if sr_rows else 0.0
     edge_conc = round(max_hits / p_edges, 2) if p_edges else 0.0
-    return (
-        day,
-        epis,
-        sem,
-        p_edges,
-        int(pl["habits"]),
-        max_hits,
-        sr_rows,
-        sr_edges,
-        cons[0],
-        dreams[0],
-        ep_per_sch,
-        sr_dens,
-        edge_conc,
+    return Snapshot(
+        day=day,
+        epis=epis,
+        sem=sem,
+        p_edges=p_edges,
+        habits=int(pl["habits"]),
+        max_hits=max_hits,
+        sr_rows=sr_rows,
+        sr_edges=sr_edges,
+        cons=cons[0],
+        dreams=dreams[0],
+        ep_per_sch=ep_per_sch,
+        sr_dens=sr_dens,
+        edge_conc=edge_conc,
     )
 
 
@@ -229,8 +258,12 @@ def _advance_day() -> None:
 def _install_virtual_clock() -> None:
     for name in _CLOCK_MODULES:
         mod = importlib.import_module(name)
-        if hasattr(mod, "now_seconds"):
-            mod.now_seconds = _vclock
+        if not hasattr(mod, "now_seconds"):
+            raise AttributeError(
+                f"{name}.now_seconds not found; virtual clock would silently "
+                "no-op and forget would run on real time. Rename upstream?"
+            )
+        mod.now_seconds = _vclock
 
 
 def _fmt_row(vals: tuple[object, ...]) -> str:
@@ -238,108 +271,107 @@ def _fmt_row(vals: tuple[object, ...]) -> str:
     return " ".join(cells)
 
 
-_CW, _CH = 380, 210
+def _heartbeat(day: int, total: int, *, enabled: bool) -> None:
+    if not enabled:
+        return
+    print(f"\r# day {day:>4}/{total} ", end="", flush=True)
 
 
-def _svg_chart(
-    title: str,
-    days: list[int],
-    ys: list[float],
-    *,
-    color: str = "#2f9e44",
-) -> str:
-    """One self-contained SVG line chart, autoscaled from 0 to max(ys)."""
-    pad_l, pad_r, pad_t, pad_b = 46, 14, 30, 26
-    iw, ih = _CW - pad_l - pad_r, _CH - pad_t - pad_b
-    xmin, xmax = days[0], days[-1]
-    ymax = max(ys) if ys else 1.0
-    ymax = ymax if ymax > 0 else 1.0
+def _heartbeat_clear(*, enabled: bool) -> None:
+    if not enabled:
+        return
+    print("\r" + " " * 32 + "\r", end="", flush=True)
 
-    def sx(d: float) -> float:
-        return pad_l + (d - xmin) / ((xmax - xmin) or 1) * iw
 
-    def sy(v: float) -> float:
-        return pad_t + ih - (v / ymax) * ih
-
-    pts = " ".join(f"{sx(d):.1f},{sy(v):.1f}" for d, v in zip(days, ys, strict=True))
-    dots = "".join(
-        f'<circle cx="{sx(d):.1f}" cy="{sy(v):.1f}" r="2.6" '
-        f'fill="{color}"><title>day {d}: {v:g}</title></circle>'
-        for d, v in zip(days, ys, strict=True)
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=(
+            "Long-horizon self-learning simulation over the real "
+            "MemoryService. Writes an HTML report and prints a longitudinal "
+            "table to stdout."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    ax = pad_t + ih
-    return (
-        f'<svg viewBox="0 0 {_CW} {_CH}" class="chart" '
-        'xmlns="http://www.w3.org/2000/svg">'
-        f'<text x="{pad_l}" y="18" class="ct">{_html.escape(title)}</text>'
-        f'<line x1="{pad_l}" y1="{ax}" x2="{pad_l + iw}" y2="{ax}" '
-        'class="axis"/>'
-        f'<line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{ax}" '
-        'class="axis"/>'
-        f'<text x="{pad_l - 6}" y="{pad_t + 4}" class="tk" '
-        f'text-anchor="end">{ymax:g}</text>'
-        f'<text x="{pad_l - 6}" y="{ax}" class="tk" text-anchor="end">0</text>'
-        f'<text x="{pad_l}" y="{_CH - 8}" class="tk">d{xmin}</text>'
-        f'<text x="{pad_l + iw}" y="{_CH - 8}" class="tk" '
-        f'text-anchor="end">d{xmax}</text>'
-        f'<polyline points="{pts}" fill="none" stroke="{color}" '
-        'stroke-width="2"/>'
-        f"{dots}</svg>"
+    p.add_argument("--days", type=int, default=DEFAULT_DAYS, help="simulated days")
+    p.add_argument(
+        "--sessions",
+        type=int,
+        default=DEFAULT_SESSIONS_PER_DAY,
+        help="sessions per simulated day",
     )
-
-
-def _render_html(
-    rows: list[tuple[float, ...]],
-    headers: tuple[str, ...],
-    meta: str,
-    synthesis: list[str],
-) -> str:
-    """Assemble a dependency-free HTML report (inline SVG + table)."""
-    days = [int(r[0]) for r in rows]
-    specs = [
-        ("Episodic store", 1, "#1971c2"),
-        ("Semantic schemas", 2, "#9c36b5"),
-        ("Plasticity edges", 3, "#2f9e44"),
-        ("Habit edges", 4, "#e8590c"),
-        ("Max edge hits", 5, "#c2255c"),
-        ("SR transition rows", 6, "#0c8599"),
-        ("SR graph edges", 7, "#5c940d"),
-        ("Dream replays (cum.)", 9, "#862e9c"),
-        ("Episodes / schema (compression)", 10, "#d6336c"),
-        ("SR fan-out / node (densification)", 11, "#1098ad"),
-        ("Hits / edge (concentration)", 12, "#f08c00"),
-    ]
-    charts = "".join(
-        _svg_chart(t, days, [float(r[c]) for r in rows], color=col) for t, c, col in specs
+    p.add_argument(
+        "--episodes-per-session",
+        type=int,
+        default=DEFAULT_EP_PER_SESSION,
+        help="forgettable episodes encoded per session",
     )
-    syn_li = "".join(f"<li>{_html.escape(s)}</li>" for s in synthesis)
-    head = "".join(f"<th>{_html.escape(h)}</th>" for h in headers)
-    body = "".join("<tr>" + "".join(f"<td>{v}</td>" for v in r) + "</tr>" for r in rows)
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        "<title>synara self-learning sim</title><style>"
-        "body{font:14px/1.5 system-ui,sans-serif;margin:24px;"
-        "background:#fafafa;color:#212529}"
-        "h1{font-size:20px;margin:0 0 4px}"
-        ".meta{color:#666;margin:0 0 16px}"
-        "ul{margin:0 0 20px;padding-left:18px}li{margin:2px 0}"
-        ".grid{display:grid;grid-template-columns:repeat(auto-fit,"
-        "minmax(360px,1fr));gap:14px}"
-        ".chart{background:#fff;border:1px solid #e0e0e0;border-radius:8px}"
-        ".ct{font-size:13px;font-weight:600;fill:#212529}"
-        ".axis{stroke:#adb5bd;stroke-width:1}"
-        ".tk{font-size:10px;fill:#868e96}"
-        "table{border-collapse:collapse;margin-top:22px;font-size:12px}"
-        "th,td{border:1px solid #dee2e6;padding:3px 8px;text-align:right}"
-        "th{background:#f1f3f5}"
-        "</style></head><body>"
-        "<h1>synara &mdash; runtime self-learning simulation</h1>"
-        f'<p class="meta">{_html.escape(meta)}</p>'
-        f"<ul>{syn_li}</ul>"
-        f'<div class="grid">{charts}</div>'
-        f"<table><thead><tr>{head}</tr></thead><tbody>{body}"
-        "</tbody></table></body></html>"
+    p.add_argument(
+        "--snapshot-every",
+        type=int,
+        default=DEFAULT_SNAPSHOT_EVERY,
+        help="days between snapshot rows",
     )
+    p.add_argument(
+        "--forget-every",
+        type=int,
+        default=DEFAULT_FORGET_EVERY,
+        help="days between forget passes",
+    )
+    p.add_argument(
+        "--anchors-per-topic",
+        type=int,
+        default=DEFAULT_ANCHORS_PER_TOPIC,
+        help="durable knowledge anchors per core topic",
+    )
+    p.add_argument(
+        "--core-topics",
+        type=int,
+        default=DEFAULT_CORE_TOPICS,
+        help="how many topics get anchored (frequency-dependent consolidation)",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SIM_SEED,
+        help="RNG seed for per-session topic sampling",
+    )
+    p.add_argument(
+        "--centroid-seed",
+        type=int,
+        default=DEFAULT_CENTROID_SEED,
+        help="RNG seed for the offline topical embedder's centroids",
+    )
+    p.add_argument(
+        "--out",
+        type=Path,
+        default=Path(__file__).resolve().parent / "self_learning_report.html",
+        help="HTML report destination",
+    )
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress per-snapshot rows and progress heartbeat",
+    )
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="re-enable runtime INFO/DEBUG logs (default mutes WARNING and below)",
+    )
+    args = p.parse_args(argv)
+    for name in (
+        "days",
+        "sessions",
+        "episodes_per_session",
+        "snapshot_every",
+        "forget_every",
+        "anchors_per_topic",
+        "core_topics",
+    ):
+        if getattr(args, name) <= 0:
+            p.error(f"--{name.replace('_', '-')} must be positive")
+    if args.core_topics > N_TOPICS:
+        p.error(f"--core-topics must be <= N_TOPICS ({N_TOPICS})")
+    return args
 
 
 async def _recall_prior(svc: MemoryService) -> tuple[int, int]:
@@ -354,12 +386,282 @@ async def _recall_prior(svc: MemoryService) -> tuple[int, int]:
     ep_count -> small omega -> cosine-led) measures the prior the system
     actually operates with between maintenance sweeps.
     """
-    hot = await svc.recall("t0: core knowledge anchor", session_id="probe", k=5)
+    requested_k = 5
+    hot = await svc.recall("t0: core knowledge anchor", session_id="probe", k=requested_k)
+    if len(hot) < requested_k:
+        # Synthesis reports "same/total top hits"; if cosine returned fewer
+        # than asked, surface that rather than letting the denominator quietly
+        # shrink and inflate the apparent hit ratio.
+        print(
+            f"# WARN: recall prior probe got {len(hot)}/{requested_k} hits "
+            "(store may be smaller than expected)"
+        )
     same = sum(1 for h in hot if str(h.get("content", "")).startswith("t0:"))
     return same, len(hot)
 
 
-async def main() -> int:
+HEADERS: tuple[str, ...] = (
+    "day",
+    "epis",
+    "sem",
+    "pEdg",
+    "hab",
+    "maxH",
+    "srRow",
+    "srEdg",
+    "cons",
+    "drm",
+    "ep/sch",
+    "srE/srR",
+    "mH/pE",
+)
+
+
+async def _seed_anchors(svc: MemoryService, core_topics: int, anchors_per_topic: int) -> None:
+    """Encode the durable per-topic knowledge anchors once (high salience)."""
+    for t in range(core_topics):
+        for a in range(anchors_per_topic):
+            await svc.encode_episode(
+                f"t{t}: core knowledge anchor {a}",
+                session_id=f"anchors-t{t}",
+                tags=[f"topic-{t}", "anchor"],
+                salience=ANCHOR_SALIENCE,
+            )
+
+
+async def _run_session(
+    svc: MemoryService,
+    *,
+    sid: str,
+    topic: int,
+    day: int,
+    s: int,
+    anchors_per_topic: int,
+    ep_per_session: int,
+) -> None:
+    """One simulated session: hub-anchor recall, anchor rehearsal, churn."""
+    # 1. Re-activate the durable HUB anchors (topic 0) every session
+    #    regardless of which topic the filler is about, so the most-
+    #    practised substrate consolidates. Co-recall lays down the stable
+    #    anchor<->anchor SR + plasticity edges (their hit count climbs
+    #    every same-topic session until it crosses habit_threshold_hits)
+    #    and the retrieval refreshes anchor access in virtual time so
+    #    they stay above the forget floor.
+    await svc.recall(
+        "t0: core knowledge anchor",
+        session_id=sid,
+        k=anchors_per_topic,
+    )
+    # 1b. Deterministic anchor rehearsal: the ranked recall above can be
+    #     crowded out by same-topic filler, so the actual anchor episodes
+    #     never get their access-time refreshed and forget prunes them
+    #     (FK CASCADE then wipes their accumulated plasticity edges).
+    #     Retrieve each anchor by its exact stored text so every anchor
+    #     episode is touched every session: Dt~=0 at the forget pass ->
+    #     strength ~= salience (0.97) >> floor -> the recurring substrate
+    #     survives every cascade and its anchor<->anchor edges keep
+    #     climbing toward habit_threshold_hits.
+    for a in range(anchors_per_topic):
+        await svc.recall(f"t0: core knowledge anchor {a}", session_id=sid, k=1)
+    # 2. Forgettable churn: unique per-session work plus a near-zero-
+    #    salience throwaway, so the store self-bounds.
+    for e in range(ep_per_session):
+        phrase = _PHRASES[e % len(_PHRASES)].format(n=f"topic-{topic}")
+        await svc.encode_episode(
+            f"t{topic}: {phrase}",
+            session_id=sid,
+            tags=[f"topic-{topic}"],
+            salience=0.6,
+        )
+    await svc.encode_episode(
+        f"t{topic}: incidental scratch note {day}-{s}",
+        session_id=sid,
+        tags=["noise"],
+        salience=0.02,
+    )
+
+
+def _build_synthesis(
+    rows: list[Snapshot],
+    post: Snapshot,
+    cons_count: int,
+    dreams_count: int,
+    forget_passes: int,
+    forget_removed: int,
+    probe: tuple[int, int],
+) -> list[str]:
+    """Format the emergent-structure summary lines from the collected rows."""
+    first, last = rows[0], rows[-1]
+    epis_series = [r.epis for r in rows]
+    rising = all(b > a for a, b in itertools.pairwise(epis_series))
+    peak_habits = max(r.habits for r in rows)
+    peak_maxh = max(r.max_hits for r in rows)
+    same, total = probe
+    return [
+        f"reactor self-fired: consolidations={cons_count} dreams={dreams_count} "
+        "(explicit svc.consolidate() calls in this script: 0)",
+        f"semantic schemas: {first.sem} -> {last.sem} (one cooldown-gated "
+        "reactor pass distils the recurring topics)",
+        f"SR transition rows: {first.sr_rows} -> {last.sr_rows}, edges "
+        f"{first.sr_edges} -> {last.sr_edges} (learned relational prior)",
+        f"plasticity edges: {first.p_edges} -> {last.p_edges}, habits "
+        f"{first.habits} -> {last.habits} (peak {peak_habits}), "
+        f"maxHits {last.max_hits} (peak {peak_maxh}) "
+        + (
+            "-- anchor<->anchor edges self-cross habit_threshold_hits"
+            if peak_habits
+            else "-- no habit latched"
+        ),
+        f"episodic store: {epis_series[0]} -> {post.epis} after the "
+        f"terminal forget (mid-cycle peak {max(epis_series)}); strictly-rising="
+        f"{rising} -> virtual-time decay "
+        + ("did NOT bound it" if rising else "BOUNDED it")
+        + f" (forget passes={forget_passes} removed={forget_removed})",
+        f"ratios (post-forget): {post.ep_per_sch} episodes/schema (compression), "
+        f"{post.sr_dens} SR-edges/row (densification), "
+        f"{post.edge_conc} maxhits/edge (concentration)",
+        f"recall prior check (maintained pre-forget state): {same}/{total} "
+        "top hits are the recurring hot topic -> structure shapes retrieval",
+    ]
+
+
+def _print_preface(
+    args: argparse.Namespace,
+    cfg: MemoryConfig,
+    days: int,
+    sessions_per_day: int,
+) -> None:
+    if args.quiet:
+        return
+    print(
+        f"# real-runtime self-learning sim: {days}d x {sessions_per_day} "
+        f"sessions, reactor self_learning={cfg.self_learning_enabled}"
+    )
+    print(
+        f"# consolidate_after_novel={cfg.reactor_consolidate_after_novel} "
+        f"dream_after_events={cfg.reactor_dream_after_events} "
+        f"dream_replay_top_k={cfg.dream_replay_top_k}"
+    )
+    print(f"# seed={args.seed} centroid_seed={args.centroid_seed}")
+    print(_fmt_row(HEADERS))
+
+
+async def _run_simulation(
+    svc: MemoryService,
+    *,
+    days: int,
+    sessions_per_day: int,
+    ep_per_session: int,
+    anchors_per_topic: int,
+    snapshot_every: int,
+    forget_every: int,
+    rng: random.Random,
+    cons: list[int],
+    dreams: list[int],
+    show_progress: bool,
+    quiet: bool,
+) -> tuple[list[Snapshot], Snapshot, tuple[int, int], int, int]:
+    """Day-by-day simulation loop.
+
+    Returns ``(rows, post_snapshot, probe, forget_passes, forget_removed)``.
+    """
+    rows: list[Snapshot] = []
+    snap = await _snapshot(svc, 0, cons, dreams)
+    rows.append(snap)
+    if not quiet:
+        print(_fmt_row(snap.as_row()))
+
+    forget_passes = 0
+    forget_removed = 0
+    probe: tuple[int, int] = (0, 0)
+    for day in range(1, days + 1):
+        _advance_day()  # one simulated day of virtual aging
+        _heartbeat(day, days, enabled=show_progress)
+        for s in range(sessions_per_day):
+            sid = f"d{day}-s{s}"
+            topic = rng.choices(range(N_TOPICS), weights=_TOPIC_WEIGHTS)[0]
+            await _run_session(
+                svc,
+                sid=sid,
+                topic=topic,
+                day=day,
+                s=s,
+                anchors_per_topic=anchors_per_topic,
+                ep_per_session=ep_per_session,
+            )
+
+        # Snapshot BEFORE forget. snapshot_every and forget_every can collide
+        # at integer multiples; sampling after the forget cascade would
+        # measure the sawtooth at its trough (FK CASCADE has just wiped the
+        # high-hit edges) and misreport the steady state the system actually
+        # maintains between maintenance sweeps. The sawtooth itself stays
+        # visible via peak fields + forget_removed.
+        if day % snapshot_every == 0:
+            snap = await _snapshot(svc, day, cons, dreams)
+            rows.append(snap)
+            _heartbeat_clear(enabled=show_progress)
+            if not quiet:
+                print(_fmt_row(snap.as_row()))
+
+        if day == days:
+            # Recall prior measured on the maintained state, i.e. BEFORE the
+            # terminal forget (see _recall_prior for why this is the
+            # faithful sampling point).
+            probe = await _recall_prior(svc)
+
+        if day % forget_every == 0:
+            # Aggressive floor: anchors are refreshed by exact-text
+            # rehearsal every session (Dt~=0 -> S ~= 0.97 here), so they
+            # clear this floor with margin while never-rehearsed filler and
+            # salience-0.02 noise fall through. A low floor (0.005) was
+            # measured to keep filler alive and dilute anchor recall
+            # (maxHits collapsed 223 -> 0); 0.05 restores the concentrated-
+            # substrate regime so habits actually latch.
+            fr = await svc.forget(strength_floor=0.05, dry_run=False, max_scan=5000)
+            forget_passes += 1
+            forget_removed += int(fr.get("removed", 0))
+
+    # The table/charts sample BEFORE each forget so plasticity steady state
+    # is visible; the store-bounded and compression claims must be judged
+    # AFTER the terminal forget. These metrics are anti-phase on the same
+    # sawtooth, so report both phases rather than pick one.
+    _heartbeat_clear(enabled=show_progress)
+    post = await _snapshot(svc, days, cons, dreams)
+    return rows, post, probe, forget_passes, forget_removed
+
+
+def _write_report(
+    out: Path,
+    rows: list[Snapshot],
+    syn: list[str],
+    *,
+    cfg: MemoryConfig,
+    days: int,
+    sessions_per_day: int,
+) -> None:
+    meta = (
+        f"{days} days x {sessions_per_day} sessions; reactor "
+        f"self_learning={cfg.self_learning_enabled}, "
+        f"consolidate_after_novel={cfg.reactor_consolidate_after_novel}, "
+        f"dream_after_events={cfg.reactor_dream_after_events}; "
+        f"virtual clock: 1 sim-day = {int(_SIM_DAY_SECONDS)}s aging"
+    )
+    out.write_text(render_html(rows, HEADERS, meta, syn), encoding="utf-8")
+
+
+async def main(args: argparse.Namespace) -> int:
+    if args.verbose:
+        logging.disable(logging.NOTSET)
+    _build_centroids(args.centroid_seed)
+    show_progress = sys.stdout.isatty() and not args.quiet
+    days = args.days
+    sessions_per_day = args.sessions
+    ep_per_session = args.episodes_per_session
+    snapshot_every = args.snapshot_every
+    forget_every = args.forget_every
+    anchors_per_topic = args.anchors_per_topic
+    core_topics = args.core_topics
+
     db = AsyncVectorDB(":memory:")
     # Single documented deviation: let the reactor consolidate without a
     # real 60 s maturation wait. Everything else is a production default
@@ -371,199 +673,54 @@ async def main() -> int:
     _install_virtual_clock()
     svc = MemoryService(db, config=cfg, embed_fn=topical_embed)
     cons, dreams = _instrument_reactor(svc)
-    rng = random.Random(7)
-    forget_passes = 0
-    forget_removed = 0
-    probe: tuple[int, int] = (0, 0)
+    rng = random.Random(args.seed)
 
-    headers = (
-        "day",
-        "epis",
-        "sem",
-        "pEdg",
-        "hab",
-        "maxH",
-        "srRow",
-        "srEdg",
-        "cons",
-        "drm",
-        "ep/sch",
-        "srE/srR",
-        "mH/pE",
+    _print_preface(args, cfg, days, sessions_per_day)
+    await _seed_anchors(svc, core_topics, anchors_per_topic)
+    rows, post, probe, forget_passes, forget_removed = await _run_simulation(
+        svc,
+        days=days,
+        sessions_per_day=sessions_per_day,
+        ep_per_session=ep_per_session,
+        anchors_per_topic=anchors_per_topic,
+        snapshot_every=snapshot_every,
+        forget_every=forget_every,
+        rng=rng,
+        cons=cons,
+        dreams=dreams,
+        show_progress=show_progress,
+        quiet=args.quiet,
     )
-    print(
-        f"# real-runtime self-learning sim: {DAYS}d x {SESSIONS_PER_DAY} "
-        f"sessions, reactor self_learning={cfg.self_learning_enabled}"
+    syn = _build_synthesis(
+        rows,
+        post,
+        cons_count=cons[0],
+        dreams_count=dreams[0],
+        forget_passes=forget_passes,
+        forget_removed=forget_removed,
+        probe=probe,
     )
-    print(
-        f"# consolidate_after_novel={cfg.reactor_consolidate_after_novel} "
-        f"dream_after_events={cfg.reactor_dream_after_events} "
-        f"dream_replay_top_k={cfg.dream_replay_top_k}"
+    if not args.quiet:
+        print("\n# self-evolution observed (snapshot[0] -> snapshot[-1]):")
+        for line in syn:
+            print(f"#  {line}")
+
+    _write_report(
+        args.out,
+        rows,
+        syn,
+        cfg=cfg,
+        days=days,
+        sessions_per_day=sessions_per_day,
     )
-    print(_fmt_row(headers))
-
-    # Seed durable per-topic knowledge anchors once (high salience).
-    for t in range(_CORE_TOPICS):
-        for a in range(ANCHORS_PER_TOPIC):
-            await svc.encode_episode(
-                f"t{t}: core knowledge anchor {a}",
-                session_id=f"anchors-t{t}",
-                tags=[f"topic-{t}", "anchor"],
-                salience=ANCHOR_SALIENCE,
-            )
-
-    rows: list[tuple[float, ...]] = []
-    snap = await _snapshot(svc, 0, cons, dreams)
-    rows.append(snap)
-    print(_fmt_row(snap))
-
-    for day in range(1, DAYS + 1):
-        _advance_day()  # one simulated day of virtual aging
-        for s in range(SESSIONS_PER_DAY):
-            sid = f"d{day}-s{s}"
-            topic = rng.choices(range(N_TOPICS), weights=_TOPIC_WEIGHTS)[0]
-            # 1. Re-activate the durable HUB anchors (topic 0) every
-            #    session regardless of which topic the filler is about,
-            #    so the most-practised substrate consolidates. Co-recall
-            #    lays down the stable anchor<->anchor SR + plasticity
-            #    edges (their hit count climbs every same-topic session
-            #    until it crosses habit_threshold_hits) and the
-            #    retrieval refreshes anchor access in virtual time so
-            #    they stay above the forget floor.
-            await svc.recall(
-                "t0: core knowledge anchor",
-                session_id=sid,
-                k=ANCHORS_PER_TOPIC,
-            )
-            # 1b. Deterministic anchor rehearsal: the ranked recall above
-            #     can be crowded out by same-topic filler, so the actual
-            #     anchor episodes never get their access-time refreshed
-            #     and forget prunes them (FK CASCADE then wipes their
-            #     accumulated plasticity edges). Retrieve each anchor by
-            #     its exact stored text so every anchor episode is touched
-            #     every session: Dt~=0 at the forget pass -> strength ~=
-            #     salience (0.97) >> floor -> the recurring substrate
-            #     survives every cascade and its anchor<->anchor edges
-            #     keep climbing toward habit_threshold_hits.
-            for a in range(ANCHORS_PER_TOPIC):
-                await svc.recall(
-                    f"t0: core knowledge anchor {a}",
-                    session_id=sid,
-                    k=1,
-                )
-            # 2. Forgettable churn: unique per-session work plus a
-            #    near-zero-salience throwaway, so the store self-bounds.
-            for e in range(EP_PER_SESSION):
-                phrase = _PHRASES[e % len(_PHRASES)].format(n=f"topic-{topic}")
-                await svc.encode_episode(
-                    f"t{topic}: {phrase}",
-                    session_id=sid,
-                    tags=[f"topic-{topic}"],
-                    salience=0.6,
-                )
-            await svc.encode_episode(
-                f"t{topic}: incidental scratch note {day}-{s}",
-                session_id=sid,
-                tags=["noise"],
-                salience=0.02,
-            )
-
-        # Snapshot BEFORE forget. SNAPSHOT_EVERY=10 and FORGET_EVERY=15
-        # collide at days 30 and 60; sampling after the forget cascade
-        # would measure the sawtooth at its trough (FK CASCADE has just
-        # wiped the high-hit edges) and misreport the steady state the
-        # system actually maintains between maintenance sweeps. Recording
-        # the maintained state is the faithful measurement; the sawtooth
-        # itself stays visible via peak fields + forget_removed.
-        if day % SNAPSHOT_EVERY == 0:
-            snap = await _snapshot(svc, day, cons, dreams)
-            rows.append(snap)
-            print(_fmt_row(snap))
-
-        if day == DAYS:
-            # Measure the recall prior on the maintained state, i.e.
-            # BEFORE the terminal forget, for the same reason the
-            # plasticity table samples pre-forget (see _recall_prior).
-            probe = await _recall_prior(svc)
-
-        if day % FORGET_EVERY == 0:
-            # Aggressive floor: anchors are refreshed by exact-text
-            # rehearsal every session (Dt~=0 -> S ~= 0.97 here), so they
-            # clear this floor with margin while never-rehearsed filler
-            # and salience-0.02 noise fall through. A low floor (0.005)
-            # was measured to keep filler alive and dilute anchor recall
-            # (maxHits collapsed 223 -> 0); 0.05 restores the
-            # concentrated-substrate regime so habits actually latch.
-            fr = await svc.forget(strength_floor=0.05, dry_run=False, max_scan=5000)
-            forget_passes += 1
-            forget_removed += int(fr.get("removed", 0))
-
-    # The table/charts sample BEFORE each forget so plasticity steady
-    # state is visible; the store-bounded and compression claims must be
-    # judged AFTER the terminal forget. These metrics are anti-phase on
-    # the same sawtooth, so report both phases rather than pick one.
-    post = await _snapshot(svc, DAYS, cons, dreams)
-
-    # ---- emergent-structure synthesis -------------------------------
-    # Every number below is measured. The episodic line reports whether
-    # virtual-time decay actually bounded the store, not a tidier story.
-    first, last = rows[0], rows[-1]
-    epis_series = [int(r[1]) for r in rows]
-    rising = all(b > a for a, b in itertools.pairwise(epis_series))
-    # probe captured pre-terminal-forget (maintained state); see
-    # _recall_prior for why this is the faithful sampling point.
-    same, total = probe
-
-    syn = [
-        f"reactor self-fired: consolidations={cons[0]} dreams={dreams[0]} "
-        "(explicit svc.consolidate() calls in this script: 0)",
-        f"semantic schemas: {first[2]} -> {last[2]} (one cooldown-gated "
-        "reactor pass distils the recurring topics)",
-        f"SR transition rows: {first[6]} -> {last[6]}, edges "
-        f"{first[7]} -> {last[7]} (learned relational prior)",
-        f"plasticity edges: {int(first[3])} -> {int(last[3])}, habits "
-        f"{int(first[4])} -> {int(last[4])} (peak "
-        f"{max(int(r[4]) for r in rows)}), maxHits {int(last[5])} "
-        f"(peak {max(int(r[5]) for r in rows)}) "
-        + (
-            "-- anchor<->anchor edges self-cross habit_threshold_hits"
-            if max(int(r[4]) for r in rows)
-            else "-- no habit latched"
-        ),
-        f"episodic store: {epis_series[0]} -> {int(post[1])} after the "
-        f"terminal forget (mid-cycle peak {max(epis_series)}); strictly-rising="
-        f"{rising} -> virtual-time decay "
-        + ("did NOT bound it" if rising else "BOUNDED it")
-        + f" (forget passes={forget_passes} removed={forget_removed})",
-        f"ratios (post-forget): {post[10]} episodes/schema (compression), "
-        f"{post[11]} SR-edges/row (densification), "
-        f"{post[12]} maxhits/edge (concentration)",
-        f"recall prior check (maintained pre-forget state): {same}/{total} "
-        "top hits are the recurring hot topic -> structure shapes retrieval",
-    ]
-    print("\n# self-evolution observed (snapshot[0] -> snapshot[-1]):")
-    for line in syn:
-        print(f"#  {line}")
-
-    out = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else Path(__file__).resolve().parent / "self_learning_report.html"
-    )
-    meta = (
-        f"{DAYS} days x {SESSIONS_PER_DAY} sessions; reactor "
-        f"self_learning={cfg.self_learning_enabled}, "
-        f"consolidate_after_novel={cfg.reactor_consolidate_after_novel}, "
-        f"dream_after_events={cfg.reactor_dream_after_events}; "
-        f"virtual clock: 1 sim-day = {int(_SIM_DAY_SECONDS)}s aging"
-    )
-    out.write_text(_render_html(rows, headers, meta, syn), encoding="utf-8")
-    print(f"\n# HTML report written: {out}")
+    if not args.quiet:
+        print(f"\n# HTML report written: {args.out}")
 
     await db.close()
-    print("\n# DONE - in-memory DB discarded, nothing persisted")
+    if not args.quiet:
+        print("\n# DONE - in-memory DB discarded, nothing persisted")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(asyncio.run(main(_parse_args())))
