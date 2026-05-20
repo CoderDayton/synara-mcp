@@ -1,40 +1,35 @@
-import { Suspense, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Suspense, useEffect, useState } from "react";
+import { Outlet, useLocation } from "react-router-dom";
 import { Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
 import { Loading } from "@/components/common/states";
+import { StatusPill } from "@/components/common/status-indicator";
 import { ThemeToggle } from "@/components/common/theme-toggle";
 import { TokenDialog } from "@/components/common/token-dialog";
-import { SidebarContent } from "@/components/layout/sidebar";
-import { useHealth } from "@/lib/queries";
+import { ROUTE_TITLES, SidebarContent } from "@/components/layout/sidebar";
 import { cn } from "@/lib/utils";
-
-function ConnectionPill() {
-  const { data, isError } = useHealth();
-  const ok = !!data && !isError;
-  return (
-    <div className="hidden items-center gap-2 rounded-full border border-border/60 bg-card/60 px-3 py-1.5 text-xs shadow-card sm:flex">
-      <span
-        className={cn(
-          "size-1.5 rounded-full",
-          ok ? "animate-pulse bg-success" : "bg-destructive",
-        )}
-        aria-hidden
-      />
-      <span className="font-medium">{ok ? "Connected" : "Offline"}</span>
-      {data && (
-        <span className="font-mono text-muted-foreground">
-          {data.transport} · v{data.version} ·{" "}
-          {Math.round(data.uptime_seconds)}s
-        </span>
-      )}
-    </div>
-  );
-}
 
 export function AppShell() {
   const [open, setOpen] = useState(false);
+  const { pathname } = useLocation();
+  const pageTitle = ROUTE_TITLES[pathname] ?? "";
+
+  // Drawer side-effects: lock body scroll while open and close on Esc,
+  // so the off-canvas menu behaves like a real modal layer.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
 
   return (
     <div className="min-h-svh lg:grid lg:grid-cols-[16rem_1fr]">
@@ -43,23 +38,36 @@ export function AppShell() {
         <SidebarContent />
       </aside>
 
-      {/* Mobile off-canvas */}
-      {open && (
-        <div className="fixed inset-0 z-50 lg:hidden">
-          <button
-            type="button"
-            aria-label="Close menu"
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setOpen(false)}
-          />
-          <div className="absolute inset-y-0 left-0 w-64 max-w-[80vw] border-r border-sidebar-border/70 bg-sidebar shadow-pop">
-            <SidebarContent onNavigate={() => setOpen(false)} />
-          </div>
+      {/* Mobile off-canvas — always mounted so it can transition */}
+      <div
+        className={cn(
+          "fixed inset-0 z-50 lg:hidden",
+          open ? "pointer-events-auto" : "pointer-events-none",
+        )}
+        aria-hidden={!open}
+      >
+        <button
+          type="button"
+          aria-label="Close menu"
+          tabIndex={open ? 0 : -1}
+          className={cn(
+            "absolute inset-0 bg-black/60 transition-opacity duration-200",
+            open ? "opacity-100" : "opacity-0",
+          )}
+          onClick={() => setOpen(false)}
+        />
+        <div
+          className={cn(
+            "absolute inset-y-0 left-0 w-64 max-w-[80vw] border-r border-sidebar-border/70 bg-sidebar shadow-pop transition-transform duration-200 ease-out",
+            open ? "translate-x-0" : "-translate-x-full",
+          )}
+        >
+          <SidebarContent onNavigate={() => setOpen(false)} />
         </div>
-      )}
+      </div>
 
-      <div className="flex min-w-0 flex-col">
-        <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/60 bg-background/70 px-4 backdrop-blur-xl sm:h-16 sm:px-6">
+      <div className="grid min-h-svh min-w-0 grid-rows-[auto_1fr]">
+        <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/60 bg-surface-overlay px-4 backdrop-blur-xl sm:h-16 sm:px-6">
           <Button
             variant="ghost"
             size="icon"
@@ -70,7 +78,12 @@ export function AppShell() {
           >
             {open ? <X className="size-5" /> : <Menu className="size-5" />}
           </Button>
-          <ConnectionPill />
+          {pageTitle && (
+            <h1 className="truncate text-sm font-semibold tracking-tight sm:hidden">
+              {pageTitle}
+            </h1>
+          )}
+          <StatusPill />
           <div className="flex-1" />
           <TokenDialog />
           <ThemeToggle />
@@ -78,7 +91,7 @@ export function AppShell() {
 
         <main
           className={cn(
-            "mx-auto w-full max-w-7xl flex-1 px-4 py-5 sm:px-6 sm:py-8 lg:px-8",
+            "mx-auto flex w-full min-h-0 max-w-7xl flex-col px-4 py-5 sm:px-6 sm:py-8 lg:px-8",
           )}
         >
           <Suspense fallback={<Loading label="Loading view" />}>

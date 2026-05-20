@@ -6,6 +6,7 @@ import {
   Settings2,
   Wrench,
 } from "lucide-react";
+import { StatusPanel } from "@/components/common/status-indicator";
 import { useHealth } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
@@ -27,44 +28,11 @@ const NAV = [
   },
 ];
 
-function StatusFooter() {
-  const { data, isError } = useHealth();
-  const ok = !!data && !isError;
-  return (
-    <div className="rounded-xl border border-sidebar-border/70 bg-card/50 p-3 text-xs shadow-card sm:p-4">
-      <div className="flex items-center gap-2 font-medium">
-        <span
-          className={cn(
-            "size-2 rounded-full ring-4",
-            ok
-              ? "bg-success ring-success/20"
-              : "bg-destructive ring-destructive/20",
-          )}
-          aria-hidden
-        />
-        <span className={ok ? "text-success" : "text-destructive"}>
-          {ok ? "Connected" : "Offline"}
-        </span>
-      </div>
-      {data && (
-        <dl className="mt-2 space-y-1 text-muted-foreground">
-          <div className="flex justify-between gap-2">
-            <dt>Transport</dt>
-            <dd className="font-mono">{data.transport}</dd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <dt>Embedding</dt>
-            <dd className="font-mono">{data.embedding_backend}</dd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <dt>Uptime</dt>
-            <dd className="font-mono">{Math.round(data.uptime_seconds)}s</dd>
-          </div>
-        </dl>
-      )}
-    </div>
-  );
-}
+/** Path → label, derived from NAV so the mobile header title in
+ *  app-shell never drifts from the sidebar's source of truth. */
+export const ROUTE_TITLES: Record<string, string> = Object.fromEntries(
+  NAV.flatMap((s) => s.items.map((i) => [i.to, i.label] as const)),
+);
 
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { data } = useHealth();
@@ -127,7 +95,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
 
-      <StatusFooter />
+      <StatusPanel />
     </div>
   );
 }

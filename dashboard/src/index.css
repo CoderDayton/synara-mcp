@@ -36,6 +36,14 @@
   --input: oklch(0.92 0.004 286);
   --ring: oklch(0.54 0.21 293);
 
+  /* Layered surface scale — page < canvas < card < overlay < floating.
+     `canvas` is a sunken card surface, `overlay` is sticky chrome over
+     content (header, search bars), `floating` is an active panel
+     hovering over the canvas (mobile inspector, graph controls). */
+  --surface-canvas: color-mix(in oklab, var(--card) 38%, transparent);
+  --surface-overlay: color-mix(in oklab, var(--background) 72%, transparent);
+  --surface-floating: color-mix(in oklab, var(--card) 92%, transparent);
+
   --chart-1: oklch(0.55 0.21 293);
   --chart-2: oklch(0.62 0.13 195);
   --chart-3: oklch(0.72 0.16 75);
@@ -82,6 +90,10 @@
   --border: oklch(0.275 0.007 286);
   --input: oklch(0.31 0.008 286);
   --ring: oklch(0.66 0.2 291);
+
+  --surface-canvas: color-mix(in oklab, var(--card) 42%, transparent);
+  --surface-overlay: color-mix(in oklab, var(--background) 75%, transparent);
+  --surface-floating: color-mix(in oklab, var(--card) 94%, transparent);
 
   --chart-1: oklch(0.68 0.19 291);
   --chart-2: oklch(0.72 0.13 195);
@@ -138,6 +150,10 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+
+  --color-surface-canvas: var(--surface-canvas);
+  --color-surface-overlay: var(--surface-overlay);
+  --color-surface-floating: var(--surface-floating);
 
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);

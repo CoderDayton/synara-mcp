@@ -15,6 +15,13 @@ import { Empty, ErrorState, Loading } from "@/components/common/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { MemoryGraph } from "@/components/memories/memory-graph";
 import { MemoryInspector } from "@/components/memories/memory-inspector";
 
@@ -76,38 +83,15 @@ export default function Memories() {
   const showEmpty =
     graph.data && graph.data.nodes.length === 0 && !graph.isLoading;
 
+  const showDepth = focus != null;
+  const showReset = focus != null || !!query;
+
   return (
-    <section className="flex h-full flex-col gap-5 sm:gap-6">
+    <section className="flex min-h-0 flex-1 flex-col gap-6 sm:gap-8">
       <PageHeader
         eyebrow="Store"
         title="Memory map"
         subtitle="The successor graph, plasticity associations, and consolidation schemas of the live store — search to light up matches across the whole map."
-        actions={
-          <>
-            <label className="eyebrow flex items-center gap-2">
-              depth
-              <select
-                value={depth}
-                onChange={(e) => setDepth(Number(e.target.value))}
-                disabled={focus == null}
-                className="h-8 rounded-md border border-border bg-card px-2 font-mono text-xs text-foreground disabled:opacity-40"
-              >
-                <option value={1}>1</option>
-                <option value={2}>2</option>
-                <option value={3}>3</option>
-              </select>
-            </label>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={reset}
-              disabled={focus == null && !query}
-            >
-              <RotateCcw className="size-4" aria-hidden />
-              Reset view
-            </Button>
-          </>
-        }
       />
 
       {graph.data?.legacy && (
@@ -124,14 +108,14 @@ export default function Memories() {
         </Alert>
       )}
 
-      <div className="relative flex h-[68vh] min-h-[26rem] flex-1 overflow-hidden rounded-xl border border-border/70 bg-card/40 shadow-card">
+      <div className="relative flex min-h-[28rem] flex-1 overflow-hidden rounded-xl border border-border/70 bg-surface-canvas shadow-card">
         {/* Search operates on the whole map */}
         <form
           onSubmit={(e) => {
             e.preventDefault();
             setQuery(draft.trim());
           }}
-          className="absolute top-3 left-1/2 z-20 flex w-[min(28rem,calc(100%-1.5rem))] -translate-x-1/2 items-center gap-1.5 rounded-lg border border-border/70 bg-background/85 p-1.5 shadow-card backdrop-blur sm:top-4"
+          className="absolute top-3 left-1/2 z-20 flex w-[min(26rem,calc(100%-1.5rem))] -translate-x-1/2 items-center gap-1.5 rounded-lg border border-border/70 bg-surface-overlay p-1.5 shadow-card backdrop-blur sm:top-4"
         >
           <Search
             className="ml-1.5 size-4 shrink-0 text-muted-foreground"
@@ -164,6 +148,44 @@ export default function Memories() {
             Search
           </Button>
         </form>
+
+        {/* Top-right: focus controls — depth + reset, only shown when relevant */}
+        {(showDepth || showReset) && (
+          <div className="absolute top-3 right-3 z-20 flex items-center gap-1 rounded-lg border border-border/70 bg-surface-overlay p-1 shadow-card backdrop-blur sm:top-4 sm:right-4">
+            {showDepth && (
+              <Select
+                value={String(depth)}
+                onValueChange={(v) => setDepth(Number(v))}
+              >
+                <SelectTrigger
+                  size="sm"
+                  aria-label="Neighbourhood depth"
+                  className="h-8 gap-2 border-0 bg-transparent px-2 shadow-none focus-visible:ring-0 dark:bg-transparent dark:hover:bg-transparent"
+                >
+                  <span className="eyebrow">depth</span>
+                  <SelectValue className="font-mono text-xs tabular-nums" />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="1">1</SelectItem>
+                  <SelectItem value="2">2</SelectItem>
+                  <SelectItem value="3">3</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+            {showReset && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={reset}
+                className="h-8 px-2"
+              >
+                <RotateCcw className="size-3.5" aria-hidden />
+                Reset
+              </Button>
+            )}
+          </div>
+        )}
 
         {/* Graph */}
         <div className="relative min-w-0 flex-1">
@@ -199,7 +221,7 @@ export default function Memories() {
 
         {/* Inspector */}
         {selected && (
-          <aside className="absolute inset-y-0 right-0 z-30 w-full border-l border-border/60 bg-card/95 backdrop-blur sm:w-[22rem] lg:static lg:bg-card/40">
+          <aside className="absolute inset-y-0 right-0 z-30 w-full border-l border-border/60 bg-surface-floating backdrop-blur sm:w-[22rem] lg:static lg:bg-surface-canvas lg:backdrop-blur-none">
             <MemoryInspector
               node={selected}
               onFocus={(id) => {

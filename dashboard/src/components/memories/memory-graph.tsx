@@ -417,7 +417,7 @@ export function MemoryGraph({
       />
       <Controls
         showInteractive={false}
-        className="!rounded-md !border !border-border !bg-card/90 !shadow-card [&_button]:!border-border [&_button]:!bg-transparent [&_button]:!text-muted-foreground hover:[&_button]:!text-foreground"
+        className="!rounded-md !border !border-border !bg-surface-floating !shadow-card !backdrop-blur [&_button]:!border-border [&_button]:!bg-transparent [&_button]:!text-muted-foreground hover:[&_button]:!text-foreground"
       />
       <MiniMap
         pannable
@@ -425,7 +425,7 @@ export function MemoryGraph({
         ariaLabel="Memory map overview"
         bgColor="transparent"
         maskColor="oklch(0.155 0.005 286 / 0.7)"
-        className="!rounded-md !border !border-border !bg-card/80"
+        className="!rounded-md !border !border-border !bg-surface-floating"
         nodeColor={(nd) => {
           const d = nd.data as NodeData;
           return d.node.kind === "semantic"
@@ -438,7 +438,7 @@ export function MemoryGraph({
       {data && (
         <Panel
           position="bottom-left"
-          className="!m-3 hidden flex-col gap-1.5 rounded-md border border-border/70 bg-background/85 px-3 py-2.5 font-mono text-[0.6rem] text-muted-foreground backdrop-blur sm:flex sm:text-[0.62rem]"
+          className="!m-3 hidden flex-col gap-1.5 rounded-md border border-border/70 bg-surface-overlay px-3 py-2.5 font-mono text-[0.6rem] text-muted-foreground backdrop-blur sm:flex sm:text-[0.62rem]"
         >
           <span className="flex items-center gap-1.5">
             <span

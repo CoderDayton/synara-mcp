@@ -1,14 +1,9 @@
 import { Info } from "lucide-react";
 import { useHealth, useParams } from "@/lib/queries";
 import { PageHeader } from "@/components/common/page-header";
+import { Panel } from "@/components/common/panel";
 import { ErrorState, Loading } from "@/components/common/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -35,7 +30,7 @@ export default function Config() {
   const h = health.data;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 sm:space-y-8">
       <PageHeader
         eyebrow="System"
         title="Configuration"
@@ -55,12 +50,8 @@ export default function Config() {
         </AlertDescription>
       </Alert>
 
-      <div className="grid grid-cols-1 gap-4 md:gap-6 lg:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle>Runtime</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
+      <div className="grid grid-cols-1 items-start gap-4 md:gap-6 lg:grid-cols-3">
+        <Panel title="Runtime" bodyClassName="space-y-2 text-sm">
             {h ? (
               <dl className="space-y-2">
                 {[
@@ -86,14 +77,18 @@ export default function Config() {
             ) : (
               <p className="text-muted-foreground">Runtime unavailable.</p>
             )}
-          </CardContent>
-        </Card>
+        </Panel>
 
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>MemoryConfig ({entries.length})</CardTitle>
-          </CardHeader>
-          <CardContent className="overflow-x-auto p-0">
+        <Panel
+          title="MemoryConfig"
+          aside={
+            <span className="font-mono text-xs text-muted-foreground">
+              {entries.length} keys
+            </span>
+          }
+          className="lg:col-span-2"
+          bodyClassName="overflow-x-auto p-0"
+        >
             <Table>
               <TableBody>
                 {entries.map(([k, v]) => (
@@ -108,8 +103,7 @@ export default function Config() {
                 ))}
               </TableBody>
             </Table>
-          </CardContent>
-        </Card>
+        </Panel>
       </div>
     </div>
   );

@@ -1,7 +1,8 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Suspense } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { useHealth, useMemories, useStats } from "@/lib/queries";
 import { ErrorState, Loading } from "@/components/common/states";
+import { Panel } from "@/components/common/panel";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const StoreChart = lazy(() => import("@/components/overview/store-chart"));
@@ -29,31 +30,6 @@ const MCP_SNIPPET = `{
     "synara": { "command": "uvx", "args": ["synara-mcp"] }
   }
 }`;
-
-/* Flat console panel — hairline border, mono header bar, no float. */
-function Panel({
-  title,
-  aside,
-  children,
-  className = "",
-}: {
-  title: string;
-  aside?: ReactNode;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <section
-      className={`flex flex-col border border-border/70 bg-card ${className}`}
-    >
-      <header className="flex items-center justify-between gap-3 border-b border-border/70 px-5 py-3">
-        <span className="eyebrow">{title}</span>
-        {aside}
-      </header>
-      <div className="flex-1 p-5">{children}</div>
-    </section>
-  );
-}
 
 export default function Overview() {
   const stats = useStats();
@@ -152,7 +128,7 @@ export default function Overview() {
       {/* ── COMPOSITION + PIPELINE ──────────────────────────── */}
       <div className="grid grid-cols-1 gap-px lg:grid-cols-3">
         <Panel
-          title={hasData ? "Store composition" : "Get started"}
+          eyebrow={hasData ? "Store composition" : "Get started"}
           className="lg:col-span-2"
           aside={
             hasData ? (
@@ -179,14 +155,14 @@ export default function Overview() {
                 </code>
                 .
               </p>
-              <pre className="overflow-x-auto border border-border/70 bg-background/60 p-4 font-mono text-xs leading-relaxed text-foreground/90">
+              <pre className="overflow-x-auto border border-border/70 bg-surface-canvas p-4 font-mono text-xs leading-relaxed text-foreground/90">
                 {MCP_SNIPPET}
               </pre>
             </div>
           )}
         </Panel>
 
-        <Panel title="Memory pipeline">
+        <Panel eyebrow="Memory pipeline">
           <ol className="relative space-y-5 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-border">
             {PIPELINE.map((stage) => (
               <li key={stage.label} className="relative flex gap-4">
@@ -205,7 +181,7 @@ export default function Overview() {
 
       {/* ── MCP TOOL SURFACE ────────────────────────────────── */}
       <Panel
-        title="MCP tools"
+        eyebrow="MCP tools"
         aside={
           <span className="font-mono text-xs text-muted-foreground">
             {TOOLS.length} exposed
@@ -232,7 +208,7 @@ export default function Overview() {
       {/* ── RECENT ──────────────────────────────────────────── */}
       {items.length > 0 && (
         <Panel
-          title="Recent episodes"
+          eyebrow="Recent episodes"
           aside={
             <ArrowUpRight
               className="size-4 text-muted-foreground"

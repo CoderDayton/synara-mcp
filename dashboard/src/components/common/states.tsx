@@ -45,7 +45,7 @@ export function Empty({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-border/70 bg-card/40 px-6 py-16 text-center shadow-card sm:py-20">
+    <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-border/70 bg-surface-canvas px-6 py-16 text-center shadow-card sm:py-20">
       <div className="grid size-12 place-items-center rounded-2xl bg-primary/10 text-primary ring-1 ring-inset ring-primary/20">
         <Icon className="size-5" aria-hidden />
       </div>

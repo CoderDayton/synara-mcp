@@ -3,26 +3,12 @@ import { Brain, Sparkles, Trash } from "lucide-react";
 import { toast } from "sonner";
 import { useConsolidate, useForget, useReflect } from "@/lib/queries";
 import { PageHeader } from "@/components/common/page-header";
+import { Panel } from "@/components/common/panel";
+import { ResultBlock } from "@/components/common/result-block";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-
-function ResultBlock({ value }: { value: unknown }) {
-  if (value == null) return null;
-  return (
-    <pre className="mt-4 max-h-56 overflow-auto rounded-md border border-border bg-muted/40 p-3 text-xs">
-      {JSON.stringify(value, null, 2)}
-    </pre>
-  );
-}
 
 function ForgetCard() {
   const [floor, setFloor] = useState("0.05");
@@ -51,17 +37,12 @@ function ForgetCard() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Trash className="size-4 text-primary" aria-hidden />
-          Forget
-        </CardTitle>
-        <CardDescription>
-          Power-law decay prune. Dry run lists candidates without deleting.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <Panel
+      icon={<Trash className="size-4 text-primary" aria-hidden />}
+      title="Forget"
+      subtitle="Power-law decay prune. Dry run lists candidates without deleting."
+      bodyClassName="space-y-4"
+    >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="floor">Strength floor (0–1)</Label>
@@ -102,8 +83,7 @@ function ForgetCard() {
           {!dryRun && <Badge variant="destructive">destructive</Badge>}
         </div>
         <ResultBlock value={m.data} />
-      </CardContent>
-    </Card>
+    </Panel>
   );
 }
 
@@ -129,17 +109,12 @@ function ConsolidateCard() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Sparkles className="size-4 text-primary" aria-hidden />
-          Consolidate
-        </CardTitle>
-        <CardDescription>
-          Cluster episodes into distilled semantic schemas.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <Panel
+      icon={<Sparkles className="size-4 text-primary" aria-hidden />}
+      title="Consolidate"
+      subtitle="Cluster episodes into distilled semantic schemas."
+      bodyClassName="space-y-4"
+    >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="space-y-1.5">
             <Label htmlFor="cs">Session (opt.)</Label>
@@ -172,8 +147,7 @@ function ConsolidateCard() {
           {m.isPending ? "Working…" : "Consolidate"}
         </Button>
         <ResultBlock value={m.data} />
-      </CardContent>
-    </Card>
+    </Panel>
   );
 }
 
@@ -199,17 +173,12 @@ function ReflectCard() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Brain className="size-4 text-primary" aria-hidden />
-          Reflect
-        </CardTitle>
-        <CardDescription>
-          Summarise a session into schemas + recent episodes.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <Panel
+      icon={<Brain className="size-4 text-primary" aria-hidden />}
+      title="Reflect"
+      subtitle="Summarise a session into schemas + recent episodes."
+      bodyClassName="space-y-4"
+    >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="space-y-1.5">
             <Label htmlFor="rs">Session ID *</Label>
@@ -241,20 +210,19 @@ function ReflectCard() {
           {m.isPending ? "Reflecting…" : "Reflect"}
         </Button>
         <ResultBlock value={m.data} />
-      </CardContent>
-    </Card>
+    </Panel>
   );
 }
 
 export default function Admin() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 sm:space-y-8">
       <PageHeader
         eyebrow="Operations"
         title="Admin"
         subtitle="Sanctioned maintenance operations. Effects are immediate and shared with the live MCP server."
       />
-      <div className="grid grid-cols-1 gap-4 md:gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-4 md:gap-6 lg:grid-cols-2">
         <ForgetCard />
         <ConsolidateCard />
         <div className="lg:col-span-2">
