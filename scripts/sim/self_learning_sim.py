@@ -24,9 +24,33 @@ What "self-evolving" means here, concretely:
 Only deviation from production defaults: ``consolidate_min_age_seconds``
 / ``consolidate_min_retrievals`` are lowered (as in
 ``memory_lifecycle_demo.py``) so the reactor can consolidate within a
-fast synchronous run instead of waiting a real 60 s. Offline: a
-deterministic topical embedder is injected, so no model download and
-the run is reproducible.
+fast synchronous run instead of waiting a real 60 s. ``habit_threshold_hits``
+is held at its production value (66) and the default sim cadence is sized
+to cross it durably across multiple forget cycles (90 days x 6 sessions,
+forget every 30 days). Offline: a deterministic topical embedder is
+injected, so no model download and the run is reproducible.
+
+What a "sim-day" means here, vs. the runtime's own time model:
+
+  The runtime uses ``MemoryConfig.time_compression`` (default 24.0) to
+  accelerate slow processes like power-law forgetting and LTD --
+  ``idle_days = idle_real * time_compression / 86400`` (see
+  ``hippocampus/plasticity.py:195``). At the production default, one
+  real hour of agent activity is felt by the runtime as roughly one
+  "day" of forgetting / LTD; one real day of activity is ~24 compressed
+  days. Fast-plasticity windows (E-LTP, reconsolidation) and reactor
+  cooldowns bypass compression and run on real wall-clock; habit
+  threshold is interaction-count and so compression-invariant.
+
+  The sim layers a *virtual* clock on top of that: ``_advance_day()``
+  bumps the patched ``now_seconds()`` by exactly 86400 sim-seconds per
+  loop iteration. The runtime then multiplies by ``time_compression``
+  internally, so one sim iteration = 24 compressed "memory days" of
+  aging -- which corresponds to roughly *one real day of agent activity*
+  at production compression. Picture each sim "day" as a day in the
+  life of a coding agent, not a calendar day of the sim itself: the
+  default 90 iterations cover ~3 months of agent activity (~2160
+  compressed memory-days) and complete in ~10 wall-clock seconds.
 
 Run:  uv run --no-sync python scripts/sim/self_learning_sim.py
 """
@@ -103,11 +127,16 @@ def topical_embed(text: str) -> list[float]:
 # These are the CLI defaults; the live values used at runtime live on
 # the parsed argparse.Namespace inside main().
 
-DEFAULT_DAYS = 60
+# 90 days / forget-every-30 gives three full habit-formation cycles plus a
+# terminal rebuild window; combined with the k=anchors_per_topic rehearsal
+# pattern in _run_session, anchor<->anchor edges cross production's
+# habit_threshold_hits=66 cleanly inside each cycle and the ever_habit flag
+# keeps them resilient to FK CASCADE during forget passes.
+DEFAULT_DAYS = 90
 DEFAULT_SESSIONS_PER_DAY = 6
 DEFAULT_EP_PER_SESSION = 4
 DEFAULT_SNAPSHOT_EVERY = 10
-DEFAULT_FORGET_EVERY = 15
+DEFAULT_FORGET_EVERY = 30
 # Per topic, a small set of durable high-salience "knowledge" anchors
 # encoded once. Every same-topic session re-recalls them: the fixed
 # anchor<->anchor plasticity edges accumulate hits across the whole
@@ -214,11 +243,20 @@ async def _snapshot(svc: MemoryService, day: int, cons: list[int], dreams: list[
 # The runtime's strength/decay reads a real wall clock (now_seconds),
 # so in a fast run every trace is "just now" and forgetting can't bite.
 # Patch the bound now_seconds in every consumer module to a virtual
-# clock the sim advances by one simulated day per loop iteration, so
-# encode timestamps, recall access times, the consolidate age gate, the
-# reactor idle trigger and forget's decay all share one coherent
-# simulated timeline. Sim-only instrumentation (no runtime change) --
-# the same technique as the reactor-handler wrapping above.
+# clock the sim advances by 86400 s per loop iteration, so encode
+# timestamps, recall access times, the consolidate age gate, and
+# forget's decay all share one coherent simulated timeline. Sim-only
+# instrumentation (no runtime change) -- the same technique as the
+# reactor-handler wrapping above.
+#
+# Note on units: one sim iteration advances now_seconds() by 86400
+# (one "sim-day" of real seconds). The runtime then multiplies by its
+# own ``time_compression`` (default 24.0) when computing idle decay --
+# ``idle_days = idle_real * time_compression / 86400`` in
+# hippocampus/plasticity.py:195. So one sim-day = 24 compressed memory-
+# days of aging, which corresponds to ~one real day of agent activity
+# at the production compression setting. The default 90 iterations cover
+# ~3 months of agent activity (~2160 compressed memory-days).
 
 _SIM_DAY_SECONDS = 86400.0
 _VT = [time.time()]
@@ -461,8 +499,16 @@ async def _run_session(
     #     strength ~= salience (0.97) >> floor -> the recurring substrate
     #     survives every cascade and its anchor<->anchor edges keep
     #     climbing toward habit_threshold_hits.
+    # k=anchors_per_topic (not 1): plasticity edges form between
+    # observed_episodic[0] and observed_episodic[1:] inside a *single*
+    # recall (recall.py:131-134). At k=1 every per-anchor call has
+    # others=[] and reinforces nothing -- only the broad recall above
+    # lays down edges, and those get crowded out by same-topic filler.
+    # At k=anchors_per_topic each exact-text recall returns its anchor
+    # plus the sibling anchors (textually nearest), reinforcing the full
+    # anchor<->anchor triangle every session regardless of filler load.
     for a in range(anchors_per_topic):
-        await svc.recall(f"t0: core knowledge anchor {a}", session_id=sid, k=1)
+        await svc.recall(f"t0: core knowledge anchor {a}", session_id=sid, k=anchors_per_topic)
     # 2. Forgettable churn: unique per-session work plus a near-zero-
     #    salience throwaway, so the store self-bounds.
     for e in range(ep_per_session):
@@ -644,7 +690,9 @@ def _write_report(
         f"self_learning={cfg.self_learning_enabled}, "
         f"consolidate_after_novel={cfg.reactor_consolidate_after_novel}, "
         f"dream_after_events={cfg.reactor_dream_after_events}; "
-        f"virtual clock: 1 sim-day = {int(_SIM_DAY_SECONDS)}s aging"
+        f"virtual clock: 1 sim-day = {int(_SIM_DAY_SECONDS)}s real-time "
+        f"-> ~24 compressed memory-days (production time_compression=24) "
+        f"~= ~1 real day of agent activity"
     )
     out.write_text(render_html(rows, HEADERS, meta, syn), encoding="utf-8")
 
@@ -664,8 +712,10 @@ async def main(args: argparse.Namespace) -> int:
 
     db = AsyncVectorDB(":memory:")
     # Single documented deviation: let the reactor consolidate without a
-    # real 60 s maturation wait. Everything else is a production default
-    # (self_learning_enabled, reactor thresholds, dream replay, etc.).
+    # real 60s maturation wait. Everything else (habit_threshold_hits,
+    # self_learning_enabled, reactor thresholds, dream replay, etc.) is a
+    # production default; the sim cadence is sized to cross the production
+    # habit threshold durably (see DEFAULT_DAYS / DEFAULT_FORGET_EVERY).
     cfg = MemoryConfig(
         consolidate_min_age_seconds=0.0,
         consolidate_min_retrievals=0,
