@@ -266,3 +266,34 @@
     letter-spacing: -0.01em;
   }
 }
+
+/* @xyflow/react — fold the graph surface into the console theme.
+   Node transform is transitioned so a focus/expand re-layout glides
+   instead of teleporting (the d3-force seed keeps positions stable). */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke-default: var(--color-chart-1);
+  --xy-attribution-background-color-default: transparent;
+}
+.react-flow__node {
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 300ms ease;
+}
+.react-flow__node.dragging {
+  transition: none;
+}
+.react-flow__edge-path {
+  transition:
+    opacity 300ms ease,
+    stroke-width 300ms ease;
+}
+.react-flow__handle {
+  pointer-events: none;
+}
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+.react-flow__minimap {
+  border-radius: var(--radius);
+}

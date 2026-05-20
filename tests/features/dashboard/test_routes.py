@@ -104,7 +104,39 @@ async def test_search_and_graph(
     g = await client.get("/api/graph", params={"max_nodes": 50})
     assert g.status_code == 200
     body = g.json()
-    assert {"nodes", "sr_edges", "plasticity_edges", "truncated"} <= set(body)
+    assert {
+        "nodes",
+        "sr_edges",
+        "plasticity_edges",
+        "consolidation_edges",
+        "omega",
+        "episode_count",
+        "focus",
+        "truncated",
+    } <= set(body)
+    # Nodes are enriched objects, not bare ids, and carry the kind +
+    # ranking signals the map renders.
+    for n in body["nodes"]:
+        assert {"id", "key", "kind", "label", "preview"} <= set(n)
+        assert n["kind"] in ("episodic", "semantic")
+        if n["kind"] == "episodic":
+            assert {"salience", "retrieval_count", "session_id"} <= set(n)
+    # SR edges expose the discounted closure M used as the recall prior.
+    for e in body["sr_edges"]:
+        assert {"src", "dst", "hits", "m"} <= set(e)
+    assert isinstance(body["omega"], (int, float))
+
+    # Focusing resolves the *bidirectional* associative neighbourhood,
+    # not a forward-only SR walk: a pure-successor episode must not be
+    # an island. The second episode co-occurred with the first in s1,
+    # so focusing it pulls in its predecessor.
+    ep_ids = sorted(int(n["id"]) for n in body["nodes"] if n["kind"] == "episodic")
+    assert len(ep_ids) >= 2
+    f = await client.get("/api/graph", params={"focus": ep_ids[-1], "depth": 2, "max_nodes": 50})
+    assert f.status_code == 200
+    fbody = f.json()
+    assert fbody["focus"] == ep_ids[-1]
+    assert len({int(n["id"]) for n in fbody["nodes"]}) > 1
 
 
 async def test_admin_forget_dry_run_delegates(
