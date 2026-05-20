@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from synara.core.errors import ValidationError
 from synara.features.memory import MemoryService
 
 from ..deps import get_service
@@ -43,24 +44,39 @@ class ReflectBody(BaseModel):
 
 @router.post("/consolidate")
 async def admin_consolidate(service: _Service, body: ConsolidateBody) -> dict[str, Any]:
-    formed = await service.consolidate(
-        session_id=body.session_id,
-        n_clusters=body.n_clusters,
-        min_cluster_size=body.min_cluster_size,
-    )
+    try:
+        formed = await service.consolidate(
+            session_id=body.session_id,
+            n_clusters=body.n_clusters,
+            min_cluster_size=body.min_cluster_size,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
     return {"schemas_formed": len(formed), "schemas": formed}
 
 
 @router.post("/forget")
 async def admin_forget(service: _Service, body: ForgetBody) -> dict[str, Any]:
-    return await service.forget(
-        strength_floor=body.strength_floor,
-        decay_tau_seconds=body.decay_tau_seconds,
-        dry_run=body.dry_run,
-        max_scan=body.max_scan,
-    )
+    try:
+        return await service.forget(
+            strength_floor=body.strength_floor,
+            decay_tau_seconds=body.decay_tau_seconds,
+            dry_run=body.dry_run,
+            max_scan=body.max_scan,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
 
 
 @router.post("/reflect")
 async def admin_reflect(service: _Service, body: ReflectBody) -> dict[str, Any]:
-    return await service.reflect(session_id=body.session_id, query=body.query, k=body.k)
+    try:
+        return await service.reflect(session_id=body.session_id, query=body.query, k=body.k)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc

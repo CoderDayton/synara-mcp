@@ -180,7 +180,15 @@ class PlasticityGraph:
         )
 
     async def ltd_pass(self, *, now: float) -> int:
-        """Decay weights for non-recently-touched edges; prune dead ones."""
+        """Decay weights for non-recently-touched edges; prune dead ones.
+
+        The pass loads every plasticity edge and is bounded in practice
+        by ``prune_floor`` deletion: edges that fall below the floor
+        (and are not habits) are removed each cycle, so the table size
+        is self-limiting in the steady state. A hard scan limit would
+        starve oldest-touched edges (the ones most in need of LTD)
+        because ``get_edges`` orders by ``last_touch DESC``.
+        """
         rate = self.ltd_decay_per_idle_day
         if rate <= 0.0:
             return 0

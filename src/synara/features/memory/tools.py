@@ -33,9 +33,10 @@ from .service import MemoryService
 # Shared compact definition. session_id is a caller-defined string
 # namespace, not an MCP/process session.
 _SID = (
-    "session_id: free-form namespace str (project|conversation|persona|"
-    "ruleset|role|anything). Same str=same namespace. Scopes: dedup, "
-    "episodic recall, consolidate, reflect. Semantic store is global."
+    "session_id: caller-defined namespace str (e.g. conversation id, "
+    "project name, persona). Same string = same namespace; not an "
+    "MCP/process session. Acts as a ranking hint for episodic recall; "
+    "scopes dedup, consolidate, and reflect. Semantic store ignores it."
 )
 
 
@@ -55,16 +56,19 @@ def register_tools(
     @mcp.tool(
         name="store_episode",
         description=(
-            "Store one episode (raw trace) in the episodic store. Dedups "
-            "near-dups within session_id (bumps retrieval_count instead "
-            "of inserting); very short content skips dedup and always "
+            "Use when something happened worth remembering: a decision, "
+            "event, user statement, action outcome, or observation. "
+            "Embeds and stores the raw trace; near-duplicates within "
+            "session_id merge (retrieval_count bumped) instead of "
+            "inserting. Very short content (<8 chars stripped) always "
             "inserts.\n"
             "content: non-empty text to embed/store.\n"
             f"{_SID}\n"
-            "tags: optional list[str] labels; used only by reflect "
-            "seeding + schema tag union. Not a filter.\n"
+            "tags: optional list[str]; used by reflect seeding and "
+            "schema headline selection. Not a recall filter.\n"
             "salience: 0..1, default 0.5. Higher = slower power-law "
-            "decay + bias to be schema headline."
+            "decay + preferred as schema headline. Use >0.7 for "
+            "critical traces."
         ),
     )
     async def store_episode(
@@ -91,16 +95,19 @@ def register_tools(
     @mcp.tool(
         name="recall_episodes",
         description=(
-            "Pattern-completion search over raw episodes; episodic hits "
-            "bump retrieval_count.\n"
+            "Use to retrieve relevant past episodes before answering, "
+            "continuing a task, or grounding a reply in prior context. "
+            "Hits are ranked by cosine + successor-representation + "
+            "spreading activation; each hit bumps retrieval_count.\n"
             "query: text, cosine-matched.\n"
-            f"{_SID} Used as a context hint, not a filter — recall is "
-            "always cross-session. In-session episodes get a small "
-            "ranking bonus (state-dependent retrieval); cross-session "
-            "episodes are returned but ranked lower at equal cosine.\n"
-            "k: max results, default 8 (sorted by ascending distance).\n"
-            "mode: auto|episodic|semantic|hybrid. auto/hybrid = both "
-            "stores merged. Use recall_semantic_memory for semantic-only."
+            f"{_SID} Optional. Ranking hint only — never a hard "
+            "filter. In-session episodes get a small bonus; "
+            "cross-session episodes are still returned.\n"
+            "k: max results, default 8 (ascending distance).\n"
+            "mode: 'auto'/'hybrid' = episodic + semantic merged "
+            "(default 'auto'); 'episodic' = raw traces only; "
+            "'semantic' = schemas only — prefer recall_semantic_memory "
+            "for that case."
         ),
     )
     async def recall_episodes(
@@ -119,12 +126,15 @@ def register_tools(
     @mcp.tool(
         name="consolidate_episodes",
         description=(
-            "Cluster unconsolidated episodes -> semantic schemas. Marks "
-            "sources consolidated_into=<schema_id>.\n"
-            f"{_SID} Optional; omit to consolidate across all namespaces.\n"
-            "n_clusters: int, default floor(sqrt(remaining after "
-            "schema absorption)), capped.\n"
-            "min_cluster_size: drop smaller clusters, default 2."
+            "Cluster raw episodes into semantic schemas. Runs "
+            "automatically in the background — call manually only to "
+            "force compression now (e.g. before a reflect, after a "
+            "large bulk store, or when the user explicitly asks).\n"
+            f"{_SID} Optional; omit to consolidate across all "
+            "namespaces.\n"
+            "n_clusters: target cluster count; default "
+            "floor(sqrt(unconsolidated)), capped automatically.\n"
+            "min_cluster_size: discard smaller clusters, default 2."
         ),
     )
     async def consolidate_episodes(
@@ -149,16 +159,17 @@ def register_tools(
     @mcp.tool(
         name="forget_episodes",
         description=(
-            "Power-law pruning over the episodic store. "
-            "strength = salience * sum_k (1 + age_k)^-d over retrieval "
-            "times; consolidated pruned at floor, unconsolidated at "
-            "floor/2.\n"
-            "strength_floor: 0..1, default 0.05.\n"
-            "decay_tau_seconds: kept for API compat only; does NOT tune "
-            "decay (model uses a fixed exponent d). Must be positive if "
-            "set.\n"
-            "dry_run: default true (returns candidate_ids, no delete). "
-            "false = delete."
+            "Prune weak episodes from the episodic store. Use when the "
+            "user asks to clean up old or low-value memories, or "
+            "proactively before a large consolidation run. Always "
+            "preview first: dry_run defaults to true (returns "
+            "candidate_ids without deleting).\n"
+            "strength_floor: 0..1, default 0.05. Episodes whose "
+            "power-law strength falls below this become candidates. "
+            "Raise to prune more aggressively.\n"
+            "decay_tau_seconds: accepted but has no effect on decay "
+            "rate (kept for backward compat). Safe to omit.\n"
+            "dry_run: default true. Set false to actually delete."
         ),
     )
     async def forget_episodes(
@@ -186,12 +197,16 @@ def register_tools(
     @mcp.tool(
         name="reflect_session",
         description=(
-            "Per-namespace summary: related semantic schemas + "
-            "most-recently-accessed episodes.\n"
+            "Use at session start, on a context switch, or to orient "
+            "before a new task in a known namespace. Returns the most "
+            "relevant semantic schemas and the most recently accessed "
+            "episodes for that session_id.\n"
             f"{_SID} Required.\n"
-            "query: optional schema-search seed; if omitted, uses first "
-            "tag of most-recent episode.\n"
-            "k: max schemas AND episodes (independent), default 5."
+            "query: seed for schema search; if omitted, falls back to "
+            "the first tag of the most-recent episode in the "
+            "namespace.\n"
+            "k: max schemas AND max episodes (each capped "
+            "independently), default 5."
         ),
     )
     async def reflect_session(
@@ -211,16 +226,16 @@ def register_tools(
     @mcp.tool(
         name="store_semantic_memory",
         description=(
-            "Save a distilled, durable abstraction directly to the "
-            "semantic store — bypasses the episodic->consolidate "
-            "pipeline. Use for facts, procedures, preferences, "
-            "conventions, and authored schemas that should persist "
-            "without raw-trace baggage. Semantic store is global "
-            "(no session_id).\n"
+            "Use this (not store_episode) when you know something is "
+            "a stable, durable truth: a user preference, a project "
+            "convention, a procedure, an authored rule, a learned "
+            "fact. Writes directly to the semantic store, bypassing "
+            "the episodic->consolidate pipeline. No session scope.\n"
             "content: non-empty distilled text.\n"
-            "kind: free-form label (e.g. fact|procedure|preference|"
-            "schema), default 'fact'. Stored as metadata.kind.\n"
-            "tags: optional list[str] for retrieval grouping.\n"
+            "kind: free-form label stored as metadata.kind, default "
+            "'fact'. Common values: fact | procedure | preference | "
+            "schema. Filterable via recall_semantic_memory.\n"
+            "tags: optional list[str] for grouping.\n"
             "confidence: 0..1, default 1.0 (author-asserted)."
         ),
     )
@@ -247,14 +262,14 @@ def register_tools(
     @mcp.tool(
         name="recall_semantic_memory",
         description=(
-            "Retrieve durable abstractions from the semantic store only "
-            "— skips raw episodic traces. Use to look up facts, "
-            "procedures, preferences, project conventions, and "
-            "consolidated schemas without dragging in full history.\n"
-            "query: text, cosine-matched against semantic store.\n"
+            "Use when you want facts, procedures, preferences, or "
+            "conventions without the noise of raw episodic history. "
+            "Searches the semantic store only (consolidated schemas + "
+            "store_semantic_memory entries).\n"
+            "query: text, cosine-matched.\n"
             "k: max results, default 8 (ascending distance).\n"
-            "kind: optional free-form filter on metadata.kind "
-            "(e.g. 'preference')."
+            "kind: optional filter on metadata.kind (e.g. "
+            "'preference'). Omit to search all kinds."
         ),
     )
     async def recall_semantic_memory(
@@ -271,7 +286,12 @@ def register_tools(
 
     @mcp.tool(
         name="memory_stats",
-        description="Return {episodic_count, semantic_count}. No params.",
+        description=(
+            "Use to check store size before a bulk operation, when "
+            "diagnosing recall returning nothing, or to surface a "
+            "health-check count. Returns {episodic_count, "
+            "semantic_count}. No params."
+        ),
     )
     async def memory_stats(ctx: Context) -> dict[str, int]:
         result = await service.stats()

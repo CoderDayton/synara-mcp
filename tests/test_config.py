@@ -100,3 +100,30 @@ def test_disabled_non_loopback_no_token_is_allowed(
 def test_token_redacted_in_repr() -> None:
     cfg = DashboardConfig(enabled=True, token="topsecret")
     assert "topsecret" not in repr(cfg)
+
+
+def test_bad_log_level_rejected_at_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo in SYNARA_LOG_LEVEL must fail loudly at config load.
+
+    The legacy code stored the raw string and crashed deep inside
+    ``logging.setLevel`` after the server had already started; that left
+    operators with an opaque traceback. The allowlist check rejects the
+    misconfiguration up front.
+    """
+    monkeypatch.setenv("SYNARA_LOG_LEVEL", "VERBOSE")
+    with pytest.raises(ValueError, match="SYNARA_LOG_LEVEL"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize("level", ["debug", "INFO", "Warning", "ERROR"])
+def test_valid_log_level_case_insensitive(monkeypatch: pytest.MonkeyPatch, level: str) -> None:
+    monkeypatch.setenv("SYNARA_LOG_LEVEL", level)
+    assert Settings.from_env().log_level == level.upper()
+
+
+def test_excessive_batch_size_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 1M default ceiling was absurd; tighter per-var caps catch
+    misconfig before the first request runs."""
+    monkeypatch.setenv("SYNARA_EMBEDDING_BATCH_SIZE", "100000")
+    with pytest.raises(ValueError, match="SYNARA_EMBEDDING_BATCH_SIZE"):
+        Settings.from_env()

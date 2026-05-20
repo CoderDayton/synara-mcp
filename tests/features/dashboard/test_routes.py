@@ -43,7 +43,9 @@ async def ctx() -> AsyncIterator[tuple[httpx.AsyncClient, MemoryService]]:
     )
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://127.0.0.1:8765"
+        ) as client:
             yield client, service
     finally:
         await db.close()
@@ -147,6 +149,41 @@ async def test_admin_forget_dry_run_delegates(
     r = await client.post("/api/admin/forget", json={"dry_run": True})
     assert r.status_code == 200
     assert "candidate_ids" in r.json()
+
+
+async def test_admin_routes_return_422_on_validation_error(
+    ctx: tuple[httpx.AsyncClient, MemoryService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Service-layer ``ValidationError`` must become 422, not a 500 with
+    a raw traceback. Pydantic's ``Field`` constraints catch some inputs
+    up front; this guards the remaining service-side checks (e.g. a
+    ``session_id`` that exceeds the configured cap)."""
+    from synara.core.errors import ValidationError  # noqa: PLC0415
+
+    client, service = ctx
+
+    async def boom_consolidate(**_kw: object) -> list[dict[str, object]]:
+        raise ValidationError("synthetic consolidate failure")
+
+    async def boom_forget(**_kw: object) -> dict[str, object]:
+        raise ValidationError("synthetic forget failure")
+
+    async def boom_reflect(**_kw: object) -> dict[str, object]:
+        raise ValidationError("synthetic reflect failure")
+
+    monkeypatch.setattr(service, "consolidate", boom_consolidate)
+    monkeypatch.setattr(service, "forget", boom_forget)
+    monkeypatch.setattr(service, "reflect", boom_reflect)
+
+    for path, body in (
+        ("/api/admin/consolidate", {}),
+        ("/api/admin/forget", {}),
+        ("/api/admin/reflect", {"session_id": "s1"}),
+    ):
+        r = await client.post(path, json=body)
+        assert r.status_code == 422, f"{path} returned {r.status_code}: {r.text}"
+        assert "synthetic" in r.json()["detail"]
 
 
 async def test_delete_route_calls_service_method(

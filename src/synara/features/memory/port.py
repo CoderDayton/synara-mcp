@@ -93,6 +93,7 @@ class MemoryServicePort(Protocol):
     _plasticity: PlasticityGraph
     _dg: DGProjector | None
     memory_types: MemoryTypeRegistry
+    _replay_cursor: int
 
     def collection_for(self, kind: MemoryType) -> Any: ...
     def _ensure_projector(self, dim: int) -> DGProjector: ...

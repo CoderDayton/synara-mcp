@@ -26,9 +26,9 @@ or an unknown transport raises at startup instead of silently degrading.
 | `SYNARA_EMBEDDING_URL` | _(unset)_ | OpenAI-compatible base URL | switches to remote |
 | `SYNARA_EMBEDDING_API_KEY` | _(unset)_ | bearer token string | remote only |
 | `SYNARA_EMBEDDING_TIMEOUT` | `30` | finite number, `0 < t ≤ 86400` (s) | remote only |
-| `SYNARA_EMBEDDING_DIM` | _(probed)_ | integer, `1 … 1000000` | always |
-| `SYNARA_EMBEDDING_BATCH_SIZE` | `64` | integer, `1 … 1000000` | always |
-| `SYNARA_EMBEDDING_MAX_SEQ_LENGTH` | _(model default)_ | integer, `1 … 1000000` | local only |
+| `SYNARA_EMBEDDING_DIM` | _(probed)_ | integer, `1 … 65536` | always |
+| `SYNARA_EMBEDDING_BATCH_SIZE` | `64` | integer, `1 … 4096` | always |
+| `SYNARA_EMBEDDING_MAX_SEQ_LENGTH` | _(model default)_ | integer, `1 … 32768` | local only |
 | `SYNARA_DASHBOARD` | `false` | boolean (`true/false/1/0/yes/no/on/off`) | always |
 | `SYNARA_DASHBOARD_HOST` | `127.0.0.1` | bind address | dashboard only |
 | `SYNARA_DASHBOARD_PORT` | `8765` | integer, `1 … 65535` | dashboard only |

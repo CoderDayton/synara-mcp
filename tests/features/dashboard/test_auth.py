@@ -39,7 +39,9 @@ def _client(db: AsyncVectorDB, settings: Settings) -> httpx.AsyncClient:
         embedder=None,
         service=MemoryService(db, config=MemoryConfig(), embed_fn=lambda _t: [0.0]),
     )
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+    )
 
 
 async def test_loopback_no_token_allows(db: AsyncVectorDB) -> None:
@@ -81,3 +83,51 @@ def test_non_loopback_without_token_refuses_startup(
     monkeypatch.delenv("SYNARA_DASHBOARD_TOKEN", raising=False)
     with pytest.raises(ValueError, match="without a token"):
         Settings.from_env()
+
+
+async def test_host_header_outside_allowlist_is_rejected(db: AsyncVectorDB) -> None:
+    """DNS-rebinding defense: a hostile Host header is rejected before auth.
+
+    The dashboard binds loopback by default; an attacker rebinding their
+    domain to 127.0.0.1 still presents their own hostname in the Host
+    header. ``HostAllowlistMiddleware`` blocks such requests with 400
+    without consulting the bearer-token dependency.
+    """
+    settings = _settings_with(DashboardConfig(enabled=True))  # loopback, no token
+    app = build_dashboard_app(
+        settings=settings,
+        db=db,
+        embedder=None,
+        service=MemoryService(db, config=MemoryConfig(), embed_fn=lambda _t: [0.0]),
+    )
+    # base_url drives the Host header; "evil.example.com" is not in the
+    # allowed_hosts list this build derives from the loopback config.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://evil.example.com",
+    ) as c:
+        resp = await c.get("/api/health")
+        assert resp.status_code == 400
+
+
+async def test_ipv6_loopback_bind_accepts_bracketed_host(db: AsyncVectorDB) -> None:
+    """``[::1]:8765`` must reach the dashboard when bound to ``::1``.
+
+    Starlette's stock ``TrustedHostMiddleware`` does ``split(":")[0]``,
+    which mangles ``[::1]:8765`` to ``"["`` and locks operators out of
+    their own IPv6 loopback dashboard. Our custom middleware strips the
+    bracketed form correctly.
+    """
+    settings = _settings_with(DashboardConfig(enabled=True, host="::1"))
+    app = build_dashboard_app(
+        settings=settings,
+        db=db,
+        embedder=None,
+        service=MemoryService(db, config=MemoryConfig(), embed_fn=lambda _t: [0.0]),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://[::1]:8765",
+    ) as c:
+        resp = await c.get("/api/health")
+        assert resp.status_code == 200

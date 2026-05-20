@@ -1008,3 +1008,41 @@ async def test_failed_reactor_consolidate_is_isolated_and_resets_counter(
         assert svc._bus.state.novel_encodes_since_consolidate == 0
     finally:
         await db.close()
+
+
+# ----------------------------- concurrent consolidate serialisation
+async def test_concurrent_consolidate_calls_serialise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two concurrent ``consolidate`` calls must not overlap.
+
+    The service guards consolidation behind ``_consolidate_lock`` so the
+    reactor trigger and an explicit call cannot interleave their
+    ``consolidated_into`` metadata writes on the same episodes. We force
+    a recordable critical section into the patched ``run`` and assert
+    its start/end windows are disjoint.
+    """
+    import asyncio  # noqa: PLC0415
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def slow_run(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        # Yield to the loop so a second waiter has a real chance to
+        # observe the lock if it leaked.
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return []
+
+    monkeypatch.setattr(consolidate_mod, "run", slow_run)
+
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        await asyncio.gather(svc.consolidate(), svc.consolidate(), svc.consolidate())
+        assert max_in_flight == 1, "consolidate calls overlapped despite the lock"
+    finally:
+        await db.close()

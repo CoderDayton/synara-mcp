@@ -232,3 +232,35 @@ async def test_ensure_warmed_noop_when_embedder_none() -> None:
             assert res.data["deduped"] is False
     finally:
         await db.close()
+
+
+async def test_embedding_failure_surfaces_to_caller() -> None:
+    """An embed_fn that raises must propagate through the tool layer.
+
+    Silent swallowing of embedding errors would let a broken backend
+    return wrong-but-syntactically-valid results to MCP callers; the
+    tool surface must fail loudly instead.
+    """
+    import pytest  # noqa: PLC0415
+    from fastmcp.exceptions import ToolError  # noqa: PLC0415
+
+    class _BoomEmbedder:
+        async def warmup_async(self, _ctx: object) -> None:
+            return None
+
+    def boom(_text: str) -> list[float]:
+        raise RuntimeError("embedding backend unreachable")
+
+    db = AsyncVectorDB(":memory:")
+    try:
+        service = MemoryService(db, config=MemoryConfig(), embed_fn=boom)
+        mcp: FastMCP = FastMCP("synara-test-boom")
+        register_tools(mcp, service, embedder=_BoomEmbedder())  # type: ignore[arg-type]
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError):
+                await client.call_tool(
+                    "store_episode",
+                    {"content": "will not embed", "session_id": "s1"},
+                )
+    finally:
+        await db.close()

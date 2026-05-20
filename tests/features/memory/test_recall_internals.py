@@ -54,6 +54,19 @@ async def test_recall_non_positive_k_returns_empty(service: MemoryService) -> No
     assert await service.recall(query="something", k=-3) == []
 
 
+async def test_recall_empty_query_raises_even_when_k_invalid(
+    service: MemoryService,
+) -> None:
+    """An empty query must always raise — even when k <= 0 would
+    otherwise short-circuit. A bad query is a programmer error
+    regardless of the result budget.
+    """
+    with pytest.raises(ValidationError, match="query must be non-empty"):
+        await service.recall(query="", k=0)
+    with pytest.raises(ValidationError, match="query must be non-empty"):
+        await service.recall(query="   ", k=-5)
+
+
 def test_cosine_score_from_distance_none_is_midpoint() -> None:
     assert recall_mod._cosine_score_from_distance(None) == 0.5
     assert recall_mod._cosine_score_from_distance(0.0) == 1.0

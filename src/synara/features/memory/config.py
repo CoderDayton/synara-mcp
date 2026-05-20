@@ -294,3 +294,11 @@ class MemoryConfig:
     dream_replay_top_k: int = 16
     dream_replay_min_salience: float = 0.0
     dream_replay_gain: float = 0.3
+    # Per-cycle scan size for dream replay. ``get_documents`` orders by
+    # id, so a fixed ``limit`` would always return the oldest episodes
+    # and starve newer ones; replay uses a rotating offset cursor
+    # (``service._replay_cursor``) so successive cycles sweep through
+    # the whole unconsolidated set. Lower values reduce per-cycle
+    # memory at the cost of more cycles to cover the table.
+    # 0 disables the cursor and falls back to an unbounded fetch.
+    dream_replay_max_scan: int = 2_000

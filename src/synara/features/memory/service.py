@@ -148,6 +148,14 @@ class MemoryService:
         # Latest captured trace dump (only populated when
         # ``config.tracing_enabled`` and after at least one traced op).
         self.last_trace: dict[str, Any] | None = None
+        # Rotating offset cursor for dream-replay's bounded sampling. The
+        # underlying ``get_documents`` orders by ID; a fixed ``limit``
+        # without ``offset`` would starve newer episodes. Each pass
+        # consumes ``dream_replay_max_scan`` rows and advances the
+        # cursor; on partial pages we wrap back to 0. Persisted in
+        # memory only (rebuilt on restart), which is fine because the
+        # power-law strength signal converges across many cycles.
+        self._replay_cursor: int = 0
         self._sr: _SR | None = (
             _SR(
                 gamma=self.config.sr_gamma,

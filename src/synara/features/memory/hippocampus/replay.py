@@ -23,7 +23,7 @@ relational structure faster than routine ones.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..neocortex.forget import access_times_from_meta, memory_strength
 from ..service import UNCONSOLIDATED
@@ -33,6 +33,31 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 # Smallest group that can form an association (anchor + >=1 target).
 _MIN_GROUP = 2
+
+
+async def _fetch_candidates(
+    service: MemoryService, *, scan_cap: int
+) -> list[tuple[int, str, dict[str, Any]]]:
+    """Page through unconsolidated episodes with a rotating offset cursor.
+
+    ``get_documents`` orders by id, so a plain ``limit`` without offset
+    would always return the lowest-IDed (oldest) rows and starve newer
+    episodes of replay budget. The cursor advances by ``scan_cap`` per
+    pass and wraps on partial pages, so successive cycles sweep through
+    the whole table. ``scan_cap=0`` falls back to an unbounded fetch.
+    """
+    flt = {"consolidated_into": UNCONSOLIDATED}
+    if scan_cap <= 0:
+        result: list[tuple[int, str, dict[str, Any]]] = await service.episodic.get_documents(flt)
+        return result
+    candidates: list[tuple[int, str, dict[str, Any]]] = await service.episodic.get_documents(
+        flt, limit=scan_cap, offset=service._replay_cursor
+    )
+    if len(candidates) < scan_cap:
+        service._replay_cursor = 0
+    else:
+        service._replay_cursor += scan_cap
+    return candidates
 
 
 async def run(service: MemoryService, *, now: float) -> int:
@@ -47,8 +72,7 @@ async def run(service: MemoryService, *, now: float) -> int:
     base_gain = cfg.dream_replay_gain
     if top_k <= 0 or base_gain <= 0.0:
         return 0
-
-    candidates = await service.episodic.get_documents({"consolidated_into": UNCONSOLIDATED})
+    candidates = await _fetch_candidates(service, scan_cap=cfg.dream_replay_max_scan)
     if not candidates:
         return 0
 

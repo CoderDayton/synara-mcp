@@ -14,6 +14,23 @@ from synara.features.embedding import EmbeddingConfig
 Transport = Literal["stdio", "http", "sse", "streamable-http"]
 _VALID_TRANSPORTS: tuple[Transport, ...] = ("stdio", "http", "sse", "streamable-http")
 _TIMEOUT_CEILING_SECONDS = 86_400
+# Logging level allowlist. Python's ``logging.setLevel`` only validates
+# when the level is actually applied — by which point the server has
+# already started. We refuse a bad value up front so a typo in the env
+# var surfaces as a clean startup error, not a deferred crash. ``NOTSET``
+# (level 0) is included for completeness; in practice it propagates to
+# the root logger and lets every third-party message through, so
+# operators should reach for ``DEBUG`` first.
+_VALID_LOG_LEVELS: frozenset[str] = frozenset(
+    {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+)
+# Per-variable ceilings. ``_positive_int_env`` defaults to 1_000_000
+# which is absurd for an embedding batch (would OOM any backend) or for
+# a transformer max sequence length; tighter ceilings catch misconfig
+# before the first request runs.
+_EMBEDDING_BATCH_SIZE_MAX = 4_096
+_EMBEDDING_MAX_SEQ_LENGTH_MAX = 32_768
+_EMBEDDING_DIM_MAX = 65_536
 
 
 def default_db_path() -> str:
@@ -41,6 +58,10 @@ class Settings:
         if raw_transport not in _VALID_TRANSPORTS:
             raise ValueError(f"SYNARA_TRANSPORT={raw_transport!r} not in {_VALID_TRANSPORTS}")
 
+        raw_level = os.environ.get("SYNARA_LOG_LEVEL", "INFO").upper()
+        if raw_level not in _VALID_LOG_LEVELS:
+            raise ValueError(f"SYNARA_LOG_LEVEL={raw_level!r} not in {sorted(_VALID_LOG_LEVELS)}")
+
         raw_timeout = os.environ.get("SYNARA_EMBEDDING_TIMEOUT", "30")
         try:
             timeout_seconds = float(raw_timeout)
@@ -56,12 +77,16 @@ class Settings:
                 f"{_TIMEOUT_CEILING_SECONDS}s ceiling"
             )
 
-        dim = _positive_int_env("SYNARA_EMBEDDING_DIM")
-        batch_size = _positive_int_env("SYNARA_EMBEDDING_BATCH_SIZE")
-        max_seq_length = _positive_int_env("SYNARA_EMBEDDING_MAX_SEQ_LENGTH")
+        dim = _positive_int_env("SYNARA_EMBEDDING_DIM", max_value=_EMBEDDING_DIM_MAX)
+        batch_size = _positive_int_env(
+            "SYNARA_EMBEDDING_BATCH_SIZE", max_value=_EMBEDDING_BATCH_SIZE_MAX
+        )
+        max_seq_length = _positive_int_env(
+            "SYNARA_EMBEDDING_MAX_SEQ_LENGTH", max_value=_EMBEDDING_MAX_SEQ_LENGTH_MAX
+        )
 
         return cls(
-            log_level=os.environ.get("SYNARA_LOG_LEVEL", "INFO").upper(),
+            log_level=raw_level,
             transport=raw_transport,
             db_path=os.environ.get("SYNARA_DB_PATH") or default_db_path(),
             embedding=EmbeddingConfig(

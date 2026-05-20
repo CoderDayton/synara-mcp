@@ -46,7 +46,7 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
     )
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as c:
             yield c
     finally:
         await db.close()

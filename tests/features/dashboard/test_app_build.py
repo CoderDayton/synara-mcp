@@ -31,7 +31,7 @@ def _build_app() -> Any:
 async def test_health_returns_identity() -> None:
     app = _build_app()
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
         resp = await client.get("/api/health")
     assert resp.status_code == 200
     body = resp.json()
@@ -45,7 +45,7 @@ async def test_health_returns_identity() -> None:
 async def test_no_openapi_surface() -> None:
     app = _build_app()
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
         assert (await client.get("/openapi.json")).status_code == 404
         assert (await client.get("/docs")).status_code == 404
 

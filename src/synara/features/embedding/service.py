@@ -415,6 +415,14 @@ class Embedder:
 
     def __init__(self, backend: _Backend) -> None:
         self._backend = backend
+        # Serialises ``warmup_async``: without it, two concurrent first
+        # calls (e.g. ``store_episode`` and ``recall_episodes`` arriving
+        # before the model is loaded) both see ``is_ready() == False``
+        # and both run the backend warmup, which for the local backend
+        # means downloading + loading a multi-GB model twice and
+        # double-allocating VRAM. Lock construction is lazy under
+        # asyncio so this is safe even when no loop is running yet.
+        self._warmup_lock = asyncio.Lock()
 
     def warmup(self) -> None:
         """Force the backend to load now (for the local case, this downloads the model)."""
@@ -427,18 +435,23 @@ class Embedder:
     async def warmup_async(self, ctx: Any | None = None) -> None:
         """Load the backend. The first call may pull multi-GB weights.
 
-        Safe to call repeatedly. If you pass a ``ctx``, we'll report
-        progress through ``ctx.info`` and ``ctx.report_progress``.
+        Safe to call repeatedly and from concurrent coroutines: a single
+        warmup runs to completion while other callers wait. If you pass
+        a ``ctx``, we'll report progress through ``ctx.info`` and
+        ``ctx.report_progress``.
         """
         if self._backend.is_ready():
             return
-        if ctx is not None:
-            await ctx.info("Loading embedding model — first run may download model weights")
-            await ctx.report_progress(progress=0, total=1)
-        await asyncio.to_thread(self._backend.warmup)
-        if ctx is not None:
-            await ctx.report_progress(progress=1, total=1)
-            await ctx.info("Embedding model ready")
+        async with self._warmup_lock:
+            if self._backend.is_ready():
+                return
+            if ctx is not None:
+                await ctx.info("Loading embedding model — first run may download model weights")
+                await ctx.report_progress(progress=0, total=1)
+            await asyncio.to_thread(self._backend.warmup)
+            if ctx is not None:
+                await ctx.report_progress(progress=1, total=1)
+                await ctx.info("Embedding model ready")
 
     async def aclose(self) -> None:
         """Release whatever the backend is holding (httpx pool, etc.)."""

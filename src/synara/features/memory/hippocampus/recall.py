@@ -30,6 +30,30 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # Type alias for a merged hit row.
 _Hit = tuple[int, str, dict[str, Any], float, str]
 
+_VALID_MODES = frozenset({"auto", "episodic", "semantic", "hybrid"})
+
+
+def _validate_recall_inputs(
+    service: MemoryService, *, query: str, session_id: str | None, k: int, mode: str
+) -> None:
+    if not query.strip():
+        raise ValidationError("query must be non-empty")
+    cfg = service.config
+    if cfg.max_content_chars and len(query) > cfg.max_content_chars:
+        raise ValidationError(f"query exceeds max_content_chars ({cfg.max_content_chars})")
+    if cfg.max_recall_k and k > cfg.max_recall_k:
+        raise ValidationError(f"k exceeds max_recall_k ({cfg.max_recall_k})")
+    if (
+        session_id is not None
+        and cfg.max_session_id_chars
+        and len(session_id) > cfg.max_session_id_chars
+    ):
+        raise ValidationError(
+            f"session_id exceeds max_session_id_chars ({cfg.max_session_id_chars})"
+        )
+    if mode not in _VALID_MODES:
+        raise ValidationError(f"unknown recall mode: {mode}")
+
 
 async def run(
     service: MemoryService,
@@ -39,17 +63,14 @@ async def run(
     k: int = 8,
     mode: str = "auto",
 ) -> list[dict[str, Any]]:
-    if not query.strip():
-        raise ValidationError("query must be non-empty")
+    # Validate before the ``k <= 0`` short-circuit: an empty/oversized
+    # query or unknown mode is always a programmer error, regardless of
+    # how many results were requested. Returning ``[]`` for ``k <= 0``
+    # is a convenience for callers who compute ``k`` from a budget that
+    # may legitimately go to zero.
+    _validate_recall_inputs(service, query=query, session_id=session_id, k=k, mode=mode)
     if k <= 0:
         return []
-    cfg = service.config
-    if cfg.max_content_chars and len(query) > cfg.max_content_chars:
-        raise ValidationError(f"query exceeds max_content_chars ({cfg.max_content_chars})")
-    if cfg.max_recall_k and k > cfg.max_recall_k:
-        raise ValidationError(f"k exceeds max_recall_k ({cfg.max_recall_k})")
-    if mode not in {"auto", "episodic", "semantic", "hybrid"}:
-        raise ValidationError(f"unknown recall mode: {mode}")
 
     # Recall is always cross-session: ``session_id`` is the caller's
     # current-session hint, used as the SR window key (so cross-session
