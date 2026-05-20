@@ -218,7 +218,7 @@ async def _semantic_overlay(
 @router.get("/graph")
 async def sr_graph(
     service: _Service,
-    focus: int | None = None,
+    focus: Annotated[int | None, Query(ge=0)] = None,
     depth: Annotated[int, Query(ge=1, le=3)] = 1,
     max_nodes: Annotated[int, Query(ge=1, le=_MAX_NODES_CAP)] = 200,
 ) -> dict[str, Any]:

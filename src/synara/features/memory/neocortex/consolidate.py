@@ -35,6 +35,8 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from synara.core.errors import ValidationError
+
 from ..service import UNCONSOLIDATED, now_seconds
 from .forget import memory_strength
 
@@ -220,6 +222,13 @@ def _cap_candidates(
     )[:cap]
 
 
+def _validate_run_inputs(n_clusters: int | None, min_cluster_size: int | None) -> None:
+    if n_clusters is not None and n_clusters <= 0:
+        raise ValidationError("n_clusters must be positive when provided")
+    if min_cluster_size is not None and min_cluster_size <= 0:
+        raise ValidationError("min_cluster_size must be positive when provided")
+
+
 async def run(
     service: MemoryService,
     *,
@@ -227,6 +236,7 @@ async def run(
     n_clusters: int | None = None,
     min_cluster_size: int | None = None,
 ) -> list[dict[str, Any]]:
+    _validate_run_inputs(n_clusters, min_cluster_size)
     flt: dict[str, Any] = {"consolidated_into": UNCONSOLIDATED}
     if session_id:
         flt["session_id"] = session_id

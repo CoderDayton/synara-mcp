@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from .successor import SuccessorRepresentation
@@ -90,7 +91,12 @@ class PlasticityGraph:
         # concurrent recalls sharing an anchor would otherwise lose the
         # earlier increment. Lock creation has no ``await`` between the
         # lookup and the insert, so it is atomic under asyncio.
-        self._edge_locks: dict[tuple[int, int], asyncio.Lock] = {}
+        # WeakValueDictionary so the lock entry disappears once no
+        # coroutine holds it — otherwise the table would accumulate one
+        # lock per ever-seen edge for the lifetime of the process.
+        self._edge_locks: weakref.WeakValueDictionary[tuple[int, int], asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
 
     async def _upsert(
         self,
@@ -123,7 +129,12 @@ class PlasticityGraph:
         """Apply one reinforcement event to edge ``(i, j)``."""
         if i == j:
             return
-        score = max(0.0, min(1.0, float(score)))
+        if not math.isfinite(now):
+            raise ValueError("now must be finite")
+        score_f = float(score)
+        if not math.isfinite(score_f):
+            score_f = 0.0
+        score = max(0.0, min(1.0, score_f))
         lock = self._edge_locks.setdefault((i, j), asyncio.Lock())
         async with lock:
             await self._reinforce_locked(i, j, score=score, now=now)

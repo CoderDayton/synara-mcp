@@ -12,6 +12,7 @@ The pipeline is:
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -334,5 +335,8 @@ async def _sr_rank_keys(
             sid = str(md.get("session_id", "")) if md else ""
             if sid == caller_sid:
                 rank -= same_sess_bonus
-        keys[(doc_id, src)] = rank
+        # Non-finite rank (NaN dist from a broken backend, inf from a
+        # corrupt SR row) would make ``sort`` undefined. Push offenders
+        # to the end deterministically.
+        keys[(doc_id, src)] = rank if math.isfinite(rank) else math.inf
     return keys

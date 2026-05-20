@@ -72,6 +72,8 @@ class DGProjector:
         x_arr = np.asarray(x, dtype=np.float32)
         if x_arr.ndim != 1 or x_arr.shape[0] != self.dim:
             raise ValueError(f"expected vector of dim {self.dim}, got shape {x_arr.shape}")
+        if not np.all(np.isfinite(x_arr)):
+            raise ValueError("input vector must contain only finite values")
         h = self.W @ x_arr
         relu = np.maximum(h, 0.0)
         nonzero = int((relu > 0).sum())

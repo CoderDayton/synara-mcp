@@ -86,6 +86,8 @@ async def run(
 ) -> dict[str, Any]:
     if not 0.0 <= strength_floor <= 1.0:
         raise ValidationError("strength_floor must be in [0, 1]")
+    if max_scan <= 0:
+        raise ValidationError("max_scan must be positive")
     # ``decay_tau_seconds`` is preserved for API compatibility but the
     # power-law model is parameterised by the dimensionless exponent
     # ``d`` rather than a time constant. We allow callers to override

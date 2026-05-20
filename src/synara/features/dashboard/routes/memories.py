@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
 from synara.core.errors import ValidationError
 from synara.features.memory import MemoryService
@@ -25,13 +25,17 @@ _MAX_LIMIT = 200
 # Offset-paginate by fetching offset+limit rows then slicing; cap the
 # offset so a single query param cannot trigger a full-table memory load.
 _MAX_OFFSET = 100_000
+# Mirrors MemoryConfig.max_content_chars default; the service rejects past
+# this anyway, but bouncing it at the route saves a round trip and turns a
+# 500 (downstream ValidationError) into a clean 422 (FastAPI/Pydantic).
+_MAX_Q_CHARS = 8_000
 
 
 @router.get("/memories")
 async def list_memories(
     service: _Service,
     kind: Literal["episodic", "semantic"] = "episodic",
-    q: str | None = None,
+    q: Annotated[str | None, Query(max_length=_MAX_Q_CHARS)] = None,
     limit: Annotated[int, Query(ge=1, le=_MAX_LIMIT)] = 50,
     offset: Annotated[int, Query(ge=0, le=_MAX_OFFSET)] = 0,
 ) -> dict[str, Any]:
@@ -50,7 +54,10 @@ async def list_memories(
 
 
 @router.get("/memories/{episode_id}")
-async def memory_detail(service: _Service, episode_id: int) -> dict[str, Any]:
+async def memory_detail(
+    service: _Service,
+    episode_id: Annotated[int, Path(ge=0)],
+) -> dict[str, Any]:
     target = await service.episodic.get_documents({"id": episode_id})
     if not target:
         raise HTTPException(
@@ -85,7 +92,10 @@ async def memory_detail(service: _Service, episode_id: int) -> dict[str, Any]:
 
 
 @router.delete("/memories/{episode_id}")
-async def delete_memory(service: _Service, episode_id: int) -> dict[str, Any]:
+async def delete_memory(
+    service: _Service,
+    episode_id: Annotated[int, Path(ge=0)],
+) -> dict[str, Any]:
     try:
         return await service.delete_episode(episode_id)
     except ValidationError as exc:

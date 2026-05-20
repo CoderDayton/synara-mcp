@@ -35,6 +35,7 @@ short-lived recency queue, not part of the relational graph.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
     from simplevecdb import AsyncVectorCollection
 
 DEFAULT_KIND = "sr"
+_log = logging.getLogger(__name__)
 
 # Co-occurrence is GLOBAL, not partitioned by session. All episode
 # accesses share one observation window so episodes co-occurring across
@@ -68,6 +70,16 @@ class SuccessorRepresentation:
     kind: str = DEFAULT_KIND
 
     def __post_init__(self) -> None:
+        if not 0.0 <= self.gamma < 1.0:
+            raise ValueError("gamma must be in [0, 1)")
+        if not 0.0 < self.alpha <= 1.0:
+            raise ValueError("alpha must be in (0, 1]")
+        if self.window_seconds <= 0.0:
+            raise ValueError("window_seconds must be positive")
+        if self.omega_max < 0.0:
+            raise ValueError("omega_max must be >= 0")
+        if self.cold_start_ratio <= 0.0:
+            raise ValueError("cold_start_ratio must be positive")
         self._T_counts: dict[int, dict[int, float]] = defaultdict(lambda: defaultdict(float))
         self._T_row_sum: dict[int, float] = defaultdict(float)
         self._M: dict[int, dict[int, float]] = defaultdict(lambda: defaultdict(float))
@@ -122,7 +134,15 @@ class SuccessorRepresentation:
             self._loaded = True
 
     async def flush(self) -> None:
-        """Persist any pending edge updates to ``coll.edges``."""
+        """Persist any pending edge updates to ``coll.edges``.
+
+        Per-edge upsert failures are tolerated: the failed (i, j) pair
+        is re-added to ``_pending`` so the next flush retries it, and
+        the exception is logged with edge context. Without this, a
+        transient backend error would silently drop the edge from the
+        durable T tally — exactly the kind of write that's hardest to
+        spot missing.
+        """
         if self._coll is None or not self._pending:
             return
         # Detach the pending set in one rebinding (no await between the
@@ -132,18 +152,25 @@ class SuccessorRepresentation:
         pending = self._pending
         self._pending = set()
         coll = self._coll
+        failed: list[tuple[int, int]] = []
         for i, j in pending:
             count = int(self._T_counts[i][j])
-            await asyncio.to_thread(
-                coll._collection.edges.upsert,
-                i,
-                j,
-                kind=self.kind,
-                weight=0.0,
-                bonus=0.0,
-                hits=count,
-                metadata={},
-            )
+            try:
+                await asyncio.to_thread(
+                    coll._collection.edges.upsert,
+                    i,
+                    j,
+                    kind=self.kind,
+                    weight=0.0,
+                    bonus=0.0,
+                    hits=count,
+                    metadata={},
+                )
+            except Exception:
+                _log.exception("SR edge upsert failed: src=%d dst=%d kind=%s", i, j, self.kind)
+                failed.append((i, j))
+        if failed:
+            self._pending.update(failed)
 
     # ------------------------------------------------------------- observation
 

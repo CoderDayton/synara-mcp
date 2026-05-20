@@ -31,6 +31,7 @@ query — empirically more useful for under-specified queries.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,9 @@ import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..port import MemoryServicePort as MemoryService
+
+_log = logging.getLogger(__name__)
+_NORM_FLOOR = 1e-12  # below this, treat as zero vector — avoids div-by-zero blow-ups
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +60,9 @@ class CompletionResult:
 
 def _normalize(v: np.ndarray) -> np.ndarray:
     n = float(np.linalg.norm(v))
-    return v / max(n, 1e-12)
+    if n < _NORM_FLOOR:
+        return np.zeros_like(v)
+    return v / n
 
 
 def completion_score(q: np.ndarray, X: np.ndarray, *, beta: float) -> float:
@@ -114,18 +120,26 @@ async def _gather_candidates(
             continue
         try:
             hits = await coll.similarity_search(q, k=k, filter=flt)
-        except (ValueError, RuntimeError):
+            ids = [int(d.metadata.get("id", -1)) for d, _ in hits]
+            ids = [i for i in ids if i >= 0]
+            if not ids:
+                continue
+            emap = await coll.get_embeddings_by_ids(ids)
+        except (ValueError, RuntimeError) as exc:
+            # One leg's failure should not abort CA3 completion — the
+            # other store may still anchor the iteration. But silent
+            # swallow hides backend regressions; surface them at debug.
+            _log.debug("CA3 candidate gather failed for one leg: %s", exc, exc_info=True)
             continue
-        ids = [int(d.metadata.get("id", -1)) for d, _ in hits]
-        ids = [i for i in ids if i >= 0]
-        if not ids:
-            continue
-        emap = await coll.get_embeddings_by_ids(ids)
         for did in ids:
             v = emap.get(did)
             if v is None:
                 continue
-            rows.append(_normalize(np.asarray(v, dtype=np.float64)))
+            arr = np.asarray(v, dtype=np.float64)
+            if not np.all(np.isfinite(arr)):
+                # Skip corrupt stored vectors instead of poisoning X.
+                continue
+            rows.append(_normalize(arr))
     if not rows:
         return np.zeros((0,), dtype=np.float64)
     return np.stack(rows, axis=0)
@@ -149,8 +163,21 @@ async def run(
     """
     if iters <= 0:
         return CompletionResult(query=list(q0), scores=[], converged=True)
+    if beta <= 0.0 or not np.isfinite(beta):
+        raise ValueError("beta must be a positive finite float")
+    if not 0.0 < eta0 <= 1.0:
+        raise ValueError("eta0 must be in (0, 1]")
+    if eps < 0.0 or not np.isfinite(eps):
+        raise ValueError("eps must be a non-negative finite float")
+    if k_inner <= 0:
+        raise ValueError("k_inner must be positive")
 
-    q = _normalize(np.asarray(q0, dtype=np.float64))
+    q_in = np.asarray(q0, dtype=np.float64)
+    if q_in.ndim != 1 or q_in.size == 0:
+        raise ValueError("q0 must be a non-empty 1-D vector")
+    if not np.all(np.isfinite(q_in)):
+        raise ValueError("q0 must contain only finite values")
+    q = _normalize(q_in)
     q0_arr = q.copy()
     scores: list[float] = []
 
