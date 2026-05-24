@@ -80,10 +80,13 @@ class DGProjector:
         if nonzero == 0:
             return ()
         if nonzero <= self.k:
-            return tuple(int(i) for i in sorted(np.flatnonzero(relu > 0).tolist()))
+            # ``np.flatnonzero(...).tolist()`` already yields native
+            # Python ints (numpy int64 -> int on tolist), so the prior
+            # ``int(i)`` generator was a redundant per-element cast.
+            return tuple(sorted(np.flatnonzero(relu > 0).tolist()))
         # ``argpartition`` finds the top-k unsorted in O(M).
         idx = np.argpartition(-relu, self.k - 1)[: self.k]
-        return tuple(int(i) for i in sorted(idx.tolist()))
+        return tuple(sorted(idx.tolist()))
 
 
 def jaccard(a: Iterable[int], b: Iterable[int]) -> float:

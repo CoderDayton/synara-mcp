@@ -91,6 +91,7 @@ refs/
 
 # Generated simulation artifacts
 scripts/sim/*_report.html
+scripts/sim/bench_snapshot.json
 
 # Playwright MCP scratch (screenshots, snapshots, console logs)
 .playwright-mcp/

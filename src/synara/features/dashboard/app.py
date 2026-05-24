@@ -113,6 +113,10 @@ def _mount_spa(app: FastAPI, static_dir: Path) -> None:
     any other non-API path returns ``index.html`` for client routing.
     """
     index = static_dir / "index.html"
+    # Resolve once at mount: the static directory is fixed for the
+    # lifetime of the process, so re-resolving it on every catch-all hit
+    # was a needless per-request syscall.
+    root = static_dir.resolve()
     app.mount(
         "/assets",
         StaticFiles(directory=static_dir / "assets"),
@@ -127,7 +131,6 @@ def _mount_spa(app: FastAPI, static_dir: Path) -> None:
         # must not resurrect an OpenAPI/Swagger surface as the shell.
         if full_path in {"api", "openapi.json", "docs", "redoc"} or full_path.startswith("api/"):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-        root = static_dir.resolve()
         candidate = (static_dir / full_path).resolve()
         if full_path and candidate.is_relative_to(root) and candidate.is_file():
             return FileResponse(candidate)

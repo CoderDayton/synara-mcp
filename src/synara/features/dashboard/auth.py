@@ -21,17 +21,19 @@ AuthDependency = Callable[[Request], Awaitable[None]]
 
 def make_auth_dependency(config: DashboardConfig) -> AuthDependency:
     token = config.token
+    # Encode once at closure build: the configured token is immutable for
+    # the lifetime of the app, so re-encoding it on every request is pure
+    # waste. compare_digest still runs in constant time over the bytes.
+    token_bytes = token.encode() if token is not None else None
 
     async def _require_bearer(request: Request) -> None:
-        if token is None:
+        if token_bytes is None:
             return
         header = request.headers.get("Authorization", "")
         scheme, _, presented = header.partition(" ")
         # compare_digest on str rejects non-ASCII with TypeError; compare
         # the UTF-8 bytes so a hostile token yields 401, not an unhandled 500.
-        if scheme.lower() != "bearer" or not hmac.compare_digest(
-            presented.encode(), token.encode()
-        ):
+        if scheme.lower() != "bearer" or not hmac.compare_digest(presented.encode(), token_bytes):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid or missing bearer token",

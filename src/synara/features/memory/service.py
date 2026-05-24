@@ -61,6 +61,15 @@ _LOG = logging.getLogger(__name__)
 # construction so internal call sites only ever ``await``.
 EmbedFn = Callable[[str], Sequence[float] | Awaitable[Sequence[float]]]
 
+# Optional companion to ``EmbedFn`` for callers that can compute many
+# vectors in a single call (e.g. ``Embedder.embed_batch``). When set on
+# ``MemoryService``, ``vectorise`` issues one round-trip per call instead
+# of N sequential ``await self._embed(...)`` invocations — this is the
+# difference between one GPU forward pass (or one HTTP request) and N.
+# Must be async; the per-text :data:`EmbedFn` wrapper handles sync→async
+# normalisation, but batch backends are async by construction.
+EmbedBatchFn = Callable[[Sequence[str]], Awaitable[list[list[float]]]]
+
 # Sentinel for "this episode has not yet been consolidated into a semantic
 # schema". simplevecdb's filter format only supports exact equality and
 # IN — not "IS NULL" — so we use 0, with positive ints referencing a real
@@ -71,6 +80,7 @@ UNCONSOLIDATED: int = 0
 # imports it from ``service`` keeps working after the split-out.
 __all__ = [
     "UNCONSOLIDATED",
+    "EmbedBatchFn",
     "EmbedFn",
     "MemoryConfig",
     "MemoryService",
@@ -111,6 +121,7 @@ class MemoryService:
         config: MemoryConfig | None = None,
         *,
         embed_fn: EmbedFn | None = None,
+        embed_batch_fn: EmbedBatchFn | None = None,
     ) -> None:
         self.config = config or MemoryConfig()
         self.db = db
@@ -140,6 +151,18 @@ class MemoryService:
         self.episodic = self._collections[MemoryType.EPISODIC]
         self.semantic = self._collections[MemoryType.SEMANTIC]
         self._embed = _normalise_embed_fn(embed_fn) if embed_fn is not None else None
+        # Optional batch hook. Only consulted by ``vectorise`` (which
+        # always has multiple texts available); ``query_arg`` and the
+        # dim probe keep the single-text path so a caller can configure
+        # only ``embed_fn`` and still work. A batch fn without a single
+        # ``embed_fn`` is rejected: ``query_arg`` would have nothing to
+        # call for query vectorisation.
+        if embed_batch_fn is not None and embed_fn is None:
+            raise ValidationError(
+                "embed_batch_fn requires embed_fn: query_arg and the dim probe "
+                "call the single-text embedder",
+            )
+        self._embed_batch: EmbedBatchFn | None = embed_batch_fn
         # Lazily constructed once we observe the embedding dimension.
         self._dg: _DGProjector | None = None
         # First-class embedding dim: explicit override beats the lazy
@@ -276,17 +299,41 @@ class MemoryService:
 
     # ------------------------------------------------------------------ embed
     async def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None:
-        """Return embeddings for texts, or None to let simplevecdb embed them."""
+        """Return embeddings for texts, or None to let simplevecdb embed them.
+
+        Uses :attr:`_embed_batch` when configured so a multi-text encode
+        (theta-segmented episodes, semantic store with many candidates,
+        consolidate summaries) costs one backend round-trip instead of
+        ``len(texts)``. Falls back to the per-text :attr:`_embed` loop
+        otherwise. Both paths produce identical output: the batch fn
+        contract is ``len(result) == len(texts)`` with vectors in the
+        same order as inputs.
+
+        Empty input returns ``[]`` without invoking either backend.
+        """
         if self._embed is None:
             return None
-        vecs = [list(await self._embed(t)) for t in texts]
-        if vecs and self._embedding_dimension is None:
+        if not texts:
+            return []
+        if self._embed_batch is not None:
+            raw = await self._embed_batch(texts)
+            # Length mismatch silently misaligns vectors to texts in the
+            # store, the same hazard ``_index_of`` guards against in the
+            # remote backend. Refuse rather than corrupt the index.
+            if len(raw) != len(texts):
+                raise ValidationError(
+                    f"embed_batch_fn returned {len(raw)} vectors for {len(texts)} texts",
+                )
+            vecs = [list(v) for v in raw]
+        else:
+            vecs = [list(await self._embed(t)) for t in texts]
+        # Dim check on vecs[0] only — matches the original behaviour and
+        # is sufficient since a sane backend produces uniform-width
+        # vectors; per-vector validation would be redundant work on the
+        # hot path.
+        if self._embedding_dimension is None:
             self._embedding_dimension = len(vecs[0])
-        elif (
-            vecs
-            and self._embedding_dimension is not None
-            and len(vecs[0]) != self._embedding_dimension
-        ):
+        elif len(vecs[0]) != self._embedding_dimension:
             raise ValidationError(
                 f"embedding dimension drift: configured {self._embedding_dimension}, "
                 f"observed {len(vecs[0])}",

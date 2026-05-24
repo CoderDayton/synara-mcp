@@ -38,11 +38,12 @@ from .memory_types import (
     default_registry,
 )
 from .port import MemoryServicePort
-from .service import EmbedFn, MemoryConfig, MemoryService
+from .service import EmbedBatchFn, EmbedFn, MemoryConfig, MemoryService
 from .tools import register_tools
 from .tracing import RequestContext, start_request
 
 __all__ = [
+    "EmbedBatchFn",
     "EmbedFn",
     "MemoryConfig",
     "MemoryService",
@@ -75,6 +76,16 @@ def register(
     and don't need progress/log wiring.
     """
     resolved_embed_fn = embed_fn if embed_fn is not None else (embedder.embed if embedder else None)
-    service = MemoryService(db, config=config, embed_fn=resolved_embed_fn)
+    # Wire the batch hook only when the production embedder is in play.
+    # An explicit ``embed_fn`` override (tests) keeps the per-text path —
+    # those callers expect to count single-text invocations and would be
+    # surprised by a coalesced batch call.
+    embed_batch_fn = embedder.embed_batch if (embedder is not None and embed_fn is None) else None
+    service = MemoryService(
+        db,
+        config=config,
+        embed_fn=resolved_embed_fn,
+        embed_batch_fn=embed_batch_fn,
+    )
     register_tools(mcp, service, embedder=embedder)
     return service

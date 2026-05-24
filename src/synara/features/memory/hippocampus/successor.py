@@ -228,12 +228,22 @@ class SuccessorRepresentation:
     def _td_update(self, i: int, j: int) -> None:
         Mi = self._M[i]
         Mj = self._M[j]
-        keys: set[int] = set(Mi.keys()) | set(Mj.keys()) | {j}
+        # dict.keys() is already set-like and supports `|` directly,
+        # so we skip the two extra `set(...)` allocations and union
+        # the views once. ``{j}`` ensures the e_j basis entry lands in
+        # the key set even when neither row references j yet.
+        keys: set[int] = Mi.keys() | Mj.keys() | {j}
         a = self.alpha
         g = self.gamma
+        one_minus_a = 1.0 - a
+        # Bind dict.get to a local: skips the per-iteration attribute
+        # lookup, which dominates this Python-bound inner loop when
+        # rows are dense (hundreds of entries).
+        Mi_get = Mi.get
+        Mj_get = Mj.get
         for k in keys:
-            target = (1.0 if k == j else 0.0) + g * Mj.get(k, 0.0)
-            new_val = (1.0 - a) * Mi.get(k, 0.0) + a * target
+            target = (1.0 if k == j else 0.0) + g * Mj_get(k, 0.0)
+            new_val = one_minus_a * Mi_get(k, 0.0) + a * target
             if new_val == 0.0:
                 Mi.pop(k, None)
             else:

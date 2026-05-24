@@ -47,8 +47,11 @@ async def list_memories(
         return {"kind": kind, "query": q, "items": hits, "count": len(hits)}
 
     coll = service.semantic if kind == "semantic" else service.episodic
+    # simplevecdb's get_documents already returns a list; slicing it
+    # directly skips a redundant full-prefix copy (offset+limit can be
+    # up to _MAX_LIMIT + _MAX_OFFSET wide on cold paths).
     rows = await coll.get_documents(filter_dict=None, limit=offset + limit)
-    window = list(rows)[offset : offset + limit]
+    window = rows[offset : offset + limit]
     items = [{"id": int(doc_id), "content": text, "metadata": md} for doc_id, text, md in window]
     return {"kind": kind, "items": items, "count": len(items), "offset": offset}
 

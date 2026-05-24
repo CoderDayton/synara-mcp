@@ -395,6 +395,38 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="re-enable runtime INFO/DEBUG logs (default mutes WARNING and below)",
     )
+    p.add_argument(
+        "--bench",
+        action="store_true",
+        help=(
+            "run the full-function wall-clock benchmark (vectorise + graph routes) "
+            "INSTEAD of the simulation; writes a JSON snapshot to --bench-out"
+        ),
+    )
+    p.add_argument(
+        "--bench-out",
+        type=Path,
+        default=Path(__file__).resolve().parent / "bench_snapshot.json",
+        help="JSON snapshot destination for --bench",
+    )
+    p.add_argument(
+        "--bench-embed-latency-ms",
+        type=float,
+        default=0.5,
+        help="simulated per-call embed latency in ms (models GPU fwd / HTTP RTT)",
+    )
+    p.add_argument(
+        "--bench-coll-latency-ms",
+        type=float,
+        default=0.5,
+        help="simulated per-call coll.get_edges latency in ms",
+    )
+    p.add_argument(
+        "--bench-repeats",
+        type=int,
+        default=5,
+        help="per-trial sample count for --bench (median + min/max reported)",
+    )
     args = p.parse_args(argv)
     for name in (
         "days",
@@ -700,6 +732,21 @@ def _write_report(
 async def main(args: argparse.Namespace) -> int:
     if args.verbose:
         logging.disable(logging.NOTSET)
+    if args.bench:
+        # Bench is its own entrypoint — it has nothing to do with the
+        # day-by-day reactor sim and would only cost time/noise to run
+        # both. Defer the import so the bench's fastapi dep (via the
+        # dashboard graph module it benches) isn't required for the
+        # plain sim.
+        from _bench import BenchConfig, run_bench  # noqa: PLC0415
+
+        cfg = BenchConfig(
+            embed_latency_ms=args.bench_embed_latency_ms,
+            coll_latency_ms=args.bench_coll_latency_ms,
+            repeats=args.bench_repeats,
+        )
+        await run_bench(args.bench_out, cfg=cfg)
+        return 0
     _build_centroids(args.centroid_seed)
     show_progress = sys.stdout.isatty() and not args.quiet
     days = args.days

@@ -17,6 +17,7 @@ the combined strength and the habit flag (``hits >= habit threshold``).
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from typing import Annotated, Any
 
@@ -54,44 +55,86 @@ async def _adjacent(
     coll: Any,
     node: int,
     limit: int,
-    sr_seen: dict[tuple[int, int], dict[str, Any]],
-) -> set[int]:
+) -> tuple[set[int], list[dict[str, Any]]]:
     """Bidirectional SR + plasticity neighbours of ``node``.
 
     Mirrors the recall neighbourhood: an anchor spreads over successor
     transitions *and* plasticity associations in *both* directions. A
     forward-only walk made every pure-successor (incoming-only) episode
     its own island — the source of the "each episode is its own graph"
-    behaviour. SR edges touched here are accumulated in ``sr_seen``
-    (deduped) for the caller to filter to the final node set.
+    behaviour.
+
+    The four edge queries are independent reads against the same
+    collection so they are issued concurrently with :func:`asyncio.gather`;
+    previously each ``await`` blocked the next, costing 4x
+    request-latency per visited node. Returns ``(neighbours, sr_edges)``
+    rather than mutating a caller-owned dict so the function is pure
+    under concurrent ``gather`` calls — the caller dedups SR edges
+    across all frontier nodes once their results are in hand.
     """
+    sr_out_edges, sr_in_edges, pl_out_edges, pl_in_edges = await asyncio.gather(
+        coll.get_edges(src=node, kind="sr", limit=limit),
+        coll.get_edges(dst=node, kind="sr", limit=limit),
+        coll.get_edges(src=node, kind="plasticity", limit=limit),
+        coll.get_edges(dst=node, kind="plasticity", limit=limit),
+    )
     out: set[int] = set()
-    for e in await coll.get_edges(src=node, kind="sr", limit=limit):
-        sr_seen.setdefault((int(e.src_id), int(e.dst_id)), _sr_edge(e))
+    sr_edges: list[dict[str, Any]] = []
+    for e in sr_out_edges:
+        sr_edges.append(_sr_edge(e))
         out.add(int(e.dst_id))
-    for e in await coll.get_edges(dst=node, kind="sr", limit=limit):
-        sr_seen.setdefault((int(e.src_id), int(e.dst_id)), _sr_edge(e))
+    for e in sr_in_edges:
+        sr_edges.append(_sr_edge(e))
         out.add(int(e.src_id))
-    for e in await coll.get_edges(src=node, kind="plasticity", limit=limit):
+    for e in pl_out_edges:
         out.add(int(e.dst_id))
-    for e in await coll.get_edges(dst=node, kind="plasticity", limit=limit):
+    for e in pl_in_edges:
         out.add(int(e.src_id))
-    return out
+    return out, sr_edges
 
 
 async def _focus_neighborhood(
     coll: Any, focus: int, depth: int, max_nodes: int
 ) -> tuple[set[int], list[dict[str, Any]]]:
+    """BFS the SR + plasticity neighbourhood of ``focus``.
+
+    Each frontier layer fans out concurrently: one :func:`asyncio.gather`
+    issues every ``_adjacent`` call for that layer in parallel. The
+    previous sequential walk paid 4x round-trips per node x frontier
+    size, which dominated request latency on populated graphs (up to
+    ~800 sequential queries at ``max_nodes=200, depth=3``).
+
+    Determinism: frontier nodes are sorted before scheduling so the
+    sub-results are merged in a reproducible order. The ``max_nodes``
+    cap is applied during merge — the layer is fully fetched first, then
+    truncated against the cap by increasing node id. The old code
+    iterated the frontier as a ``set`` (undefined order) and applied
+    the cap mid-iteration, so which neighbours survived at the boundary
+    was already non-deterministic across runs. The new ordering is a
+    strict improvement on observability.
+    """
     nodes: set[int] = {focus}
     sr_seen: dict[tuple[int, int], dict[str, Any]] = {}
     frontier = {focus}
     for _ in range(depth):
+        if len(nodes) >= max_nodes:
+            break
+        ordered = sorted(frontier)
+        results = await asyncio.gather(
+            *(_adjacent(coll, n, max_nodes) for n in ordered),
+        )
         nxt: set[int] = set()
-        for node in frontier:
-            if len(nodes) >= max_nodes:
-                break
-            for nb in await _adjacent(coll, node, max_nodes, sr_seen):
-                if nb not in nodes and len(nodes) < max_nodes:
+        for neighbours, sr_edges in results:
+            for edge in sr_edges:
+                # setdefault keeps the first observation of each (src,
+                # dst) pair; subsequent observations are content-equal
+                # by construction (same _sr_edge shape) so order does
+                # not affect the merged dict.
+                sr_seen.setdefault((edge["src"], edge["dst"]), edge)
+            for nb in sorted(neighbours):
+                if len(nodes) >= max_nodes:
+                    break
+                if nb not in nodes:
                     nodes.add(nb)
                     nxt.add(nb)
         frontier = nxt
@@ -127,10 +170,23 @@ async def _docs_by_id(coll: Any, ids: list[int]) -> dict[int, tuple[str, dict[st
 async def _plasticity_overlay(
     coll: Any, nodes: set[int], habit_threshold: int
 ) -> list[dict[str, Any]]:
-    """SR-bounded plasticity edges (both endpoints survived the node cap)."""
+    """SR-bounded plasticity edges (both endpoints survived the node cap).
+
+    Fans out one ``get_edges(src=node, kind="plasticity")`` per node
+    via :func:`asyncio.gather` so a 200-node response pays one
+    round-trip-cost worth of latency, not 200. Nodes are iterated in
+    sorted order so the emitted edge list is reproducible across runs
+    regardless of ``gather`` completion order.
+    """
+    if not nodes:
+        return []
+    ordered = sorted(nodes)
+    per_node = await asyncio.gather(
+        *(coll.get_edges(src=node, kind="plasticity") for node in ordered),
+    )
     edges: list[dict[str, Any]] = []
-    for node in list(nodes):
-        for e in await coll.get_edges(src=node, kind="plasticity"):
+    for node_edges in per_node:
+        for e in node_edges:
             if int(e.dst_id) not in nodes:
                 continue
             weight, bonus, hits = float(e.weight), float(e.bonus), int(e.hits)
@@ -158,8 +214,11 @@ def _attach_closure(sr: Any, sr_edges: list[dict[str, Any]]) -> None:
     for e in sr_edges:
         by_src[e["src"]].append(e["dst"])
     m_by_src = {s: sr.boost(s, dsts) for s, dsts in by_src.items()}
+    # Every edge's src was added to by_src in the loop above, so
+    # m_by_src[e["src"]] is always present; the .get(..., {}) fallback
+    # was dead code that allocated an empty dict on no callsite.
     for e in sr_edges:
-        e["m"] = float(m_by_src.get(e["src"], {}).get(e["dst"], 0.0))
+        e["m"] = float(m_by_src[e["src"]].get(e["dst"], 0.0))
 
 
 def _episodic_node(nid: int, text: str, md: dict[str, Any], focus: int | None) -> dict[str, Any]:

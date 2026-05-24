@@ -37,6 +37,23 @@ _HTTP_ERROR_FLOOR = 400
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
+def _index_of(r: dict[str, object]) -> int:
+    """Extract the OpenAI ``index`` field, rejecting missing or non-numeric values.
+
+    Hoisted to module scope so each ``RemoteBackend.embed_batch`` chunk
+    reuses the same function object instead of rebuilding a closure
+    per loop iteration. A missing index must raise, not default to 0 —
+    defaulting silently collapses every un-indexed item onto position
+    0 and corrupts the text->vector alignment of the stored embeddings.
+    """
+    idx = r.get("index")
+    if isinstance(idx, bool) or not isinstance(idx, (int, float)):
+        raise EmbeddingError(
+            "embedding entry missing numeric 'index'; cannot guarantee vector order"
+        )
+    return int(idx)
+
+
 class EmbeddingError(RuntimeError):
     """The backend gave us back something we can't use."""
 
@@ -388,19 +405,6 @@ class RemoteBackend:
             data = body.get("data")
             if not isinstance(data, list) or len(data) != len(chunk):
                 raise EmbeddingError(f"expected {len(chunk)} embeddings, got {data!r:.80}")
-
-            # OpenAI guarantees an ``index`` field; sort by it to
-            # restore request order. A missing index must raise, not
-            # default to 0 — defaulting silently collapses every
-            # un-indexed item onto position 0 and corrupts the
-            # text->vector alignment of the stored embeddings.
-            def _index_of(r: dict[str, object]) -> int:
-                idx = r.get("index")
-                if isinstance(idx, bool) or not isinstance(idx, (int, float)):
-                    raise EmbeddingError(
-                        "embedding entry missing numeric 'index'; cannot guarantee vector order"
-                    )
-                return int(idx)
 
             for item in sorted(data, key=_index_of):
                 vector = item.get("embedding")
