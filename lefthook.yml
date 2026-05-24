@@ -23,6 +23,18 @@ pre-commit:
     - name: dashboard-build-fresh
       run: uv run --no-sync python scripts/check_dashboard_build.py
 
+    - name: dashboard-typecheck
+      glob: "dashboard/**/*.{ts,tsx}"
+      run: bun --cwd dashboard run typecheck
+
+    - name: dashboard-lint
+      glob: "dashboard/**/*.{ts,tsx}"
+      run: bun --cwd dashboard run lint
+
+    - name: dashboard-test
+      glob: "dashboard/**/*.{ts,tsx}"
+      run: bun --cwd dashboard run test
+
     - name: pytest
       run: uv run --no-sync pytest -q
 
@@ -43,6 +55,15 @@ pre-push:
 
     - name: dashboard-build-fresh
       run: uv run --no-sync python scripts/check_dashboard_build.py
+
+    - name: dashboard-typecheck
+      run: bun --cwd dashboard run typecheck
+
+    - name: dashboard-lint
+      run: bun --cwd dashboard run lint
+
+    - name: dashboard-test
+      run: bun --cwd dashboard run test
 
     - name: pytest
       run: uv run --no-sync pytest

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { KeyRound } from "lucide-react";
+import { Eye, EyeOff, KeyRound } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getToken, setToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -18,16 +18,32 @@ import {
 
 export function TokenDialog() {
   const qc = useQueryClient();
-  const [value, setValue] = useState(() => getToken() ?? "");
+  // Dialog is controlled so we can reset `value` from storage every
+  // time it opens — otherwise an unsaved draft persists across
+  // open/close cycles and silently overrides a token saved elsewhere.
+  const [openState, setOpenState] = useState(false);
+  const [value, setValue] = useState("");
+  const [reveal, setReveal] = useState(false);
   const has = (getToken() ?? "") !== "";
+
+  function onOpenChange(next: boolean) {
+    if (next) {
+      // Re-read on every open: another tab/component may have changed
+      // the stored token since the dialog was last shown.
+      setValue(getToken() ?? "");
+      setReveal(false);
+    }
+    setOpenState(next);
+  }
 
   function save() {
     setToken(value.trim() || null);
     void qc.invalidateQueries();
+    setOpenState(false);
   }
 
   return (
-    <Dialog>
+    <Dialog open={openState} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <Button
           variant={has ? "ghost" : "outline"}
@@ -52,22 +68,38 @@ export function TokenDialog() {
         </DialogHeader>
         <div className="space-y-2">
           <Label htmlFor="token">Token</Label>
-          <Input
-            id="token"
-            type="password"
-            autoComplete="off"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="paste token…"
-          />
+          <div className="relative">
+            <Input
+              id="token"
+              type={reveal ? "text" : "password"}
+              autoComplete="off"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="paste token…"
+              className="pr-10"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={reveal ? "Hide token" : "Show token"}
+              aria-pressed={reveal}
+              onClick={() => setReveal((v) => !v)}
+              className="absolute right-1 top-1/2 size-7 -translate-y-1/2"
+            >
+              {reveal ? (
+                <EyeOff className="size-4" aria-hidden />
+              ) : (
+                <Eye className="size-4" aria-hidden />
+              )}
+            </Button>
+          </div>
         </div>
         <DialogFooter>
           <DialogClose asChild>
             <Button variant="ghost">Cancel</Button>
           </DialogClose>
-          <DialogClose asChild>
-            <Button onClick={save}>Save</Button>
-          </DialogClose>
+          <Button onClick={save}>Save</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

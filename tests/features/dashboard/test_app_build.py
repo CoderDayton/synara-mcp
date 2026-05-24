@@ -82,3 +82,49 @@ def test_default_import_does_not_load_fastapi() -> None:
 def test_package_getattr_rejects_unknown(attr: str) -> None:
     with pytest.raises(AttributeError):
         getattr(dashboard_pkg, attr)
+
+
+async def test_health_redacts_db_path() -> None:
+    """``db_path`` must surface only the basename (or ``:memory:``)."""
+    app = _build_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        body = (await client.get("/api/health")).json()
+    path = body["db_path"]
+    assert "/" not in path
+    assert "\\" not in path
+
+
+async def test_security_headers_are_present() -> None:
+    """Universal headers attach to API JSON responses; CSP is HTML-only.
+
+    Verifies the SecurityHeadersMiddleware wired in `build_dashboard_app`
+    is on the path *before* the route reply leaves the app.
+    """
+    app = _build_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        resp = await client.get("/api/health")
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert resp.headers.get("x-frame-options") == "DENY"
+    assert resp.headers.get("referrer-policy") == "no-referrer"
+    permissions = resp.headers.get("permissions-policy", "")
+    assert "camera=()" in permissions
+    assert "microphone=()" in permissions
+    # JSON: CSP intentionally omitted (no script/style context to govern).
+    assert "content-security-policy" not in {k.lower() for k in resp.headers}
+
+
+async def test_csp_attached_to_html_responses() -> None:
+    """CSP rides on HTML responses only — the SPA shell and 404 fallbacks."""
+    app = _build_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        # The SPA fallback ("/") returns text/html if the static build is
+        # present; otherwise a 404 from FastAPI which is also HTML.
+        resp = await client.get("/")
+    if resp.headers.get("content-type", "").startswith("text/html"):
+        csp = resp.headers.get("content-security-policy", "")
+        assert "default-src 'self'" in csp
+        assert "frame-ancestors 'none'" in csp
+        assert "object-src 'none'" in csp

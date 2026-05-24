@@ -9,12 +9,52 @@ import { Crosshair, X } from "lucide-react";
 import { useMemoryDetail } from "@/lib/queries";
 import type { GraphNode } from "@/lib/api";
 import { relativeTime, shortSession } from "@/lib/format";
-import { ErrorState, Loading } from "@/components/common/states";
+import { ErrorState } from "@/components/common/states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { DeleteMemoryButton } from "@/components/memories/delete-memory-button";
+
+/** Layout-shaped placeholder for the trace section while the detail
+ *  query resolves. Mirrors the rendered structure (SR transitions /
+ *  plasticity / segments headings) so the inspector doesn't flash from
+ *  a single centred spinner to a dense panel.
+ *  `aria-busy + role=status + visually-hidden label` gives assistive
+ *  tech the loading cue without showing visible text. */
+function TraceSkeleton() {
+  return (
+    <div
+      className="space-y-5 text-sm"
+      role="status"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <span className="sr-only">Loading memory trace…</span>
+      <section>
+        <h3 className="eyebrow mb-2">Successor transitions</h3>
+        <div className="flex flex-wrap gap-1.5">
+          <Skeleton className="h-5 w-16" />
+          <Skeleton className="h-5 w-20" />
+          <Skeleton className="h-5 w-14" />
+        </div>
+      </section>
+      <section>
+        <h3 className="eyebrow mb-2">Plasticity</h3>
+        <div className="space-y-1.5">
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-5/6" />
+          <Skeleton className="h-3 w-3/4" />
+        </div>
+      </section>
+      <section>
+        <h3 className="eyebrow mb-2">Segments</h3>
+        <Skeleton className="h-20 w-full" />
+      </section>
+    </div>
+  );
+}
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -57,7 +97,7 @@ function EpisodicBody({
 
       <Separator />
 
-      {isLoading && <Loading label="Loading trace" />}
+      {isLoading && <TraceSkeleton />}
       {error && <ErrorState error={error} />}
       {data && (
         <div className="space-y-5 text-sm">

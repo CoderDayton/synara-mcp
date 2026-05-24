@@ -11,6 +11,9 @@ divergence). Routers delegate to the service; no memory logic here.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,8 +21,8 @@ from typing import TYPE_CHECKING
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.datastructures import Headers
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from synara import __version__
 
@@ -103,6 +106,102 @@ class HostAllowlistMiddleware:
         await response(scope, receive, send)
 
 
+_INLINE_SCRIPT_RE = re.compile(
+    rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _csp_hashes_for(index_html: Path) -> tuple[str, ...]:
+    """Compute CSP `sha256-...` source values for inline ``<script>`` bodies.
+
+    The committed SPA shell contains a small theme-bootstrap inline
+    script. A strict CSP without ``'unsafe-inline'`` requires either a
+    per-request nonce (we serve the static file unchanged) or a hash of
+    each inline script body. We bake the hash at mount time so any
+    change to the shell forces a regenerated CSP header automatically.
+    """
+    if not index_html.is_file():
+        return ()
+    body = index_html.read_bytes()
+    out: list[str] = []
+    for match in _INLINE_SCRIPT_RE.finditer(body):
+        digest = hashlib.sha256(match.group(1)).digest()
+        out.append(f"'sha256-{base64.b64encode(digest).decode('ascii')}'")
+    return tuple(out)
+
+
+class SecurityHeadersMiddleware:
+    """Set production-grade security response headers on every response.
+
+    CSP is the most consequential header: it is applied only to HTML
+    responses (where script/style/frame loading is meaningful) so that
+    hashed ``/assets`` and JSON API replies aren't burdened with policy
+    they can't violate. The other headers (X-Content-Type-Options,
+    X-Frame-Options, Referrer-Policy, Permissions-Policy) are cheap and
+    apply universally.
+
+    The CSP intentionally allows ``'unsafe-inline'`` for ``style-src``
+    only — React/shadcn emit inline ``style=`` attributes for
+    runtime-computed values, and the equivalent ``style-src-attr``
+    directive has incomplete browser coverage. Inline styles don't
+    grant script execution, so the residual XSS surface is bounded to
+    layout/visual mischief.
+    """
+
+    __slots__ = ("_app", "_csp_html")
+
+    def __init__(self, app: ASGIApp, *, csp_html: str) -> None:
+        self._app = app
+        self._csp_html = csp_html
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["X-Frame-Options"] = "DENY"
+                headers["Referrer-Policy"] = "no-referrer"
+                headers["Permissions-Policy"] = (
+                    "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
+                    "magnetometer=(), microphone=(), payment=(), usb=()"
+                )
+                content_type = headers.get("content-type", "")
+                if content_type.startswith("text/html"):
+                    headers["Content-Security-Policy"] = self._csp_html
+            await send(message)
+
+        await self._app(scope, receive, send_wrapper)
+
+
+def _build_csp(script_hashes: tuple[str, ...]) -> str:
+    """Build the HTML Content-Security-Policy string.
+
+    ``script-src`` admits ``'self'`` (the hashed Vite bundle under
+    ``/assets``) plus the precomputed inline-script hashes. No remote
+    origins are allowed — the dashboard is fully self-hosted.
+    """
+    script_src = " ".join(("'self'", *script_hashes)) if script_hashes else "'self'"
+    return "; ".join(
+        (
+            "default-src 'self'",
+            f"script-src {script_src}",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            "font-src 'self' data:",
+            "connect-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "object-src 'none'",
+        )
+    )
+
+
 def _mount_spa(app: FastAPI, static_dir: Path) -> None:
     """Serve the committed Vite build with SPA-history fallback.
 
@@ -175,6 +274,15 @@ def build_dashboard_app(
     app.add_middleware(
         HostAllowlistMiddleware,
         allowed_hosts=_allowed_hosts(settings.dashboard),
+    )
+
+    # Security headers run after the host allowlist (added later wraps
+    # outer): hashes are derived from the *committed* shell, so a fresh
+    # build that changes the inline bootstrap will regenerate them on
+    # the next process restart.
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        csp_html=_build_csp(_csp_hashes_for(_STATIC_DIR / "index.html")),
     )
 
     auth = make_auth_dependency(settings.dashboard)

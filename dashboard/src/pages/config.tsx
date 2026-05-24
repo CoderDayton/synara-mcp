@@ -13,8 +13,20 @@ import {
 
 function fmt(v: unknown): string {
   if (v == null) return "—";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
+  switch (typeof v) {
+    case "object":
+      return JSON.stringify(v);
+    case "string":
+      return v;
+    case "number":
+    case "boolean":
+    case "bigint":
+      return String(v);
+    default:
+      // function / symbol — should not appear in a JSON config, but
+      // produce a readable sentinel instead of the engine default.
+      return `<${typeof v}>`;
+  }
 }
 
 export default function Config() {

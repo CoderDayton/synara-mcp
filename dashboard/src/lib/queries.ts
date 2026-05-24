@@ -1,4 +1,5 @@
 import {
+  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -32,7 +33,14 @@ export const useMemories = (q: {
   q?: string;
   limit?: number;
   offset?: number;
-}) => useQuery({ queryKey: ["memories", q], queryFn: () => api.memories(q) });
+}) =>
+  useQuery({
+    queryKey: ["memories", q],
+    queryFn: () => api.memories(q),
+    // Keep prior page visible while pagination/search refetches so the
+    // table doesn't blank-flash between keystrokes or page flips.
+    placeholderData: keepPreviousData,
+  });
 
 export const useMemoryDetail = (id: number | null) =>
   useQuery({
@@ -45,16 +53,26 @@ export const useGraph = (q: {
   focus?: number;
   depth?: number;
   max_nodes?: number;
-}) => useQuery({ queryKey: ["graph", q], queryFn: () => api.graph(q) });
+}) =>
+  useQuery({
+    queryKey: ["graph", q],
+    queryFn: () => api.graph(q),
+    // Keep the prior graph data while refetching on focus/depth change
+    // so the d3-force layout doesn't unmount + reset node positions.
+    placeholderData: keepPreviousData,
+  });
 
 export function useDeleteMemory() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => api.deleteMemory(id),
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
       void qc.invalidateQueries({ queryKey: ["memories"] });
       void qc.invalidateQueries({ queryKey: ["stats"] });
       void qc.invalidateQueries({ queryKey: ["graph"] });
+      // Evict the detail cache for the deleted id so any still-mounted
+      // inspector unmounts cleanly instead of showing stale content.
+      qc.removeQueries({ queryKey: ["memory", id], exact: true });
     },
   });
 }

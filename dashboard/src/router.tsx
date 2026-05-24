@@ -1,3 +1,4 @@
+import { lazy } from "react";
 import {
   createBrowserRouter,
   Navigate,
@@ -5,10 +6,15 @@ import {
   isRouteErrorResponse,
 } from "react-router-dom";
 import { AppShell } from "@/components/layout/app-shell";
-import Overview from "@/pages/overview";
-import Memories from "@/pages/memories";
-import Admin from "@/pages/admin";
-import Config from "@/pages/config";
+
+// Route-level code splitting: each page becomes its own chunk so the
+// initial bundle ships only the overview path. AppShell's <Suspense>
+// covers the loading state via the same `<Loading/>` fallback used
+// elsewhere.
+const Overview = lazy(() => import("@/pages/overview"));
+const Memories = lazy(() => import("@/pages/memories"));
+const Admin = lazy(() => import("@/pages/admin"));
+const Config = lazy(() => import("@/pages/config"));
 
 function RouteError() {
   const err = useRouteError();

@@ -44,7 +44,7 @@ export class ApiError extends Error {
 
 async function request<T>(
   path: string,
-  init?: RequestInit & { json?: unknown },
+  init?: RequestInit & { json?: unknown; validate?: (raw: unknown) => T },
 ): Promise<T> {
   const headers = new Headers(init?.headers);
   const token = getToken();
@@ -67,7 +67,73 @@ async function request<T>(
     throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const raw: unknown = await res.json();
+  // Optional runtime validation at the boundary: when supplied, the
+  // validator either returns a well-typed value or throws an ApiError
+  // carrying a 502 (Bad Gateway) — the server gave us a shape we
+  // cannot trust to render. This converts silent "undefined in the
+  // UI" failures into a loud, retryable error.
+  if (init?.validate) {
+    try {
+      return init.validate(raw);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "invalid response shape";
+      throw new ApiError(502, `Schema mismatch on ${path}: ${msg}`);
+    }
+  }
+  return raw as T;
+}
+
+/* ---------------------------------------------------- runtime type guards
+ *
+ * Minimal hand-rolled validators for the endpoints whose shape is most
+ * likely to silently break the UI (numeric counts, enum strings). No
+ * external schema library so the dashboard stays dependency-light;
+ * normalizeGraph already covers the graph endpoint's tolerance path.
+ */
+function fail(msg: string): never {
+  throw new Error(msg);
+}
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function asStr(v: unknown, field: string): string {
+  return typeof v === "string" ? v : fail(`expected string at ${field}`);
+}
+function asNum(v: unknown, field: string): number {
+  return typeof v === "number" && Number.isFinite(v)
+    ? v
+    : fail(`expected number at ${field}`);
+}
+
+function validateHealth(raw: unknown): Health {
+  if (!isObj(raw)) fail("expected object");
+  const backend = raw.embedding_backend;
+  if (backend !== "local" && backend !== "remote")
+    fail(`embedding_backend must be "local" | "remote"`);
+  return {
+    status: asStr(raw.status, "status"),
+    version: asStr(raw.version, "version"),
+    transport: asStr(raw.transport, "transport"),
+    db_path: asStr(raw.db_path, "db_path"),
+    embedding_backend: backend,
+    embedding_model: asStr(raw.embedding_model, "embedding_model"),
+    uptime_seconds: asNum(raw.uptime_seconds, "uptime_seconds"),
+  };
+}
+
+function validateStats(raw: unknown): Stats {
+  if (!isObj(raw)) fail("expected object");
+  return {
+    episodic_count: asNum(raw.episodic_count, "episodic_count"),
+    semantic_count: asNum(raw.semantic_count, "semantic_count"),
+  };
+}
+
+function validateMemoryList(raw: unknown): MemoryList {
+  if (!isObj(raw)) fail("expected object");
+  if (!Array.isArray(raw.items)) fail("expected items: array");
+  return raw as unknown as MemoryList;
 }
 
 /* ----------------------------------------------------------- response types */
@@ -305,7 +371,11 @@ export function normalizeGraph(raw: unknown): GraphData {
   )
     .map((e) => {
       const o = e as Record<string, unknown>;
-      return { src: num(o.src), dst: String(o.dst ?? "") };
+      // Schema ids arrive as `sem:N` strings. Guard against the
+      // legacy/garbled case explicitly — `String(unknown)` may render
+      // as `[object Object]`, which would silently corrupt the graph.
+      const dst = typeof o.dst === "string" ? o.dst : "";
+      return { src: num(o.src), dst };
     })
     .filter((e) => e.dst !== "");
   return {
@@ -324,8 +394,8 @@ export function normalizeGraph(raw: unknown): GraphData {
 /* --------------------------------------------------------------- operations */
 
 export const api = {
-  health: () => request<Health>("/health"),
-  stats: () => request<Stats>("/stats"),
+  health: () => request<Health>("/health", { validate: validateHealth }),
+  stats: () => request<Stats>("/stats", { validate: validateStats }),
   params: () => request<Params>("/params"),
 
   memories: (q: {
@@ -338,7 +408,9 @@ export const api = {
     if (q.q) p.set("q", q.q);
     if (q.limit != null) p.set("limit", String(q.limit));
     if (q.offset != null) p.set("offset", String(q.offset));
-    return request<MemoryList>(`/memories?${p.toString()}`);
+    return request<MemoryList>(`/memories?${p.toString()}`, {
+      validate: validateMemoryList,
+    });
   },
   memoryDetail: (id: number) => request<MemoryDetail>(`/memories/${id}`),
   deleteMemory: (id: number) =>

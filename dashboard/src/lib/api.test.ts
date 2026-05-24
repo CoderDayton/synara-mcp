@@ -1,13 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api, setToken } from "@/lib/api";
 
+// Minimal well-formed Health body — the api client now validates the
+// response shape at the boundary (api.ts), so bearer-token tests need
+// a payload that passes validation.
+const HEALTH_OK = {
+  status: "ok",
+  version: "0.0.0",
+  transport: "stdio",
+  db_path: ":memory:",
+  embedding_backend: "local",
+  embedding_model: "test",
+  uptime_seconds: 0,
+};
+
 function mockFetch(status: number, body: unknown) {
   const fn = vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
     status,
     statusText: "x",
-    json: async () => body,
-  } as Response);
+    json: () => Promise.resolve(body),
+  });
   vi.stubGlobal("fetch", fn);
   return fn;
 }
@@ -19,7 +32,7 @@ afterEach(() => {
 
 describe("api bearer-token injection", () => {
   it("omits Authorization when no token is set", async () => {
-    const f = mockFetch(200, { status: "ok" });
+    const f = mockFetch(200, HEALTH_OK);
     await api.health();
     const headers = (f.mock.calls[0][1] as RequestInit).headers as Headers;
     expect(headers.get("Authorization")).toBeNull();
@@ -27,7 +40,7 @@ describe("api bearer-token injection", () => {
 
   it("sends Authorization: Bearer <token> when a token is set", async () => {
     setToken("s3cr3t");
-    const f = mockFetch(200, { status: "ok" });
+    const f = mockFetch(200, HEALTH_OK);
     await api.health();
     const headers = (f.mock.calls[0][1] as RequestInit).headers as Headers;
     expect(headers.get("Authorization")).toBe("Bearer s3cr3t");
@@ -41,6 +54,28 @@ describe("api bearer-token injection", () => {
       detail: "missing bearer token",
     });
     await expect(api.health()).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("api boundary validation", () => {
+  it("rejects malformed health payload with ApiError 502", async () => {
+    mockFetch(200, { status: "ok" /* missing version, backend, etc. */ });
+    await expect(api.health()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 502,
+    });
+  });
+
+  it("rejects an unknown embedding_backend value", async () => {
+    mockFetch(200, { ...HEALTH_OK, embedding_backend: "magic" });
+    await expect(api.health()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("accepts a well-formed health payload", async () => {
+    mockFetch(200, HEALTH_OK);
+    const h = await api.health();
+    expect(h.embedding_backend).toBe("local");
+    expect(h.uptime_seconds).toBe(0);
   });
 });
 

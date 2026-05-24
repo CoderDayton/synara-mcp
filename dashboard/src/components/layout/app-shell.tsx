@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Loading } from "@/components/common/states";
 import { StatusPill } from "@/components/common/status-indicator";
 import { ThemeToggle } from "@/components/common/theme-toggle";
+import { useDocumentTheme } from "@/lib/use-document-theme";
 import { TokenDialog } from "@/components/common/token-dialog";
 import { ROUTE_TITLES, SidebarContent } from "@/components/layout/sidebar";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,7 @@ export function AppShell() {
   const [open, setOpen] = useState(false);
   const { pathname } = useLocation();
   const pageTitle = ROUTE_TITLES[pathname] ?? "";
+  const theme = useDocumentTheme();
 
   // Drawer side-effects: lock body scroll while open and close on Esc,
   // so the off-canvas menu behaves like a real modal layer.
@@ -100,7 +102,7 @@ export function AppShell() {
         </main>
       </div>
 
-      <Toaster theme="dark" position="bottom-right" richColors />
+      <Toaster theme={theme} position="bottom-right" richColors />
     </div>
   );
 }
