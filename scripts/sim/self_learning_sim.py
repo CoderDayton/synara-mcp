@@ -65,6 +65,7 @@ import itertools
 import logging
 import math
 import random
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -94,15 +95,38 @@ N_TOPICS = 8
 # is requested. Kept module-level so topical_embed() (passed as embed_fn
 # to MemoryService) can stay a plain function.
 _CENTROIDS: list[list[float]] = []
+# Per-topic Gaussian noise std applied in topical_embed(). Two regimes:
+# *tight* topics get std small enough that intra-topic samples land well
+# inside consolidate_absorb_distance (=0.4) of the schema centroid, so
+# the reactor absorbs them into one schema per topic. *noisy* topics get
+# std large enough that intra-topic samples scatter past the absorb
+# threshold, so each consolidation pass spawns fresh schemas instead of
+# reusing existing ones -- that is the schema-bloat regime the dashboard
+# is meant to demonstrate alongside the compression regime.
+_JITTER: list[float] = []
 
 
-def _build_centroids(seed: int) -> None:
+def _build_centroids(
+    seed: int,
+    *,
+    tight_jitter: float,
+    bloat_jitter: float,
+    noisy_topics: int,
+) -> None:
     rng = random.Random(seed)
     _CENTROIDS.clear()
+    _JITTER.clear()
     for _ in range(N_TOPICS):
         v = [rng.gauss(0.0, 1.0) for _ in range(DIM)]
         n = math.sqrt(sum(x * x for x in v)) or 1.0
         _CENTROIDS.append([x / n for x in v])
+    # Noisy topics are the trailing indices: hub anchors (topic 0) and the
+    # high-frequency head stay tight so the existing compression / habit
+    # narrative is preserved; the long tail demonstrates bloat without
+    # interfering with anchor latching.
+    noisy_start = N_TOPICS - max(0, min(noisy_topics, N_TOPICS))
+    for k in range(N_TOPICS):
+        _JITTER.append(bloat_jitter if k >= noisy_start else tight_jitter)
 
 
 def _topic_of(text: str) -> int:
@@ -116,9 +140,10 @@ def _topic_of(text: str) -> int:
 def topical_embed(text: str) -> list[float]:
     k = _topic_of(text) % N_TOPICS
     c = _CENTROIDS[k]
+    sigma = _JITTER[k]
     seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")
     jr = random.Random(seed)
-    v = [c[i] + 0.15 * jr.gauss(0.0, 1.0) for i in range(DIM)]
+    v = [c[i] + sigma * jr.gauss(0.0, 1.0) for i in range(DIM)]
     n = math.sqrt(sum(x * x for x in v)) or 1.0
     return [x / n for x in v]
 
@@ -154,6 +179,16 @@ ANCHOR_SALIENCE = 0.97
 DEFAULT_CORE_TOPICS = 1
 DEFAULT_CENTROID_SEED = 20260518
 DEFAULT_SIM_SEED = 7
+# Embedder jitter regime. With unit-norm centroids in DIM=64 the expected
+# cosine distance from a same-topic sample to the schema centroid is
+# ~1 - 1/sqrt(1 + DIM*sigma**2). At tight=0.05 that is ~0.07 -- well below
+# consolidate_absorb_distance (=0.4) so episodes absorb cleanly into one
+# schema per topic. At bloat=0.30 it is ~0.62 -- well above absorb, so
+# unabsorbed noisy episodes hit stage-2 K-Means clustering and spawn new
+# schemas every consolidate pass. Two regimes in one run, by topic index.
+DEFAULT_TIGHT_JITTER = 0.05
+DEFAULT_BLOAT_JITTER = 0.30
+DEFAULT_NOISY_TOPICS = 2
 
 # Zipfian topic interest: a few topics recur far more than the tail,
 # so recurring structure (habits, schemas) has something to latch onto.
@@ -273,15 +308,23 @@ _VT = [time.time()]
 # not block latching; the real-clock ltd_pass run by the dream
 # reactor sees a virtual ``last_touch`` ahead of its real ``now``,
 # clamps idle to 0 and so does not prune these edges.
-# Deliberately NOT service/events/consolidate: the reactor stamps
-# trigger state via a separate unpatched alias (events.now_seconds,
-# imported into service as ``_now_real``); a virtual ``now`` vs a
-# real ``last_*_at`` makes every dream_due/consolidate_due
-# perpetually true -> dream-replay runaway.
+#
+# Also virtualise the reactor clock (events.now_seconds and the
+# service-side ``_now_real`` alias re-bound below). Earlier comments
+# called this out as a runaway risk: half-virtualising (virtual
+# ``now`` vs real ``last_*_at``) makes every dream_due/consolidate_due
+# perpetually true. The fix is to patch *both* sides symmetrically so
+# the gate clock and the stamp clock advance together. Without this,
+# the reactor's 60s real-wall-clock consolidate cooldown
+# (events.py:74) gates out every consolidate after the first, since a
+# 90-sim-day run completes in well under 60s wall time -- producing
+# the consolidate=1, dream=39 asymmetry the metric review surfaced.
 _CLOCK_MODULES = (
     "synara.features.memory.neocortex.forget",
+    "synara.features.memory.neocortex.consolidate",
     "synara.features.memory.hippocampus.recall",
     "synara.features.memory.hippocampus.encode",
+    "synara.features.memory.basal_ganglia.events",
 )
 
 
@@ -302,6 +345,21 @@ def _install_virtual_clock() -> None:
                 "no-op and forget would run on real time. Rename upstream?"
             )
         mod.now_seconds = _vclock
+    # service.py binds ``_now_real`` via ``from ... import now_seconds as
+    # _now_real`` at import time, so patching events.now_seconds above
+    # does NOT rebind the already-resolved alias inside service.py.
+    # Rebind it explicitly so the reactor's stamp clock (``last_*_at``
+    # via _now_real) and gate clock (events.now_seconds via consolidate_due/
+    # dream_due) stay in lockstep. Asymmetry here is what causes
+    # dream-replay runaway -- keep them pointing at the same source.
+    svc_mod = importlib.import_module("synara.features.memory.service")
+    if not hasattr(svc_mod, "_now_real"):
+        raise AttributeError(
+            "synara.features.memory.service._now_real not found; reactor "
+            "stamps would run on real wall-clock and consolidate would "
+            "fire at most once per real minute regardless of virtual time."
+        )
+    svc_mod._now_real = _vclock
 
 
 def _fmt_row(vals: tuple[object, ...]) -> str:
@@ -380,6 +438,44 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="RNG seed for the offline topical embedder's centroids",
     )
     p.add_argument(
+        "--tight-jitter",
+        type=float,
+        default=DEFAULT_TIGHT_JITTER,
+        help=(
+            "per-dim Gaussian std for non-noisy topics; tight enough that "
+            "same-topic samples absorb into one schema (compression regime)"
+        ),
+    )
+    p.add_argument(
+        "--bloat-jitter",
+        type=float,
+        default=DEFAULT_BLOAT_JITTER,
+        help=(
+            "per-dim Gaussian std for the trailing --noisy-topics; loose "
+            "enough to defeat consolidate_absorb_distance and spawn fresh "
+            "schemas per consolidate pass (bloat regime)"
+        ),
+    )
+    p.add_argument(
+        "--min-recurrence",
+        type=int,
+        default=2,
+        help=(
+            "v2 candidate-promotion gate: stage-2 cluster gists must recur "
+            "this many consolidate passes before promotion. 1 = legacy."
+        ),
+    )
+    p.add_argument(
+        "--noisy-topics",
+        type=int,
+        default=DEFAULT_NOISY_TOPICS,
+        help=(
+            "count of trailing topic indices that use --bloat-jitter; the "
+            "leading topics keep --tight-jitter so hub-anchor habits and "
+            "compression are preserved alongside the bloat demonstration"
+        ),
+    )
+    p.add_argument(
         "--out",
         type=Path,
         default=Path(__file__).resolve().parent / "self_learning_report.html",
@@ -441,6 +537,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             p.error(f"--{name.replace('_', '-')} must be positive")
     if args.core_topics > N_TOPICS:
         p.error(f"--core-topics must be <= N_TOPICS ({N_TOPICS})")
+    if args.tight_jitter < 0 or args.bloat_jitter < 0:
+        p.error("--tight-jitter and --bloat-jitter must be non-negative")
+    if args.bloat_jitter < args.tight_jitter:
+        p.error("--bloat-jitter must be >= --tight-jitter")
+    if args.noisy_topics < 0 or args.noisy_topics > N_TOPICS - args.core_topics:
+        p.error(
+            f"--noisy-topics must be in [0, N_TOPICS - core_topics] = "
+            f"[0, {N_TOPICS - args.core_topics}]; the leading core_topics "
+            "must stay tight so anchors latch"
+        )
     return args
 
 
@@ -485,6 +591,64 @@ HEADERS: tuple[str, ...] = (
     "srE/srR",
     "mH/pE",
 )
+
+
+async def _schema_health(
+    svc: MemoryService,
+    *,
+    noisy_start: int,
+    now_s: float,
+    stale_seconds: float,
+) -> dict[str, float]:
+    """Walk every schema once and report bloat/health indicators.
+
+    Sim-only: production stats() would not pay the O(n) get_documents
+    cost on every call. The split tells engineered bloat (a noisy
+    topic deliberately spawning many schemas) apart from emergent
+    bloat (singletons piling up against the tight-topic floor).
+    Schemas inherit ``topic-N`` tags from their source episodes, so
+    the first such tag is a stable bucket key; mixed-topic schemas
+    (Stage-2 K-Means edge case) are bucketed by their first tag and
+    will show up as ``noisy`` whenever any noisy episode contributed.
+    """
+    rows = await svc.semantic.get_documents(filter_dict=None)
+    total = len(rows)
+    singletons = 0
+    stale = 0
+    tight = 0
+    noisy = 0
+    untagged = 0
+    ep_counts: list[int] = []
+    for _id, _text, md in rows:
+        eps = list(md.get("source_episode_ids") or [])
+        n_eps = len(eps)
+        ep_counts.append(n_eps)
+        if n_eps <= 1:
+            singletons += 1
+        upd = float(md.get("updated_at") or 0.0)
+        if upd > 0.0 and (now_s - upd) > stale_seconds:
+            stale += 1
+        topic_idx: int | None = None
+        for tag in md.get("tags") or []:
+            if isinstance(tag, str) and tag.startswith("topic-") and tag[6:].isdigit():
+                topic_idx = int(tag[6:])
+                break
+        if topic_idx is None:
+            untagged += 1
+        elif topic_idx >= noisy_start:
+            noisy += 1
+        else:
+            tight += 1
+    median_ep = float(statistics.median(ep_counts)) if ep_counts else 0.0
+    return {
+        "total": float(total),
+        "singletons": float(singletons),
+        "stale": float(stale),
+        "median_ep": median_ep,
+        "tight": float(tight),
+        "noisy": float(noisy),
+        "untagged": float(untagged),
+    }
 
 
 async def _seed_anchors(svc: MemoryService, core_topics: int, anchors_per_topic: int) -> None:
@@ -567,6 +731,8 @@ def _build_synthesis(
     forget_passes: int,
     forget_removed: int,
     probe: tuple[int, int],
+    schema_health: dict[str, float],
+    stale_days: int,
 ) -> list[str]:
     """Format the emergent-structure summary lines from the collected rows."""
     first, last = rows[0], rows[-1]
@@ -578,8 +744,10 @@ def _build_synthesis(
     return [
         f"reactor self-fired: consolidations={cons_count} dreams={dreams_count} "
         "(explicit svc.consolidate() calls in this script: 0)",
-        f"semantic schemas: {first.sem} -> {last.sem} (one cooldown-gated "
-        "reactor pass distils the recurring topics)",
+        f"semantic schemas: {first.sem} -> {last.sem} (tight topics absorb "
+        "into ~1 schema each; trailing noisy topics scatter past "
+        "consolidate_absorb_distance and spawn extra schemas -- bloat "
+        "surplus is sem_growth minus the tight-topic floor)",
         f"SR transition rows: {first.sr_rows} -> {last.sr_rows}, edges "
         f"{first.sr_edges} -> {last.sr_edges} (learned relational prior)",
         f"plasticity edges: {first.p_edges} -> {last.p_edges}, habits "
@@ -600,6 +768,17 @@ def _build_synthesis(
         f"{post.edge_conc} maxhits/edge (concentration)",
         f"recall prior check (maintained pre-forget state): {same}/{total} "
         "top hits are the recurring hot topic -> structure shapes retrieval",
+        (
+            f"schema health (post-forget): {int(schema_health['total'])} total; "
+            f"singletons={int(schema_health['singletons'])} "
+            f"stale={int(schema_health['stale'])} (>{stale_days} sim-day untouched); "
+            f"by-topic noisy={int(schema_health['noisy'])} "
+            f"tight={int(schema_health['tight'])} "
+            f"untagged={int(schema_health['untagged'])}; "
+            f"median {schema_health['median_ep']:.1f} ep/schema -- "
+            "distinguishes engineered noisy-topic bloat from emergent "
+            "singleton bloat against the tight-topic floor"
+        ),
     ]
 
 
@@ -716,17 +895,22 @@ def _write_report(
     cfg: MemoryConfig,
     days: int,
     sessions_per_day: int,
+    post: Snapshot | None = None,
 ) -> None:
+    n_tight = sum(1 for s in _JITTER if s == _JITTER[0])
+    n_noisy = N_TOPICS - n_tight
     meta = (
         f"{days} days x {sessions_per_day} sessions; reactor "
         f"self_learning={cfg.self_learning_enabled}, "
         f"consolidate_after_novel={cfg.reactor_consolidate_after_novel}, "
         f"dream_after_events={cfg.reactor_dream_after_events}; "
+        f"embedder tight_topics={n_tight} tight_sigma={_JITTER[0]:.2f}, "
+        f"noisy_topics={n_noisy} noisy_sigma={_JITTER[-1]:.2f}; "
         f"virtual clock: 1 sim-day = {int(_SIM_DAY_SECONDS)}s real-time "
         f"-> ~24 compressed memory-days (production time_compression=24) "
         f"~= ~1 real day of agent activity"
     )
-    out.write_text(render_html(rows, HEADERS, meta, syn), encoding="utf-8")
+    out.write_text(render_html(rows, HEADERS, meta, syn, post=post), encoding="utf-8")
 
 
 async def main(args: argparse.Namespace) -> int:
@@ -747,7 +931,12 @@ async def main(args: argparse.Namespace) -> int:
         )
         await run_bench(args.bench_out, cfg=cfg)
         return 0
-    _build_centroids(args.centroid_seed)
+    _build_centroids(
+        args.centroid_seed,
+        tight_jitter=args.tight_jitter,
+        bloat_jitter=args.bloat_jitter,
+        noisy_topics=args.noisy_topics,
+    )
     show_progress = sys.stdout.isatty() and not args.quiet
     days = args.days
     sessions_per_day = args.sessions
@@ -766,6 +955,7 @@ async def main(args: argparse.Namespace) -> int:
     cfg = MemoryConfig(
         consolidate_min_age_seconds=0.0,
         consolidate_min_retrievals=0,
+        consolidate_min_recurrence=args.min_recurrence,
     )
     _install_virtual_clock()
     svc = MemoryService(db, config=cfg, embed_fn=topical_embed)
@@ -774,6 +964,8 @@ async def main(args: argparse.Namespace) -> int:
 
     _print_preface(args, cfg, days, sessions_per_day)
     await _seed_anchors(svc, core_topics, anchors_per_topic)
+    stale_days = 30
+    stale_seconds = stale_days * _SIM_DAY_SECONDS
     rows, post, probe, forget_passes, forget_removed = await _run_simulation(
         svc,
         days=days,
@@ -788,6 +980,12 @@ async def main(args: argparse.Namespace) -> int:
         show_progress=show_progress,
         quiet=args.quiet,
     )
+    schema_health = await _schema_health(
+        svc,
+        noisy_start=N_TOPICS - args.noisy_topics,
+        now_s=_VT[0],
+        stale_seconds=stale_seconds,
+    )
     syn = _build_synthesis(
         rows,
         post,
@@ -796,6 +994,8 @@ async def main(args: argparse.Namespace) -> int:
         forget_passes=forget_passes,
         forget_removed=forget_removed,
         probe=probe,
+        schema_health=schema_health,
+        stale_days=stale_days,
     )
     if not args.quiet:
         print("\n# self-evolution observed (snapshot[0] -> snapshot[-1]):")
@@ -809,6 +1009,7 @@ async def main(args: argparse.Namespace) -> int:
         cfg=cfg,
         days=days,
         sessions_per_day=sessions_per_day,
+        post=post,
     )
     if not args.quiet:
         print(f"\n# HTML report written: {args.out}")

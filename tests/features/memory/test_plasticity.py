@@ -529,6 +529,9 @@ async def test_consolidate_min_age_gate_skips_young_episodes() -> None:
         cfg2 = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=0,
+            # Legacy single-pass: this test is about the age gate, not the
+            # v2 recurrence gate.
+            consolidate_min_recurrence=1,
         )
         # Reuse the same DB; svc2 sees the same episodes.
         svc2 = MemoryService(db, config=cfg2, embed_fn=hash_embed)
@@ -547,6 +550,9 @@ async def test_consolidate_min_retrievals_gate_skips_unaccessed() -> None:
         cfg = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=1,
+            # Legacy single-pass: this test is about the retrieval-count
+            # gate, not the v2 recurrence gate.
+            consolidate_min_recurrence=1,
         )
         svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(4):

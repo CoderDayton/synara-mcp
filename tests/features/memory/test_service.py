@@ -189,9 +189,12 @@ async def test_consolidate_forms_schemas_and_links_episodes() -> None:
     try:
         # Schema-eligibility gates default to ON; this test predates them
         # and assumes immediate consolidation, so disable both gates here.
+        # The v2 recurrence gate also defaults ON now -- pin it off so
+        # this test keeps measuring the stage-1/stage-2 mechanics.
         cfg = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=0,
+            consolidate_min_recurrence=1,
         )
         service = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(4):
@@ -376,9 +379,12 @@ async def test_consolidate_absorbs_into_existing_schema() -> None:
     try:
         # Disable age/retrieval gates so the absorb path triggers on
         # freshly-encoded, never-recalled episodes (legacy test contract).
+        # Pin v2 off so the first consolidate actually forms the schema
+        # that the second consolidate is supposed to absorb into.
         cfg = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=0,
+            consolidate_min_recurrence=1,
         )
         svc = MemoryService(db, config=cfg, embed_fn=_bucket_embed)
         for i in range(3):

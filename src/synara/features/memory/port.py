@@ -94,6 +94,7 @@ class MemoryServicePort(Protocol):
     _dg: DGProjector | None
     memory_types: MemoryTypeRegistry
     _replay_cursor: int
+    schema_candidates: Any
 
     def collection_for(self, kind: MemoryType) -> Any: ...
     def _ensure_projector(self, dim: int) -> DGProjector: ...

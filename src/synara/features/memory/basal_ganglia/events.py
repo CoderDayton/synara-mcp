@@ -71,9 +71,9 @@ class TriggerPolicy:
     """When to schedule consolidate / dream as side effects."""
 
     consolidate_after_novel_encodes: int = 32
-    consolidate_cooldown_seconds: float = 60.0
+    consolidate_cooldown_seconds: float = 600.0  # 10 min; Tse et al 2007 cadence
     dream_after_events: int = 128
-    dream_after_idle_seconds: float = 1800.0  # 30 min real
+    dream_after_idle_seconds: float = 600.0  # 10 min; Carr et al 2011 awake replay
 
     def consolidate_due(self, state: ReactorState, now: float) -> bool:
         if self.consolidate_after_novel_encodes <= 0:

@@ -21,11 +21,26 @@ sharp-wave ripples (SWR) followed by neocortical schema integration:
   the McClelland et al. error-driven replay prescription: replay budget
   is spent first on episodes the cortical model is most confused about.
 
-* **Stage 2 — clustering of the residual.** Whatever was *not* absorbed
-  is clustered (MiniBatch K-Means) into new semantic schemas — the
-  classical CLS slow-pathway. Source episodes are marked
+* **Stage 2 — clustering + schema-level dedup.** Whatever was *not*
+  absorbed is clustered (MiniBatch K-Means) into candidate new schemas
+  — the classical CLS slow-pathway. Before each candidate is written,
+  its gist is checked against existing schema centroids: if the nearest
+  is within ``consolidate_schema_merge_distance``, the cluster's
+  episodes are merged into that existing schema instead of forking a
+  duplicate. This mirrors vmPFC's schema-comparator role (Gilboa &
+  Marlatte 2017, TiCS) and prevents the parallel-duplicate failure mode
+  that emerges when the reactor fires consolidate repeatedly under
+  realistic cadence. Only genuinely novel clusters (sim < ~0.75 to any
+  existing schema) form fresh entries. Source episodes are marked
   ``consolidated_into=<schema_id>`` so ``forget`` knows their gist is
   preserved upstream.
+
+The merge threshold is intentionally one-sided in v1: above it, cluster
+merges; below, fresh schema. The neuroscience literature (Sinclair &
+Barense 2019, Yassa & Stark 2011) supports a middle "reconsolidate"
+zone with prediction-error-gated forking after repeated mismatches; v2
+should add that once we have evidence the simple two-zone version
+under- or over-absorbs at our embedding density.
 """
 
 from __future__ import annotations
@@ -43,6 +58,124 @@ from .forget import memory_strength
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..config import MemoryConfig
     from ..port import MemoryServicePort as MemoryService
+
+
+async def _age_schema_candidates(service: MemoryService) -> None:
+    """Tick every v2 candidate's age forward and evict expired rows.
+
+    Called once per ``run()`` invocation so each consolidate pass is
+    one tick. Candidates whose gist has not recurred within
+    ``consolidate_candidate_max_age`` ticks are dropped; their episodes
+    remain UNCONSOLIDATED and re-enter the next pass through K-Means
+    (which may produce a different gist embedding and start a fresh
+    candidacy). Operates directly on the persistent
+    ``schema_candidates`` collection so the buffer survives restarts.
+    Inert when ``consolidate_min_recurrence <= 1`` or when
+    ``consolidate_candidate_max_age <= 0``.
+    """
+    cfg = service.config
+    if cfg.consolidate_min_recurrence <= 1 or cfg.consolidate_candidate_max_age <= 0:
+        return
+    if await service.schema_candidates.count() == 0:
+        return
+    max_age = cfg.consolidate_candidate_max_age
+    rows = await service.schema_candidates.get_documents(filter_dict=None)
+    updates: list[tuple[int, dict[str, Any]]] = []
+    evict: list[int] = []
+    for doc_id, _text, md in rows:
+        new_age = int(md.get("age", 0)) + 1
+        if new_age > max_age:
+            evict.append(int(doc_id))
+        else:
+            updates.append((int(doc_id), {"age": new_age}))
+    if updates:
+        await service.schema_candidates.update_metadata(updates)
+    if evict:
+        await service.schema_candidates.delete_by_ids(evict)
+
+
+async def _v2_promote_or_park(
+    service: MemoryService,
+    *,
+    summary: str,
+    summary_emb: list[float],
+    merge_dist: float,
+    min_recurrence: int,
+) -> bool:
+    """v2 candidate gate, persistent-buffer edition.
+
+    Returns ``True`` when the caller should fall through to fresh-schema
+    creation (the candidate just crossed ``min_recurrence`` hits and has
+    been removed from the buffer). Returns ``False`` when the cluster
+    was instead parked as a new candidate or had its hit count bumped
+    short of promotion -- the caller should skip schema creation.
+    Operates on ``service.schema_candidates`` so all state survives
+    restarts; the in-memory shortcut is gone.
+    """
+    nearest_id: int | None = None
+    if await service.schema_candidates.count() > 0:
+        try:
+            hits = await service.schema_candidates.similarity_search(summary_emb, k=1)
+        except (ValueError, RuntimeError):
+            hits = []
+        if hits:
+            doc, dist = hits[0]
+            if float(dist) <= merge_dist:
+                candidate_id = int(doc.metadata.get("id", -1))
+                if candidate_id >= 0:
+                    nearest_id = candidate_id
+    if nearest_id is None:
+        # New candidate: park it with hits=1, age=0.
+        new_ids = await service.schema_candidates.add_texts(
+            [summary],
+            metadatas=[{"hits": 1, "age": 0}],
+            embeddings=[summary_emb],
+        )
+        if new_ids:
+            new_id = int(new_ids[0])
+            await service.schema_candidates.update_metadata([(new_id, {"id": new_id})])
+        return False
+    # Existing candidate matched: bump hits and either promote or wait.
+    existing = await service.schema_candidates.get_documents({"id": nearest_id}, limit=1)
+    if not existing:
+        # Race: row disappeared between search and read. Treat as miss
+        # to avoid creating an orphan; the next consolidate pass will
+        # re-park if the cluster recurs.
+        return False
+    _, _, md = existing[0]
+    new_hits = int(md.get("hits", 0)) + 1
+    if new_hits < min_recurrence:
+        # Reset age on a hit: the candidate is clearly still alive.
+        await service.schema_candidates.update_metadata(
+            [(nearest_id, {"hits": new_hits, "age": 0})],
+        )
+        return False
+    # Crossed the recurrence threshold: drop the candidate and let the
+    # caller create the durable schema row.
+    await service.schema_candidates.delete_by_ids([nearest_id])
+    return True
+
+
+def _cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
+    """Cosine distance for two equal-length, non-zero vectors.
+
+    Used by the v2 candidate gate to compare an in-memory gist embedding
+    against buffered candidates without a DB round-trip. Returns 1.0 on
+    a length mismatch or all-zero vector so the caller treats them as
+    non-matching rather than crashing the consolidate pass.
+    """
+    if len(a) != len(b):
+        return 1.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b, strict=True):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0.0 or nb <= 0.0:
+        return 1.0
+    return 1.0 - dot / math.sqrt(na * nb)
 
 
 def _replay_score(
@@ -163,44 +296,84 @@ async def _absorb(
     absorbed_ids: set[int] = set()
     formed: list[dict[str, Any]] = []
     for sch_id, ep_ids in by_schema.items():
-        existing = await service.semantic.get_documents({"id": sch_id}, limit=1)
-        if not existing:
+        merged = await _merge_into_schema(service, sch_id=sch_id, ep_ids=ep_ids, now=now)
+        if merged is None:
             continue
-        _, sch_text, sch_md = existing[0]
-        prior = list(sch_md.get("source_episode_ids") or [])
-        new_sources = sorted(set(prior) | {int(e) for e in ep_ids})
-        if len(new_sources) == len(prior):
-            continue
-        new_conf = _schema_confidence(
-            len(new_sources), service.config.consolidate_confidence_full_at
-        )
-        await service.semantic.update_metadata(
-            [
-                (
-                    sch_id,
-                    {
-                        "source_episode_ids": new_sources,
-                        "confidence": float(new_conf),
-                        "updated_at": now,
-                    },
-                )
-            ]
-        )
-        await service.episodic.update_metadata(
-            [(eid, {"consolidated_into": sch_id}) for eid in ep_ids]
-        )
         absorbed_ids.update(ep_ids)
-        formed.append(
-            {
-                "id": sch_id,
-                "summary": sch_text,
-                "source_episode_ids": new_sources,
-                "confidence": float(new_conf),
-                "tags": list(sch_md.get("tags") or []),
-                "absorbed": True,
-            }
-        )
+        formed.append(merged)
     return absorbed_ids, formed
+
+
+async def _merge_into_schema(
+    service: MemoryService,
+    *,
+    sch_id: int,
+    ep_ids: Sequence[int],
+    now: float,
+) -> dict[str, Any] | None:
+    """Append ``ep_ids`` to an existing schema's source list.
+
+    Shared by Stage 1's per-episode absorption and Stage 2's per-cluster
+    merge — keeps the metadata-update path identical so confidence and
+    timestamps cannot drift between the two routes. Returns ``None`` if
+    the schema vanished mid-pass or the merge would be a no-op.
+    """
+    existing = await service.semantic.get_documents({"id": sch_id}, limit=1)
+    if not existing:
+        return None
+    _, sch_text, sch_md = existing[0]
+    prior = list(sch_md.get("source_episode_ids") or [])
+    new_sources = sorted(set(prior) | {int(e) for e in ep_ids})
+    if len(new_sources) == len(prior):
+        return None
+    new_conf = _schema_confidence(len(new_sources), service.config.consolidate_confidence_full_at)
+    await service.semantic.update_metadata(
+        [
+            (
+                sch_id,
+                {
+                    "source_episode_ids": new_sources,
+                    "confidence": float(new_conf),
+                    "updated_at": now,
+                },
+            )
+        ]
+    )
+    await service.episodic.update_metadata(
+        [(int(eid), {"consolidated_into": sch_id}) for eid in ep_ids]
+    )
+    return {
+        "id": sch_id,
+        "summary": sch_text,
+        "source_episode_ids": new_sources,
+        "confidence": float(new_conf),
+        "tags": list(sch_md.get("tags") or []),
+        "absorbed": True,
+    }
+
+
+def _apply_eligibility_gates(
+    cfg: MemoryConfig,
+    candidates: list[tuple[int, str, dict[str, Any]]],
+) -> list[tuple[int, str, dict[str, Any]]]:
+    """Skip episodes too young or too rarely retrieved to be schema fodder.
+
+    Mirrors the day-to-week ramp of HC->cortex handover. Defaults are
+    0/0 (no gate) so existing call patterns are unaffected.
+    """
+    if cfg.consolidate_min_age_seconds <= 0 and cfg.consolidate_min_retrievals <= 0:
+        return candidates
+    now_for_gate = now_seconds()
+    eligible: list[tuple[int, str, dict[str, Any]]] = []
+    for ep_id, text, md in candidates:
+        age = now_for_gate - float(md.get("encoded_at", now_for_gate))
+        rc = int(md.get("retrieval_count", 0))
+        if age < cfg.consolidate_min_age_seconds:
+            continue
+        if rc < cfg.consolidate_min_retrievals:
+            continue
+        eligible.append((ep_id, text, md))
+    return eligible
 
 
 def _cap_candidates(
@@ -263,23 +436,10 @@ async def run(
         await service.episodic.rebuild_if_needed()
 
     candidates = await service.episodic.get_documents(flt)
-    # Schema-eligibility gates: skip episodes too young or too rarely
-    # retrieved. Mirrors the day-to-week ramp of HC->cortex handover.
-    # Defaults are 0/0 (no gate) so existing call patterns work.
     cfg = service.config
-    now_for_gate = now_seconds()
-    if cfg.consolidate_min_age_seconds > 0 or cfg.consolidate_min_retrievals > 0:
-        eligible: list[tuple[int, str, dict[str, Any]]] = []
-        for ep_id, text, md in candidates:
-            age = now_for_gate - float(md.get("encoded_at", now_for_gate))
-            rc = int(md.get("retrieval_count", 0))
-            if age < cfg.consolidate_min_age_seconds:
-                continue
-            if rc < cfg.consolidate_min_retrievals:
-                continue
-            eligible.append((ep_id, text, md))
-        candidates = eligible
+    candidates = _apply_eligibility_gates(cfg, candidates)
     candidates = _cap_candidates(cfg, candidates)
+    await _age_schema_candidates(service)
     floor = min_cluster_size or cfg.consolidate_min_cluster
     if len(candidates) < floor:
         return []
@@ -316,46 +476,116 @@ async def run(
         int(ep_id): (text, dict(md)) for ep_id, text, md in remaining
     }
 
+    merge_dist = cfg.consolidate_schema_merge_distance
+    have_existing_schemas = await service.semantic.count() > 0
+
     for ep_ids in groups.values():
-        members = [ep_lookup[eid] for eid in ep_ids if eid in ep_lookup]
-        if len(members) < floor:
+        result = await _process_stage2_cluster(
+            service,
+            ep_ids=ep_ids,
+            ep_lookup=ep_lookup,
+            floor=floor,
+            merge_dist=merge_dist,
+            have_existing_schemas=have_existing_schemas,
+            now=now,
+        )
+        if result is None:
             continue
-
-        head_text, _head_md = max(members, key=lambda m: float(m[1].get("salience", 0.0)))
-        tag_union = sorted(
-            {t for _, md in members for t in (md.get("tags") or []) if isinstance(t, str)}
-        )
-        summary = build_gist(head_text, [m[0] for m in members])
-        confidence = _schema_confidence(len(ep_ids), service.config.consolidate_confidence_full_at)
-        sem_meta: dict[str, Any] = {
-            "source_episode_ids": list(ep_ids),
-            "tags": tag_union,
-            "confidence": float(confidence),
-            "created_at": now,
-            "updated_at": now,
-        }
-        sem_ids = await service.semantic.add_texts(
-            [summary],
-            metadatas=[sem_meta],
-            embeddings=await service.vectorise([summary]),
-        )
-        sem_id = int(sem_ids[0])
-        await service.semantic.update_metadata([(sem_id, {"id": sem_id})])
-
-        await service.episodic.update_metadata(
-            [(eid, {"consolidated_into": sem_id}) for eid in ep_ids]
-        )
-        formed.append(
-            {
-                "id": sem_id,
-                "summary": summary,
-                "source_episode_ids": list(ep_ids),
-                "confidence": float(confidence),
-                "tags": tag_union,
-                "absorbed": False,
-            }
-        )
+        record, created_new = result
+        formed.append(record)
+        if created_new:
+            have_existing_schemas = True
     return formed
+
+
+async def _process_stage2_cluster(
+    service: MemoryService,
+    *,
+    ep_ids: Sequence[int],
+    ep_lookup: dict[int, tuple[str, dict[str, Any]]],
+    floor: int,
+    merge_dist: float,
+    have_existing_schemas: bool,
+    now: float,
+) -> tuple[dict[str, Any], bool] | None:
+    """One K-means cluster -> either a merge into an existing schema or
+    a fresh schema row. Returns ``(record, created_new)`` or ``None`` if
+    the cluster was sub-floor or its members are missing.
+    """
+    members = [ep_lookup[eid] for eid in ep_ids if eid in ep_lookup]
+    if len(members) < floor:
+        return None
+
+    head_text, _head_md = max(members, key=lambda m: float(m[1].get("salience", 0.0)))
+    tag_union = sorted(
+        {t for _, md in members for t in (md.get("tags") or []) if isinstance(t, str)}
+    )
+    summary = build_gist(head_text, [m[0] for m in members])
+
+    # Schema-level dedup: check the cluster gist against existing
+    # schema centroids before forking a fresh one. Mirrors vmPFC's
+    # schema-comparator role — if the cluster looks like an instance
+    # of an already-known schema, route it there instead of creating
+    # a parallel duplicate. Guarded on `have_existing_schemas` so the
+    # first-ever consolidate pass skips the lookup cheaply.
+    if have_existing_schemas and merge_dist > 0:
+        nearest = await _nearest_schema(service, summary)
+        if nearest is not None:
+            sch_id, d1, _d2 = nearest
+            if d1 <= merge_dist:
+                merged = await _merge_into_schema(service, sch_id=sch_id, ep_ids=ep_ids, now=now)
+                if merged is not None:
+                    return merged, False
+
+    # Compute the summary embedding once: needed both for the v2
+    # candidate gate below and (if we promote) for the schema add_texts
+    # call. Falls back to None when no embed_fn is configured, in which
+    # case the candidate gate degrades to legacy behaviour for safety.
+    summary_emb_batch = await service.vectorise([summary])
+    summary_emb: list[float] | None = list(summary_emb_batch[0]) if summary_emb_batch else None
+
+    # v2 candidate-to-promotion gate. Inert when min_recurrence <= 1.
+    # Operates on a separate ``schema_candidates`` collection so
+    # production recall paths never see pending gists, and so the
+    # buffer survives process restarts.
+    min_recurrence = service.config.consolidate_min_recurrence
+    if min_recurrence > 1 and summary_emb is not None and merge_dist > 0:
+        promoted = await _v2_promote_or_park(
+            service,
+            summary=summary,
+            summary_emb=summary_emb,
+            merge_dist=merge_dist,
+            min_recurrence=min_recurrence,
+        )
+        if not promoted:
+            return None
+
+    confidence = _schema_confidence(len(ep_ids), service.config.consolidate_confidence_full_at)
+    sem_meta: dict[str, Any] = {
+        "source_episode_ids": list(ep_ids),
+        "tags": tag_union,
+        "confidence": float(confidence),
+        "created_at": now,
+        "updated_at": now,
+    }
+    sem_ids = await service.semantic.add_texts(
+        [summary],
+        metadatas=[sem_meta],
+        embeddings=[summary_emb] if summary_emb is not None else None,
+    )
+    sem_id = int(sem_ids[0])
+    await service.semantic.update_metadata([(sem_id, {"id": sem_id})])
+    await service.episodic.update_metadata(
+        [(int(eid), {"consolidated_into": sem_id}) for eid in ep_ids]
+    )
+    return {
+        "id": sem_id,
+        "summary": summary,
+        "source_episode_ids": list(ep_ids),
+        "confidence": float(confidence),
+        "tags": tag_union,
+        "absorbed": False,
+    }, True
 
 
 def build_gist(headline: str, texts: Sequence[str]) -> str:

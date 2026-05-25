@@ -79,13 +79,23 @@ def test_signal_registry_salience_clamped_to_unit_interval() -> None:
 
 
 def test_default_registry_lookups() -> None:
-    reg = default_registry(episodic_collection="ep", semantic_collection="sem")
+    reg = default_registry(
+        episodic_collection="ep",
+        semantic_collection="sem",
+        schema_candidate_collection="cand",
+    )
     assert reg.collection_name(MemoryType.EPISODIC) == "ep"
     assert reg.collection_name(MemoryType.SEMANTIC) == "sem"
+    assert reg.collection_name(MemoryType.SCHEMA_CANDIDATE) == "cand"
     assert reg.consolidation_target(MemoryType.EPISODIC) is MemoryType.SEMANTIC
     assert reg.consolidation_target(MemoryType.SEMANTIC) is None
+    assert reg.consolidation_target(MemoryType.SCHEMA_CANDIDATE) is None
     assert reg.has(MemoryType.EPISODIC) is True
-    assert {s.type for s in reg} == {MemoryType.EPISODIC, MemoryType.SEMANTIC}
+    assert {s.type for s in reg} == {
+        MemoryType.EPISODIC,
+        MemoryType.SEMANTIC,
+        MemoryType.SCHEMA_CANDIDATE,
+    }
 
 
 def test_registry_spec_unregistered_raises_keyerror() -> None:

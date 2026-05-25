@@ -18,6 +18,11 @@ class MemoryConfig:
 
     episodic_collection: str = "memory_episodic"
     semantic_collection: str = "memory_semantic"
+    # Backing collection for the v2 schema-candidate buffer (see
+    # consolidate_min_recurrence). Always created; only populated when
+    # the recurrence gate is active. Kept separate from the semantic
+    # collection so production recall queries don't need a kind-filter.
+    schema_candidate_collection: str = "memory_schema_candidates"
     # First-class embedding dimensionality. ``None`` (default) lets the
     # service probe the configured embedder once and cache the observed
     # dim. Explicit values are validated against the probe at first use
@@ -71,9 +76,12 @@ class MemoryConfig:
     max_session_id_chars: int = 1_024
     # Power-law (Wickelgren/Wixted) decay exponent used by ``forget``:
     #   S(t) = salience * sum_k (1 + (t - t_k))^(-d)
-    # d ~ 0.5 fits behavioural retention curves better than the exponential
-    # Ebbinghaus form. Larger d = faster decay.
-    forget_d: float = 0.5
+    # Wixted & Ebbesen 1991 / 1997 fit individual episodic retention curves
+    # with d typically in 0.1-0.5; the modal value for verbal episodic
+    # material is ~0.15-0.25. Pooled-subject fits push d higher than the
+    # individual-trace exponent (Kahana's caveat), so the prior 0.5 default
+    # was on the over-aggressive edge. Larger d = faster decay.
+    forget_d: float = 0.2
     # Cap on retained access-history timestamps per episode; older entries
     # are FIFO-evicted. Keeps storage bounded while preserving Anderson's
     # base-level activation shape for typical usage.
@@ -93,6 +101,40 @@ class MemoryConfig:
     # cluster). Implements schema-fitting fast-track consolidation
     # (Tse et al. 2007). Smaller = stricter fit required.
     consolidate_absorb_distance: float = 0.4
+    # Schema-level (cluster-centroid) merge distance for Stage-2 dedup.
+    # After K-means clusters the residual unconsolidated tail, each new
+    # cluster's gist is checked against existing schema centroids; if the
+    # nearest one is within this cosine distance, the cluster's episodes
+    # are merged into that schema instead of forming a parallel duplicate.
+    # Anchor: human MST pattern-separation knee at ~60-70% feature overlap
+    # (Yassa & Stark 2011, Trends Neurosci; Lacy/Yassa/Stark 2011, Learn
+    # Mem); biased slightly tighter (0.25 distance ~ 0.75 cosine sim) to
+    # compensate for higher density in sentence-transformer space. Without
+    # this gate, every consolidate fire produces fresh duplicates of the
+    # same underlying topics ~25x bloat under daily reactor cadence.
+    consolidate_schema_merge_distance: float = 0.25
+    # v2 candidate-to-promotion gate. When > 1, a stage-2 K-Means cluster
+    # whose gist does not match an existing schema does NOT immediately
+    # become a durable schema; instead its gist embedding enters the
+    # persistent ``schema_candidates`` collection. A subsequent
+    # consolidate pass whose new cluster gist lands within
+    # consolidate_schema_merge_distance of that candidate bumps its hit
+    # count; promotion to a durable schema only happens once
+    # hits >= consolidate_min_recurrence. Default 2 -- under real
+    # sentence-transformer embeddings this halves mixed-topic over-
+    # absorption (eval: 2 -> 0 mixed schemas) and cuts engineered noisy-
+    # topic bloat in the sim by ~50%, with no recall@k regression. Set
+    # to 1 to disable the gate (legacy "one pass = one schema").
+    consolidate_min_recurrence: int = 2
+    # v2 candidate buffer TTL: a pending candidate that does not recur
+    # within this many consolidate passes is dropped (the episodes it
+    # would have promoted remain UNCONSOLIDATED and re-enter the next
+    # pass). Default 5 gives real-embedder workloads ~5 opportunities
+    # for the gist to recur within consolidate_schema_merge_distance,
+    # which empirically clears the bar on pass 2-3; the cap stops the
+    # buffer from growing unboundedly with one-off K-Means noise. 0
+    # disables expiry (candidates live forever).
+    consolidate_candidate_max_age: int = 5
     # CA3 iterative pattern completion (modern Hopfield, Ramsauer 2020).
     # ``recall_completion_iters > 0`` enables the iteration; each step
     # softmax-recombines stored vectors at inverse-temperature
@@ -191,11 +233,15 @@ class MemoryConfig:
     reconsolidation_min_score: float = 0.4
 
     # Habit threshold: once an edge accumulates this many reinforcements
-    # (Lally 2010 median = 66 days, here count-based and
-    # compression-invariant) it counts as a habit. Habits are NOT immune
-    # to LTD - real habits decay with disuse, just much more slowly,
-    # and they relearn faster (Ebbinghaus savings).
-    habit_threshold_hits: int = 66
+    # it counts as a habit. The unit here is per-event (plasticity.py
+    # increments hits on every reinforce call), so the neural analogue
+    # is rodent overtraining-trial counts (Smith & Graybiel 2013, CSH
+    # Persp Biol; Graybiel 2008), not Lally 2010's per-day automaticity
+    # estimate of 66 days. DLS task-bracketing patterns stabilise after
+    # hundreds of trials; 250 sits at the conservative end of that band.
+    # Habits are NOT immune to LTD - real habits decay with disuse, just
+    # much more slowly, and they relearn faster (Ebbinghaus savings).
+    habit_threshold_hits: int = 250
     # Per-real-idle-day LTD applied to non-habit edges during
     # ``memory_dream``/consolidate offline passes.
     ltd_decay_per_idle_day: float = 0.02
@@ -281,10 +327,19 @@ class MemoryConfig:
     # Reactor policy thresholds (only consulted when
     # ``self_learning_enabled``). Defaults are conservative enough that
     # small test runs do not auto-trigger consolidate or dream.
+    # consolidate_cooldown: schema consolidation in vivo runs on the
+    #   order of hours-to-days even with prior schemas (Tse et al 2007,
+    #   Science). 10 min keeps the gate above normal agent-session
+    #   length without being so loose that every burst re-fires.
+    # dream_after_idle: awake hippocampal replay fires during brief
+    #   pauses (Carr, Jadhav & Frank 2011, Nat Neurosci), not only
+    #   during sleep. 10 min matches a single user coffee-break,
+    #   keeping replay tied to agent idle windows rather than to
+    #   biological sleep-cycle gating.
     reactor_consolidate_after_novel: int = 32
-    reactor_consolidate_cooldown_seconds: float = 60.0
+    reactor_consolidate_cooldown_seconds: float = 600.0
     reactor_dream_after_events: int = 128
-    reactor_dream_after_idle_seconds: float = 1800.0
+    reactor_dream_after_idle_seconds: float = 600.0
     reactor_event_log_capacity: int = 1024
 
     # Off-policy replay during the dream pass (SWR rehearsal). Before

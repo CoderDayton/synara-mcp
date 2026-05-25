@@ -144,6 +144,7 @@ class MemoryService:
             else default_registry(
                 episodic_collection=self.config.episodic_collection,
                 semantic_collection=self.config.semantic_collection,
+                schema_candidate_collection=self.config.schema_candidate_collection,
             )
         )
         # store_embeddings=True keeps vectors at hand for cluster()/rebuild
@@ -156,6 +157,10 @@ class MemoryService:
         # ``service.episodic`` / ``service.semantic`` attribute API.
         self.episodic = self._collections[MemoryType.EPISODIC]
         self.semantic = self._collections[MemoryType.SEMANTIC]
+        # v2 candidate buffer; the collection is always wired up so
+        # toggling consolidate_min_recurrence at runtime doesn't require
+        # a schema migration. Present unconditionally on the service.
+        self.schema_candidates = self._collections[MemoryType.SCHEMA_CANDIDATE]
         self._embed = _normalise_embed_fn(embed_fn) if embed_fn is not None else None
         # Optional batch hook. Only consulted by ``vectorise`` (which
         # always has multiple texts available); ``query_arg`` and the

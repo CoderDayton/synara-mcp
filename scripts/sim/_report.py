@@ -80,13 +80,24 @@ def _svg_chart(
     *,
     color: str = "#4f46e5",
     grad_id: str = "g0",
+    post_value: float | None = None,
 ) -> str:
     """One self-contained SVG line chart with gradient under-fill, 3-tick
-    axes, and an inline last-value annotation."""
+    axes, and an inline last-value annotation.
+
+    ``post_value`` (optional) draws a dashed horizontal reference line at
+    the post-terminal-forget value of the same metric, plus a "post: N"
+    annotation. Makes it visually obvious that the rising sampled series
+    is anti-phase with the post-forget snapshot — e.g. an episodic-store
+    chart peaking at 925 with a dashed line at 24 stops looking like a
+    contradiction and starts looking like the sampling artefact it is.
+    """
     pad_l, pad_r, pad_t, pad_b = 46, 56, 38, 30
     iw, ih = _CW - pad_l - pad_r, _CH - pad_t - pad_b
     xmin, xmax = days[0], days[-1]
     ymax_raw = max(ys) if ys else 0.0
+    if post_value is not None:
+        ymax_raw = max(ymax_raw, float(post_value))
     ymax = ymax_raw if ymax_raw > 0 else 1.0
 
     def sx(d: float) -> float:
@@ -129,6 +140,17 @@ def _svg_chart(
     lx = sx(last_d) + 6
     ly = sy(last_v) + 3.5
 
+    post_marker = ""
+    if post_value is not None:
+        py = sy(float(post_value))
+        post_marker = (
+            f'<line x1="{pad_l}" y1="{py:.1f}" x2="{pad_l + iw}" y2="{py:.1f}" '
+            f'stroke="{color}" stroke-width="1.25" stroke-dasharray="4 3" '
+            'stroke-opacity="0.65"/>'
+            f'<text x="{pad_l + iw + 4:.1f}" y="{py - 4:.1f}" '
+            f'class="pv" fill="{color}">post {_html.escape(_fmt_num(float(post_value)))}</text>'
+        )
+
     return (
         f'<svg viewBox="0 0 {_CW} {_CH}" class="chart" '
         'preserveAspectRatio="xMidYMid meet" '
@@ -144,7 +166,7 @@ def _svg_chart(
         f'<polyline points="{pts}" fill="none" stroke="{color}" '
         'stroke-width="2.25" stroke-linecap="round" '
         'stroke-linejoin="round"/>'
-        f"{dots}"
+        f"{dots}{post_marker}"
         f'<text x="{lx:.1f}" y="{ly:.1f}" class="lv" fill="{color}">'
         f"{_html.escape(last_label)}</text>"
         "</svg>"
@@ -275,6 +297,8 @@ main{
   font-feature-settings:"tnum" 1}
 .lv{font-size:11px;font-weight:700;
   font-feature-settings:"tnum" 1;dominant-baseline:middle}
+.pv{font-size:9.5px;font-weight:600;letter-spacing:.02em;
+  font-feature-settings:"tnum" 1;opacity:.85}
 .table-wrap{
   grid-area:table;background:var(--surface);
   border:1px solid var(--line);border-radius:var(--r);
@@ -325,6 +349,15 @@ tbody tr{background:var(--surface)}
 tbody tr:nth-child(even){background:#fbfbfd}
 tbody tr:hover{background:var(--accent-tint)}
 tbody tr:last-child td{font-weight:600;color:var(--ink)}
+tbody tr.post-row td{
+  background:var(--accent-tint);
+  border-top:2px solid var(--accent);
+  color:var(--accent-ink);font-weight:700;
+}
+tbody tr.post-row td:first-child{
+  background:var(--accent-tint);color:var(--accent-ink);
+  text-transform:uppercase;letter-spacing:.06em;font-size:10px;
+}
 """
 
 
@@ -391,8 +424,18 @@ def render_html(
     headers: tuple[str, ...],
     meta: str,
     synthesis: list[str],
+    post: Snapshot | None = None,
 ) -> str:
-    """Assemble a dependency-free HTML report (inline SVG + table)."""
+    """Assemble a dependency-free HTML report (inline SVG + table).
+
+    ``post`` is the post-terminal-forget snapshot. When provided, every
+    chart gets a dashed reference line for its metric's retained value,
+    and a clearly labelled "post-forget" row is appended to the table.
+    The sampled series in ``rows`` is recorded BEFORE each forget pass
+    (so chart peaks reflect mid-cycle highs); ``post`` is the AFTER
+    state. Surfacing both side-by-side removes the "925 -> 24" reading
+    ambiguity flagged in the metric-separability review.
+    """
     days = [r.day for r in rows]
     specs: list[tuple[str, str, str]] = [
         ("Episodic store", "epis", "#4f46e5"),
@@ -414,6 +457,7 @@ def render_html(
             [float(getattr(r, attr)) for r in rows],
             color=col,
             grad_id=f"grad{i}",
+            post_value=(float(getattr(post, attr)) if post is not None else None),
         )
         for i, (t, attr, col) in enumerate(specs)
     )
@@ -421,6 +465,15 @@ def render_html(
     body = "".join(
         "<tr>" + "".join(f"<td>{_fmt_cell(v)}</td>" for v in r.as_row()) + "</tr>" for r in rows
     )
+    if post is not None:
+        # Replace the day cell with a "post" label; the rest of the row
+        # is the post-terminal-forget snapshot in the same column order.
+        post_cells = "".join(f"<td>{_fmt_cell(v)}</td>" for v in post.as_row()[1:])
+        body += (
+            '<tr class="post-row" title="Post-terminal-forget snapshot">'
+            "<td><b>post</b></td>"
+            f"{post_cells}</tr>"
+        )
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
