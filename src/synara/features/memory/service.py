@@ -129,6 +129,12 @@ class MemoryService:
         # consolidate() call can otherwise interleave their
         # consolidated_into metadata writes on the same episodes.
         self._consolidate_lock = asyncio.Lock()
+        # Serializes dream replay: back-to-back event triggers spanning
+        # the idle threshold can otherwise fire two LTD passes that
+        # double-apply decay or race on the same plasticity edge
+        # snapshot. The dream reactor is best-effort background work,
+        # so the second contender simply waits its turn.
+        self._dream_lock = asyncio.Lock()
         # Memory-type registry: explicit override beats the two
         # ``*_collection`` config fields. Collections are materialised
         # in registration order, so additional kinds just need a spec.
@@ -285,8 +291,9 @@ class MemoryService:
         same high-priority trace fold it durable via L-LTP.
         """
         t = _now_real()
-        pruned = await self._plasticity.ltd_pass(now=t)
-        replayed = await _replay_mod.run(self, now=t)
+        async with self._dream_lock:
+            pruned = await self._plasticity.ltd_pass(now=t)
+            replayed = await _replay_mod.run(self, now=t)
         await self._emit(
             "dream",
             session_id=None,
@@ -401,17 +408,24 @@ class MemoryService:
         # Atomic delta on the counter so concurrent recalls cannot lose
         # increments; the timestamp + history list are last-write-wins
         # which is fine — losing a stale timestamp is bounded loss.
-        await self.episodic.increment_metadata(doc_id, {"retrieval_count": 1})
-        await self.episodic.update_metadata(
-            [
-                (
-                    doc_id,
-                    {
-                        "last_accessed": now,
-                        "access_history": history,
-                    },
-                )
-            ]
+        #
+        # The two writes target disjoint keys so their order is
+        # irrelevant; ``asyncio.gather`` lets them run concurrently
+        # rather than serializing two ``to_thread`` round-trips per
+        # recall hit (k hits per recall, so the savings compound).
+        await asyncio.gather(
+            self.episodic.increment_metadata(doc_id, {"retrieval_count": 1}),
+            self.episodic.update_metadata(
+                [
+                    (
+                        doc_id,
+                        {
+                            "last_accessed": now,
+                            "access_history": history,
+                        },
+                    )
+                ]
+            ),
         )
 
     async def fetch_episode_group(
@@ -636,6 +650,14 @@ class MemoryService:
             raise ValidationError("confidence must be in [0, 1]")
         if not kind or not kind.strip():
             raise ValidationError("kind must be non-empty")
+        if self.config.max_tags and tags is not None and len(tags) > self.config.max_tags:
+            raise ValidationError(f"too many tags (>{self.config.max_tags})")
+        if self.config.max_tag_chars and tags is not None:
+            for tag in tags:
+                if isinstance(tag, str) and len(tag) > self.config.max_tag_chars:
+                    raise ValidationError(
+                        f"tag exceeds max_tag_chars ({self.config.max_tag_chars})"
+                    )
 
         now = now_seconds()
         tag_list = sorted({t for t in (tags or []) if isinstance(t, str) and t})

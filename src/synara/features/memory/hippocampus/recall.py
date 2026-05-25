@@ -20,6 +20,7 @@ import numpy as np
 from synara.core.errors import ValidationError
 
 from ..service import now_seconds
+from ..tracing import current_context as _trace_current
 from ..tracing import record_span as _trace_span
 from . import complete as _complete_mod
 
@@ -360,4 +361,15 @@ async def _sr_rank_keys(
         # corrupt SR row) would make ``sort`` undefined. Push offenders
         # to the end deterministically.
         keys[(doc_id, src)] = rank if math.isfinite(rank) else math.inf
+    _ctx = _trace_current()
+    if _ctx is not None and _ctx.enabled:
+        _ctx.add_event(
+            "sr_rank.decomposition",
+            anchor_id=int(anchor_id),
+            omega=float(omega),
+            sr_boost_nonzero=sum(1 for v in sr_boost.values() if v),
+            spread_nonzero=sum(1 for v in spread.values() if v),
+            same_session_bonus=same_sess_bonus if use_context else 0.0,
+            episodic_candidates=len(episodic_hits),
+        )
     return keys

@@ -179,20 +179,26 @@ class PlasticityGraph:
             },
         )
 
-    async def ltd_pass(self, *, now: float) -> int:
+    async def ltd_pass(self, *, now: float, max_scan: int | None = None) -> int:
         """Decay weights for non-recently-touched edges; prune dead ones.
 
-        The pass loads every plasticity edge and is bounded in practice
-        by ``prune_floor`` deletion: edges that fall below the floor
-        (and are not habits) are removed each cycle, so the table size
-        is self-limiting in the steady state. A hard scan limit would
-        starve oldest-touched edges (the ones most in need of LTD)
-        because ``get_edges`` orders by ``last_touch DESC``.
+        Steady-state memory is bounded by ``prune_floor`` deletion:
+        edges that fall below the floor (and are not habits) are removed
+        each cycle, so the table is self-limiting in production. The
+        ``max_scan`` parameter is a defensive cap for pathological
+        tables (cold start, very long run without dreams) — ``None``
+        preserves the original semantics. A hard cap *will* starve the
+        *least-recently-touched* edges in that pass (``get_edges``
+        orders by ``last_touch DESC``, and we cannot easily filter on
+        virtual time here: the catalog column tracks wall clock, while
+        ``ltd_pass(now=...)`` is called with the same virtual clock the
+        rest of the system uses). Operators who regularly hit this cap
+        should raise it rather than lowering it.
         """
         rate = self.ltd_decay_per_idle_day
         if rate <= 0.0:
             return 0
-        edges = await self._coll.get_edges(kind=self.kind)
+        edges = await self._coll.get_edges(kind=self.kind, limit=max_scan)
         pruned = 0
         for e in edges:
             md = dict(e.metadata or {})
@@ -284,9 +290,21 @@ class PlasticityGraph:
         best: dict[int, float] = {anchor: 1.0}
         frontier: dict[int, float] = {anchor: 1.0}
         for _ in range(hops):
+            # Fan out per-frontier-node ``get_edges`` calls concurrently.
+            # simplevecdb's edge catalog has no IN-filter on ``src_id``,
+            # so a single batched query isn't expressible — but each
+            # call routes through ``to_thread``, and ``asyncio.gather``
+            # lets the work pipeline through the executor instead of
+            # paying per-node await latency. The catalog's RLock still
+            # serializes the SQL, so this scales hop fan-out *latency*,
+            # not throughput.
+            keys = list(frontier.keys())
+            results = await asyncio.gather(
+                *(self._coll.get_edges(src=k, kind=self.kind) for k in keys),
+            )
             next_frontier: dict[int, float] = {}
-            for k, ak in frontier.items():
-                edges = await self._coll.get_edges(src=k, kind=self.kind)
+            for k, edges in zip(keys, results, strict=True):
+                ak = frontier[k]
                 for e in edges:
                     w = float(e.weight)
                     if w <= 0.0:

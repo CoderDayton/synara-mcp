@@ -58,6 +58,9 @@ class MemoryConfig:
     # 0 disables the respective cap.
     max_content_chars: int = 50_000
     max_tags: int = 64
+    # Cap on each individual tag string. Unbounded tag values bloat
+    # metadata scans and the durable row payload. 0 disables the cap.
+    max_tag_chars: int = 256
     # Cap on caller-requested result count (recall / reflect / semantic
     # recall). Unbounded k lets a client force an arbitrarily large
     # vector-DB fetch + result allocation. 0 disables the cap.

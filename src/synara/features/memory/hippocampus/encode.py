@@ -26,6 +26,38 @@ from ..service import UNCONSOLIDATED, now_seconds
 from .segment import split_into_segments
 from .separate import jaccard as _dg_jaccard
 
+# Reserved meta keys: signals returned by SignalRegistry.derive() must not
+# clobber these. A custom registry that emits e.g. "session_id" or
+# "consolidated_into" would otherwise corrupt provenance, retrieval
+# counts, or consolidation state.
+_RESERVED_META_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "session_id",
+        "tags",
+        "salience",
+        "encoded_at",
+        "last_accessed",
+        "retrieval_count",
+        "access_history",
+        "consolidated_into",
+        "dg_support",
+        "position_in_episode",
+        "segment_count",
+        "episode_group_id",
+        "drift_total",
+        "drift_locked",
+        "last_reconsolidated_at",
+    }
+)
+
+
+def _safe_signals(signals: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if signals is None:
+        return None
+    return {k: v for k, v in signals.items() if k not in _RESERVED_META_KEYS}
+
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..config import MemoryConfig
     from ..port import MemoryServicePort as MemoryService
@@ -49,6 +81,10 @@ def _check_input_caps(
         )
     if cfg.max_tags and tags is not None and len(tags) > cfg.max_tags:
         raise ValidationError(f"too many tags (>{cfg.max_tags})")
+    if cfg.max_tag_chars and tags is not None:
+        for tag in tags:
+            if len(tag) > cfg.max_tag_chars:
+                raise ValidationError(f"tag exceeds max_tag_chars ({cfg.max_tag_chars})")
 
 
 async def run(
@@ -254,8 +290,9 @@ async def _insert_single(
     }
     if dg_support:
         meta["dg_support"] = list(dg_support)
-    if signals is not None:
-        meta.update(signals)
+    safe = _safe_signals(signals)
+    if safe:
+        meta.update(safe)
     ids = await service.episodic.add_texts([content], metadatas=[meta], embeddings=new_embs)
     new_id = int(ids[0])
     await service.episodic.update_metadata([(new_id, {"id": new_id})])
@@ -303,8 +340,9 @@ async def _insert_segmented(
         }
         if group_id is not None:
             seg_meta["episode_group_id"] = group_id
-        if signals is not None:
-            seg_meta.update(signals)
+        safe = _safe_signals(signals)
+        if safe:
+            seg_meta.update(safe)
         seg_emb_arg = [segment_embs[pos]] if segment_embs is not None else None
         ids = await service.episodic.add_texts([seg], metadatas=[seg_meta], embeddings=seg_emb_arg)
         seg_id = int(ids[0])

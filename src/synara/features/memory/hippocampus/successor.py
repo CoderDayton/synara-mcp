@@ -25,11 +25,11 @@ When an ``AsyncVectorCollection`` is attached via :meth:`attach`, the
 transition tally ``T_{ij}`` is persisted to ``coll.edges`` under
 ``kind="sr"`` (count stored in the ``hits`` column). On startup
 ``load()`` rehydrates ``T`` from disk and rebuilds ``M`` by replaying
-one TD pass per stored edge. ``M`` itself is not persisted — it is a
+two TD passes per stored edge. ``M`` itself is not persisted — it is a
 fast, derivable ranking prior, and persisting it would require an
 upsert per row-key touched by every TD step. The in-memory window
-state (``_sessions``) is intentionally not persisted: it is a
-short-lived recency queue, not part of the relational graph.
+state is intentionally not persisted: it is a short-lived global
+recency queue, not part of the relational graph.
 """
 
 from __future__ import annotations
@@ -50,9 +50,8 @@ _log = logging.getLogger(__name__)
 # accesses share one observation window so episodes co-occurring across
 # sessions fold into T by the exact same rule as intra-session ones —
 # the store is one interconnected graph, not per-session islands. The
-# session_id arg is retained for call-site compatibility but no longer
-# keys the window.
-_GLOBAL_WINDOW = ""
+# ``session_id`` arg on observe* is retained for call-site clarity
+# (recall passes the caller's session) but no longer keys the window.
 
 
 @dataclass(slots=True)
@@ -83,11 +82,16 @@ class SuccessorRepresentation:
         self._T_counts: dict[int, dict[int, float]] = defaultdict(lambda: defaultdict(float))
         self._T_row_sum: dict[int, float] = defaultdict(float)
         self._M: dict[int, dict[int, float]] = defaultdict(lambda: defaultdict(float))
-        self._sessions: dict[str, _Window] = {}
+        self._window: _Window = _Window()
         self._total_edges: float = 0.0
         self._coll: AsyncVectorCollection | None = None
         self._loaded: bool = False
-        self._load_lock: asyncio.Lock | None = None
+        # Eager Lock binding (Python 3.13: ``asyncio.Lock()`` does not
+        # bind to an event loop until first use, so this is safe in
+        # __post_init__). Avoids the lazy-create-then-acquire pattern
+        # which is brittle to future refactors that insert ``await``
+        # between the None-check and the assignment.
+        self._load_lock: asyncio.Lock = asyncio.Lock()
         self._pending: set[tuple[int, int]] = set()
 
     # ------------------------------------------------------------ persistence
@@ -108,8 +112,6 @@ class SuccessorRepresentation:
         """
         if self._loaded:
             return
-        if self._load_lock is None:
-            self._load_lock = asyncio.Lock()
         async with self._load_lock:
             if self._loaded:
                 return
@@ -125,11 +127,15 @@ class SuccessorRepresentation:
                 self._T_counts[i][j] = count
                 self._T_row_sum[i] += count
                 self._total_edges += count
-            # Rebuild M from T via one TD pass per stored edge. Order
+            # Rebuild M from T via two TD passes per stored edge. Order
             # is whatever the collection returned; M converges with
-            # repeated exposures so a single pass is an approximation.
-            for i, row in list(self._T_counts.items()):
-                for j in list(row.keys()):
+            # repeated exposures, so a second sweep meaningfully tightens
+            # the approximation of the discounted closure without the
+            # cost of a full Bellman solve. Two passes is the empirical
+            # knee where successive sweeps stop materially moving rows.
+            pass_items = [(i, j) for i, row in self._T_counts.items() for j in row]
+            for _ in range(2):
+                for i, j in pass_items:
                     self._td_update(i, j)
             self._loaded = True
 
@@ -181,7 +187,7 @@ class SuccessorRepresentation:
         fold into T and propagate through M via TD(0). Edge changes are
         queued for the next :meth:`flush` call.
         """
-        win = self._sessions.setdefault(_GLOBAL_WINDOW, _Window())
+        win = self._window
         cutoff = t - self.window_seconds
         while win.queue and win.queue[0][1] < cutoff:
             win.queue.popleft()
@@ -203,7 +209,7 @@ class SuccessorRepresentation:
         Anchor enters the in-session window for future chain edges.
         Avoids the n*(n-1)/2 inflation a naive pairwise loop produces.
         """
-        win = self._sessions.setdefault(_GLOBAL_WINDOW, _Window())
+        win = self._window
         cutoff = t - self.window_seconds
         while win.queue and win.queue[0][1] < cutoff:
             win.queue.popleft()
@@ -279,8 +285,8 @@ class SuccessorRepresentation:
         Required when the underlying episode documents are deleted while
         the process is live: ``coll.edges`` has an ``ON DELETE CASCADE``
         FK to documents, so durable SR edges vanish with the doc — but a
-        lingering ``_pending`` entry, ``_T`` row/column, or ``_sessions``
-        window referencing a now-deleted id would make the next
+        lingering ``_pending`` entry, ``_T`` row/column, or window entry
+        referencing a now-deleted id would make the next
         :meth:`flush` upsert a FK-violating edge. Removes outgoing rows,
         incoming columns, the ``M`` row/column, queued pending pairs, and
         window entries; ``_total_edges`` is decremented by the removed
@@ -304,10 +310,10 @@ class SuccessorRepresentation:
                 mrow.pop(x, None)
         self._total_edges = max(self._total_edges, 0.0)
         self._pending = {(i, j) for (i, j) in self._pending if i not in ids and j not in ids}
-        for win in self._sessions.values():
-            kept = [(e, t) for (e, t) in win.queue if e not in ids]
-            win.queue.clear()
-            win.queue.extend(kept)
+        win = self._window
+        kept = [(e, t) for (e, t) in win.queue if e not in ids]
+        win.queue.clear()
+        win.queue.extend(kept)
 
     def _reset_for_tests(self, **kwargs: Any) -> None:  # pragma: no cover
         """Reset in-memory state (test helper, not used in production)."""
