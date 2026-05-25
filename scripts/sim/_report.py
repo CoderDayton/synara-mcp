@@ -142,48 +142,77 @@ _CSS = """
   --bg:#f6f7f9;--surface:#fff;--text:#1a1d23;--dim:#6c757d;
   --border:#e7eaef;--border-strong:#d6dbe2;--accent:#4c6ef5;
   --shadow:0 1px 2px rgba(0,0,0,.04),0 1px 6px rgba(0,0,0,.03);
+  --pad:10px;
 }
 *{box-sizing:border-box}
-body{font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
-  margin:0;background:var(--bg);color:var(--text);
-  font-feature-settings:"tnum" 1,"cv11" 1;}
-.wrap{max-width:1320px;margin:0 auto;padding:32px 24px 56px}
-header{margin-bottom:28px}
-h1{font-size:26px;margin:0 0 6px;letter-spacing:-0.012em;font-weight:700}
-h1 .pill{display:inline-block;font-size:12px;font-weight:600;
-  letter-spacing:.04em;padding:3px 8px;border-radius:999px;
-  background:#e8edff;color:#3247a8;margin-left:10px;vertical-align:middle}
-.caption{color:var(--dim);margin:0;font-size:13.5px;max-width:980px}
-h2{font-size:11.5px;text-transform:uppercase;letter-spacing:.10em;
-  color:var(--dim);font-weight:700;margin:34px 0 12px}
-.highlights{display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:12px}
+html,body{height:100%;margin:0;overflow:hidden}
+body{font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;
+  background:var(--bg);color:var(--text);
+  font-feature-settings:"tnum" 1,"cv11" 1;
+  display:grid;grid-template-rows:auto 1fr;height:100dvh}
+header{padding:8px 14px;border-bottom:1px solid var(--border);
+  background:var(--surface);display:flex;align-items:baseline;
+  gap:14px;flex-wrap:wrap}
+h1{font-size:17px;margin:0;letter-spacing:-0.012em;font-weight:700}
+h1 .pill{display:inline-block;font-size:10.5px;font-weight:600;
+  letter-spacing:.04em;padding:2px 7px;border-radius:999px;
+  background:#e8edff;color:#3247a8;margin-left:8px;vertical-align:middle}
+.caption{color:var(--dim);margin:0;font-size:12px;flex:1;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+main{display:grid;gap:var(--pad);padding:var(--pad);min-height:0;
+  grid-template-columns:minmax(0,1fr) clamp(360px,26vw,520px);
+  grid-template-rows:auto minmax(0,1fr);
+  grid-template-areas:"cards table" "charts table"}
+@media (max-width:1280px){
+  main{grid-template-columns:1fr;
+    grid-template-rows:auto minmax(0,1.4fr) minmax(0,1fr);
+    grid-template-areas:"cards" "charts" "table"}
+}
+@media (min-width:2400px){
+  main{grid-template-columns:minmax(0,1fr) clamp(440px,22vw,640px)}
+}
+.cards{grid-area:cards;display:grid;gap:6px;min-width:0;
+  grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  grid-auto-rows:1fr;align-content:start}
 .card{background:var(--surface);border:1px solid var(--border);
-  border-left:3px solid var(--accent);border-radius:10px;
-  padding:12px 16px;box-shadow:var(--shadow)}
-.card-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;
-  color:var(--dim);font-weight:700;margin-bottom:4px}
-.card-body{font-size:13.5px;line-height:1.5;color:var(--text)}
-.charts{display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:14px}
+  border-left:3px solid var(--accent);border-radius:7px;
+  padding:5px 9px;box-shadow:var(--shadow);min-width:0;overflow:hidden}
+.card-label{font-size:9px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--dim);font-weight:700;margin-bottom:1px}
+.card-body{font-size:11px;line-height:1.3;color:var(--text);
+  display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:2;overflow:hidden}
+.card:hover{z-index:10;position:relative}
+.card:hover .card-body{-webkit-line-clamp:unset;overflow:visible}
+.charts{grid-area:charts;display:grid;gap:8px;min-height:0;min-width:0;
+  grid-template-columns:repeat(auto-fit,minmax(clamp(240px,12.5%,480px),1fr));
+  grid-auto-rows:auto;align-content:center;justify-content:stretch;
+  overflow:hidden}
 .chart{background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;box-shadow:var(--shadow);display:block}
+  border-radius:8px;box-shadow:var(--shadow);display:block;
+  width:100%;height:auto;aspect-ratio:11/6;max-height:100%;
+  min-width:0}
 .ct{font-size:13px;font-weight:600;fill:var(--text)}
 .gl{stroke:var(--border);stroke-width:1;stroke-dasharray:2,3}
 .tk{font-size:10.5px;fill:var(--dim)}
-.table-wrap{background:var(--surface);border:1px solid var(--border);
-  border-radius:10px;box-shadow:var(--shadow);overflow:auto;
-  max-height:600px}
-table{width:100%;border-collapse:collapse;font-size:12.5px;
+.table-wrap{grid-area:table;background:var(--surface);
+  border:1px solid var(--border);border-radius:8px;
+  box-shadow:var(--shadow);overflow:auto;min-height:0;min-width:0}
+table{width:100%;border-collapse:collapse;font-size:11.5px;
   font-variant-numeric:tabular-nums}
-thead th{background:#f1f3f7;padding:8px 12px;text-align:right;
+thead th{background:#f1f3f7;padding:6px 8px;text-align:right;
   font-weight:600;color:var(--dim);
   border-bottom:1px solid var(--border-strong);position:sticky;top:0;
-  font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
-thead th:first-child{text-align:left}
-tbody td{padding:6px 12px;text-align:right;
-  border-top:1px solid var(--border);font-variant-numeric:tabular-nums}
-tbody td:first-child{text-align:left;color:var(--dim);font-weight:600}
+  font-size:10px;text-transform:uppercase;letter-spacing:.04em;
+  z-index:1}
+thead th:first-child{text-align:left;position:sticky;left:0;
+  background:#f1f3f7;z-index:2}
+tbody td{padding:4px 8px;text-align:right;
+  border-top:1px solid var(--border);font-variant-numeric:tabular-nums;
+  white-space:nowrap}
+tbody td:first-child{text-align:left;color:var(--dim);font-weight:600;
+  position:sticky;left:0;background:inherit}
+tbody tr{background:var(--surface)}
 tbody tr:nth-child(even){background:#fafbfc}
 tbody tr:hover{background:#eef2ff}
 """
@@ -238,17 +267,17 @@ def render_html(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>synara self-learning sim</title>"
-        f'<style>{_CSS}</style></head><body><div class="wrap">'
+        f"<style>{_CSS}</style></head><body>"
         "<header>"
-        '<h1>synara <span class="pill">self-learning sim</span></h1>'
-        f'<p class="caption">{_html.escape(meta)}</p>'
+        '<h1>synara<span class="pill">self-learning sim</span></h1>'
+        f'<p class="caption" title="{_html.escape(meta)}">{_html.escape(meta)}</p>'
         "</header>"
-        "<h2>Highlights</h2>"
-        f'<div class="highlights">{_synthesis_cards(synthesis)}</div>'
-        "<h2>Trends</h2>"
-        f'<div class="charts">{charts}</div>'
-        "<h2>Snapshots</h2>"
-        f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
-        f"<tbody>{body}</tbody></table></div>"
-        "</div></body></html>"
+        "<main>"
+        f'<section class="cards" aria-label="Highlights">'
+        f"{_synthesis_cards(synthesis)}</section>"
+        f'<section class="charts" aria-label="Trends">{charts}</section>'
+        '<section class="table-wrap" aria-label="Snapshots">'
+        f"<table><thead><tr>{head}</tr></thead>"
+        f"<tbody>{body}</tbody></table></section>"
+        "</main></body></html>"
     )
