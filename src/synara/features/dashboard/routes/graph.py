@@ -221,7 +221,27 @@ def _attach_closure(sr: Any, sr_edges: list[dict[str, Any]]) -> None:
         e["m"] = float(m_by_src[e["src"]].get(e["dst"], 0.0))
 
 
-def _episodic_node(nid: int, text: str, md: dict[str, Any], focus: int | None) -> dict[str, Any]:
+def _embedding_payload(vec: Any) -> list[float] | None:
+    """Convert a stored embedding to a JSON-safe list, rounded to keep
+    the wire payload small. The dashboard projects these into 2D for the
+    memory map (UMAP), so a few digits of precision is plenty — the
+    geometry of the embedding manifold is preserved either way."""
+    if vec is None:
+        return None
+    try:
+        seq = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+    except Exception:
+        return None
+    return [round(float(x), 5) for x in seq]
+
+
+def _episodic_node(
+    nid: int,
+    text: str,
+    md: dict[str, Any],
+    focus: int | None,
+    embedding: Any,
+) -> dict[str, Any]:
     return {
         "id": nid,
         "key": f"ep:{nid}",
@@ -237,6 +257,7 @@ def _episodic_node(nid: int, text: str, md: dict[str, Any], focus: int | None) -
         "segment_count": int(md.get("segment_count", 1)),
         "preview": _preview(text),
         "is_focus": focus is not None and nid == int(focus),
+        "embedding": _embedding_payload(embedding),
     }
 
 
@@ -248,10 +269,14 @@ async def _semantic_overlay(
     """Schema nodes + episode→schema consolidation edges."""
     if not schema_ids:
         return [], []
-    sdocs = await _docs_by_id(service.semantic, sorted(schema_ids))
+    sorted_ids = sorted(schema_ids)
+    sdocs, sembeds = await asyncio.gather(
+        _docs_by_id(service.semantic, sorted_ids),
+        service.semantic.get_embeddings_by_ids(sorted_ids),
+    )
     full_at = max(1, int(service.config.consolidate_confidence_full_at))
     nodes: list[dict[str, Any]] = []
-    for sid in sorted(schema_ids):
+    for sid in sorted_ids:
         text, md = sdocs.get(sid, ("", {}))
         sources = [int(x) for x in md.get("source_episode_ids", [])]
         nodes.append(
@@ -264,6 +289,7 @@ async def _semantic_overlay(
                 "source_count": len(sources),
                 "user_asserted": bool(md.get("user_asserted", False)),
                 "preview": _preview(text),
+                "embedding": _embedding_payload(sembeds.get(sid)),
             }
         )
     edges = [
@@ -300,9 +326,19 @@ async def sr_graph(
     omega = float(sr.omega(episode_count)) if sr is not None else 0.0
     _attach_closure(sr, sr_edges)
 
-    # Episodic enrichment + semantic schema overlay.
-    docs = await _docs_by_id(coll, sorted(nodes))
-    node_objs = [_episodic_node(nid, *docs.get(nid, ("", {})), focus) for nid in sorted(nodes)]
+    # Episodic enrichment + semantic schema overlay. Embeddings ride along
+    # so the dashboard can project them into 2D (UMAP) for a semantic map
+    # — mirrors the hippocampal cognitive-map literature where memories
+    # live as positions in an abstract space.
+    sorted_nodes = sorted(nodes)
+    docs, ep_embeds = await asyncio.gather(
+        _docs_by_id(coll, sorted_nodes),
+        coll.get_embeddings_by_ids(sorted_nodes),
+    )
+    node_objs = []
+    for nid in sorted_nodes:
+        text, md = docs.get(nid, ("", {}))
+        node_objs.append(_episodic_node(nid, text, md, focus, ep_embeds.get(nid)))
     schema_ids = {c for _t, md in docs.values() if (c := int(md.get("consolidated_into", 0))) > 0}
     schema_nodes, consolidation_edges = await _semantic_overlay(service, docs, schema_ids)
     node_objs.extend(schema_nodes)

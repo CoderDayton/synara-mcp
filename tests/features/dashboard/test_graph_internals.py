@@ -65,6 +65,9 @@ class _FakeColl:
             ids = [ids]
         return [(doc_id, *self._docs[doc_id]) for doc_id in ids if doc_id in self._docs]
 
+    async def get_embeddings_by_ids(self, ids: list[int]) -> dict[int, Any]:
+        return {}
+
 
 # ---------------------------------------------------------- _global_sr cap
 async def test_global_sr_skips_edges_when_cap_reached_and_src_not_seen() -> None:

@@ -206,6 +206,12 @@ export interface EpisodicGraphNode {
   segment_count: number;
   preview: string;
   is_focus: boolean;
+  /** Stored embedding vector for this episode. The dashboard projects
+   *  these into 2D (UMAP) for the memory map so positions reflect
+   *  semantic locality — the hippocampal cognitive-map analogue.
+   *  Null when the server is pre-enrichment, or when the episode was
+   *  stored without an embedder configured. */
+  embedding: number[] | null;
 }
 
 export interface SemanticGraphNode {
@@ -217,6 +223,7 @@ export interface SemanticGraphNode {
   source_count: number;
   user_asserted: boolean;
   preview: string;
+  embedding: number[] | null;
 }
 
 export type GraphNode = EpisodicGraphNode | SemanticGraphNode;
@@ -300,10 +307,15 @@ function normalizeNode(raw: unknown, i: number): GraphNode {
       segment_count: 1,
       preview: "",
       is_focus: false,
+      embedding: null,
     };
   }
   const o = (raw ?? {}) as Record<string, unknown>;
   const id = num(o.id, i);
+  const embedding =
+    Array.isArray(o.embedding) && o.embedding.every((x) => typeof x === "number")
+      ? o.embedding
+      : null;
   if (o.kind === "semantic") {
     return {
       id,
@@ -314,6 +326,7 @@ function normalizeNode(raw: unknown, i: number): GraphNode {
       source_count: num(o.source_count),
       user_asserted: o.user_asserted === true,
       preview: typeof o.preview === "string" ? o.preview : "",
+      embedding,
     };
   }
   return {
@@ -331,6 +344,7 @@ function normalizeNode(raw: unknown, i: number): GraphNode {
     segment_count: num(o.segment_count, 1),
     preview: typeof o.preview === "string" ? o.preview : "",
     is_focus: o.is_focus === true,
+    embedding,
   };
 }
 
