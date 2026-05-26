@@ -218,9 +218,25 @@ export default function Memories() {
           </Button>
         </form>
 
-        {/* Top-right: focus controls — depth + reset, only shown when relevant */}
+        {/* Top-right: focus controls — depth + reset, only shown when
+         *  relevant. The inspector covers the right edge at three
+         *  breakpoints:
+         *   - <sm: inspector is w-full → reset would be fully buried,
+         *     so we hide it (the inspector's own close button lets the
+         *     user dismiss the panel first).
+         *   - sm–lg: inspector is a 22rem absolute panel → shift the
+         *     reset left of it.
+         *   - lg+: inspector is static and pushes the graph; the
+         *     graph's own right edge is where right-4 lands. */}
         {showReset && (
-          <div className="absolute top-3 right-3 z-20 flex items-center gap-1 rounded-lg border border-border/70 bg-surface-overlay p-1 shadow-card backdrop-blur sm:top-4 sm:right-4">
+          <div
+            className={
+              "absolute top-3 z-40 flex items-center gap-1 rounded-lg border border-border/70 bg-surface-overlay p-1 shadow-card backdrop-blur sm:top-4 " +
+              (selected
+                ? "hidden sm:flex sm:right-[calc(22rem+1rem)] lg:right-4"
+                : "right-3 sm:right-4")
+            }
+          >
             <Button
               type="button"
               variant="ghost"
