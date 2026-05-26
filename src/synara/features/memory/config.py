@@ -280,6 +280,13 @@ class MemoryConfig:
     # Tests that need immediate consolidation pass ``=0`` overrides.
     consolidate_min_age_seconds: float = 60.0
     consolidate_min_retrievals: int = 1
+    # Salience floor for consolidate eligibility. Episodes whose
+    # ``salience`` is strictly below this value are skipped, preventing
+    # low-salience noise from accumulating enough co-occurrence over
+    # repeated runs to form durable schema clusters. Default matches the
+    # ``derive_salience`` neutral base (0.3) so any episode at or above
+    # the neutral baseline still consolidates; set to 0.0 to disable.
+    consolidate_min_salience: float = 0.3
     # Schema-margin replay weighting. The consolidation pass scores each
     # unconsolidated episode by ``strength * d1 / (1 + beta * margin)``,
     # where ``d1`` is the cosine distance to the nearest schema and
@@ -317,11 +324,13 @@ class MemoryConfig:
     auto_signal_metadata: bool = True
 
     # Substitute a structurally-derived salience when the caller omits
-    # one (``encode_episode(..., salience=None)``). Off by default — when
-    # on, the encoder calls ``derive_salience(derive_signals(content),
+    # one (``encode_episode(..., salience=None)``). On by default — the
+    # encoder calls ``derive_salience(derive_signals(content),
     # base=auto_salience_base)`` so failure / diff / decision records
-    # float to the top without per-call tuning.
-    auto_salience: bool = False
+    # float to the top without per-call tuning. The neutral base matches
+    # ``consolidate_min_salience`` so untagged auto-derived episodes sit
+    # at the consolidate boundary; signalled content lifts above it.
+    auto_salience: bool = True
     auto_salience_base: float = 0.3
 
     # Reactor policy thresholds (only consulted when
@@ -350,7 +359,11 @@ class MemoryConfig:
     # (McGaugh arousal modulation). ``dream_replay_top_k=0`` disables
     # replay (LTD-only dream, the legacy behaviour).
     dream_replay_top_k: int = 16
-    dream_replay_min_salience: float = 0.0
+    # Salience floor for dream-replay rehearsal. Mirrors
+    # ``consolidate_min_salience`` (0.3 = ``derive_salience`` neutral
+    # base) so low-salience noise is not rehearsed into durable
+    # associations during SWR replay. Set to 0.0 to disable.
+    dream_replay_min_salience: float = 0.3
     dream_replay_gain: float = 0.3
     # Per-cycle scan size for dream replay. ``get_documents`` orders by
     # id, so a fixed ``limit`` would always return the oldest episodes

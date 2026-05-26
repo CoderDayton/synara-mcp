@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any
 from synara.core.errors import ValidationError
 
 from ..service import UNCONSOLIDATED, now_seconds
-from .forget import memory_strength
+from .forget import _DEFAULT_SALIENCE, memory_strength
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..config import MemoryConfig
@@ -356,21 +356,31 @@ def _apply_eligibility_gates(
     cfg: MemoryConfig,
     candidates: list[tuple[int, str, dict[str, Any]]],
 ) -> list[tuple[int, str, dict[str, Any]]]:
-    """Skip episodes too young or too rarely retrieved to be schema fodder.
+    """Skip episodes too young, too rarely retrieved, or too faint to be schema fodder.
 
-    Mirrors the day-to-week ramp of HC->cortex handover. Defaults are
-    0/0 (no gate) so existing call patterns are unaffected.
+    Mirrors the day-to-week ramp of HC->cortex handover. The salience
+    floor prevents low-salience noise from forming durable clusters once
+    given enough re-runs; missing-salience defaults to the neutral base
+    (matches ``forget._DEFAULT_SALIENCE``) so legacy episodes are not
+    prune-on-sight.
     """
-    if cfg.consolidate_min_age_seconds <= 0 and cfg.consolidate_min_retrievals <= 0:
+    if (
+        cfg.consolidate_min_age_seconds <= 0
+        and cfg.consolidate_min_retrievals <= 0
+        and cfg.consolidate_min_salience <= 0
+    ):
         return candidates
     now_for_gate = now_seconds()
     eligible: list[tuple[int, str, dict[str, Any]]] = []
     for ep_id, text, md in candidates:
         age = now_for_gate - float(md.get("encoded_at", now_for_gate))
         rc = int(md.get("retrieval_count", 0))
+        sal = float(md.get("salience", _DEFAULT_SALIENCE))
         if age < cfg.consolidate_min_age_seconds:
             continue
         if rc < cfg.consolidate_min_retrievals:
+            continue
+        if sal < cfg.consolidate_min_salience:
             continue
         eligible.append((ep_id, text, md))
     return eligible

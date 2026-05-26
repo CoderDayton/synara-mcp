@@ -314,3 +314,40 @@ async def test_run_returns_absorbed_formed_when_kmeans_raises_value_error(
         assert out == []
     finally:
         await db.close()
+
+
+# ============================================================ salience floor
+def test_eligibility_gate_drops_low_salience_episodes() -> None:
+    """Salience floor keeps low-salience noise from accumulating into
+    durable clusters across re-runs. Episodes at or above the floor pass;
+    below it are dropped. Missing-salience defaults to the neutral base
+    (0.3) so legacy episodes are not prune-on-sight."""
+    cfg = MemoryConfig(
+        consolidate_min_age_seconds=0.0,
+        consolidate_min_retrievals=0,
+        consolidate_min_salience=0.3,
+    )
+    candidates: list[tuple[int, str, dict[str, Any]]] = [
+        (1, "noise", {"salience": 0.1, "encoded_at": 0.0, "retrieval_count": 0}),
+        (2, "neutral", {"salience": 0.3, "encoded_at": 0.0, "retrieval_count": 0}),
+        (3, "salient", {"salience": 0.8, "encoded_at": 0.0, "retrieval_count": 0}),
+        (4, "legacy_missing", {"encoded_at": 0.0, "retrieval_count": 0}),
+    ]
+    out = cm._apply_eligibility_gates(cfg, candidates)
+    assert [ep_id for ep_id, _, _ in out] == [2, 3, 4]
+
+
+def test_eligibility_gate_disabled_returns_all() -> None:
+    """All three sub-gates at <=0 should short-circuit and return the
+    full candidate list unchanged."""
+    cfg = MemoryConfig(
+        consolidate_min_age_seconds=0.0,
+        consolidate_min_retrievals=0,
+        consolidate_min_salience=0.0,
+    )
+    candidates: list[tuple[int, str, dict[str, Any]]] = [
+        (1, "noise", {"salience": 0.0, "encoded_at": 0.0, "retrieval_count": 0}),
+        (2, "salient", {"salience": 0.9, "encoded_at": 0.0, "retrieval_count": 0}),
+    ]
+    out = cm._apply_eligibility_gates(cfg, candidates)
+    assert [ep_id for ep_id, _, _ in out] == [1, 2]
