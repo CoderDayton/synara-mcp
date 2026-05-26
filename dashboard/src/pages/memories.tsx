@@ -35,21 +35,34 @@ export default function Memories() {
   const [focus, setFocus] = useState<number | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
 
-  const search = useMemories({
+  const episodicSearch = useMemories({
     kind: "episodic",
+    q: query || undefined,
+    limit: 60,
+  });
+  const semanticSearch = useMemories({
+    kind: "semantic",
     q: query || undefined,
     limit: 60,
   });
   const graph = useGraph({ depth: 1, max_nodes: 260 });
 
   const matchIds = useMemo(
-    () => (query ? recallIds(search.data) : []),
-    [search.data, query],
+    () => (query ? recallIds(episodicSearch.data) : []),
+    [episodicSearch.data, query],
   );
-  const highlight = useMemo(
-    () => new Set(matchIds.map((id) => `ep:${id}`)),
-    [matchIds],
+  const semanticMatchIds = useMemo(
+    () => (query ? recallIds(semanticSearch.data) : []),
+    [semanticSearch.data, query],
   );
+  const highlight = useMemo(() => {
+    const s = new Set<string>();
+    for (const id of matchIds) s.add(`ep:${id}`);
+    for (const id of semanticMatchIds) s.add(`sem:${id}`);
+    return s;
+  }, [matchIds, semanticMatchIds]);
+  const totalHits = matchIds.length + semanticMatchIds.length;
+  const searchError = episodicSearch.error ?? semanticSearch.error;
 
   // "Search the whole map": pan the camera to the top hit so its
   // neighbourhood is visible. Camera-only — no refetch, no relayout.
@@ -115,7 +128,7 @@ export default function Memories() {
           />
           {query && (
             <span className="shrink-0 px-1 font-mono text-[0.65rem] text-muted-foreground">
-              {matchIds.length} hit{matchIds.length === 1 ? "" : "s"}
+              {totalHits} hit{totalHits === 1 ? "" : "s"}
             </span>
           )}
           {(query || draft) && (
@@ -176,9 +189,9 @@ export default function Memories() {
               onFocus={(id) => setFocus(id)}
             />
           )}
-          {search.error && (
+          {searchError && (
             <div className="absolute right-3 bottom-3 z-20">
-              <ErrorState error={search.error} />
+              <ErrorState error={searchError} />
             </div>
           )}
         </div>
