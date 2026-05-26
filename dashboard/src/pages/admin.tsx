@@ -216,13 +216,13 @@ function ReflectCard() {
 
 export default function Admin() {
   return (
-    <div className="space-y-6 sm:space-y-8">
+    <div>
       <PageHeader
-        eyebrow="Operations"
-        title="Admin"
+        eyebrow="operations"
+        title="admin"
         subtitle="Sanctioned maintenance operations. Effects are immediate and shared with the live MCP server."
       />
-      <div className="grid grid-cols-1 items-start gap-4 md:gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2 lg:gap-4">
         <ForgetCard />
         <ConsolidateCard />
         <div className="lg:col-span-2">

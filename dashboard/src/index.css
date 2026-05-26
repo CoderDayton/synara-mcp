@@ -3,131 +3,145 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Synara dashboard design system — "refined data console".
-   Dark-first. Layered charcoal surfaces (page < card < raised),
-   low-chroma hairline borders with a top inset highlight for lift,
-   soft multi-stop shadows, a single restrained violet accent used
-   only for active nav / primary actions / focus. Body and
-   muted-foreground pairs clear WCAG 2.2 AA (>=4.5:1) on their
-   surfaces; large numerals use a tabular mono stack. */
+/* Synara dashboard — "phosphor-on-graphite" command console.
+   Near-black graphite base, layered panel surfaces, a single
+   phosphor-green signal accent for live state and primary actions,
+   amber for warnings, magenta for destructive, all data in mono.
+   Light theme is a high-contrast inversion for accessibility. */
 
 :root {
-  --radius: 0.35rem;
+  --radius: 0.25rem;
 
-  --background: oklch(0.985 0.002 286);
-  --foreground: oklch(0.2 0.006 286);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.006 286);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.2 0.006 286);
-  --primary: oklch(0.54 0.21 293);
+  --background: oklch(0.985 0.002 240);
+  --foreground: oklch(0.18 0.005 240);
+  --card: oklch(0.995 0 0);
+  --card-foreground: oklch(0.18 0.005 240);
+  --popover: oklch(0.995 0 0);
+  --popover-foreground: oklch(0.18 0.005 240);
+
+  /* Primary = phosphor green (signal). On light surfaces it shifts
+     to a deeper teal-green to keep WCAG contrast on white. */
+  --primary: oklch(0.52 0.16 152);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.965 0.004 286);
-  --secondary-foreground: oklch(0.27 0.006 286);
-  --muted: oklch(0.965 0.004 286);
-  --muted-foreground: oklch(0.48 0.006 286);
-  --accent: oklch(0.95 0.012 293);
-  --accent-foreground: oklch(0.3 0.05 293);
-  --destructive: oklch(0.58 0.22 27);
+  --secondary: oklch(0.95 0.005 240);
+  --secondary-foreground: oklch(0.22 0.006 240);
+  --muted: oklch(0.95 0.005 240);
+  --muted-foreground: oklch(0.46 0.006 240);
+  --accent: oklch(0.93 0.04 152);
+  --accent-foreground: oklch(0.28 0.08 152);
+  --destructive: oklch(0.55 0.24 0);
   --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.62 0.16 152);
-  --warning: oklch(0.72 0.16 75);
-  --border: oklch(0.9 0.004 286);
-  --input: oklch(0.92 0.004 286);
-  --ring: oklch(0.54 0.21 293);
+  --success: oklch(0.52 0.16 152);
+  --warning: oklch(0.7 0.17 75);
+  --border: oklch(0.88 0.005 240);
+  --input: oklch(0.92 0.005 240);
+  --ring: oklch(0.52 0.16 152);
 
-  /* Layered surface scale — page < canvas < card < overlay < floating.
-     `canvas` is a sunken card surface, `overlay` is sticky chrome over
-     content (header, search bars), `floating` is an active panel
-     hovering over the canvas (mobile inspector, graph controls). */
-  --surface-canvas: color-mix(in oklab, var(--card) 38%, transparent);
-  --surface-overlay: color-mix(in oklab, var(--background) 72%, transparent);
-  --surface-floating: color-mix(in oklab, var(--card) 92%, transparent);
+  --surface-canvas: color-mix(in oklab, var(--card) 92%, transparent);
+  --surface-overlay: color-mix(in oklab, var(--background) 80%, transparent);
+  --surface-floating: color-mix(in oklab, var(--card) 96%, transparent);
 
-  --chart-1: oklch(0.55 0.21 293);
-  --chart-2: oklch(0.62 0.13 195);
-  --chart-3: oklch(0.72 0.16 75);
-  --chart-4: oklch(0.6 0.18 12);
-  --chart-5: oklch(0.65 0.15 152);
+  --chart-1: oklch(0.62 0.16 152);
+  --chart-2: oklch(0.62 0.14 200);
+  --chart-3: oklch(0.7 0.17 75);
+  --chart-4: oklch(0.6 0.22 0);
+  --chart-5: oklch(0.55 0.14 285);
 
-  --sidebar: oklch(0.975 0.002 286);
-  --sidebar-foreground: oklch(0.2 0.006 286);
-  --sidebar-primary: oklch(0.54 0.21 293);
+  --sidebar: oklch(0.97 0.003 240);
+  --sidebar-foreground: oklch(0.2 0.006 240);
+  --sidebar-primary: oklch(0.52 0.16 152);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.95 0.012 293);
-  --sidebar-accent-foreground: oklch(0.3 0.05 293);
-  --sidebar-border: oklch(0.9 0.004 286);
-  --sidebar-ring: oklch(0.54 0.21 293);
+  --sidebar-accent: oklch(0.93 0.04 152);
+  --sidebar-accent-foreground: oklch(0.28 0.08 152);
+  --sidebar-border: oklch(0.88 0.005 240);
+  --sidebar-ring: oklch(0.52 0.16 152);
 
-  /* Ambient page wash + surface highlight (light) */
   --ambient: radial-gradient(
-    1100px 560px at 18% -8%,
-    oklch(0.54 0.21 293 / 0.06),
-    transparent 62%
+    900px 540px at 18% -8%,
+    oklch(0.52 0.16 152 / 0.05),
+    transparent 64%
   );
   --surface-highlight: oklch(1 0 0 / 0.7);
+  --grid-line: oklch(0.18 0.005 240 / 0.04);
+  --scanline: oklch(0.18 0.005 240 / 0.025);
+  --bloom-1: oklch(0.52 0.16 152 / 0.07);
+  --bloom-2: oklch(0.5 0.18 200 / 0.05);
+  --bloom-3: oklch(0.52 0.16 152 / 0.04);
+  --horizon-line: oklch(0.52 0.16 152 / 0.08);
+  --vignette-strength: oklch(0 0 0 / 0.18);
 }
 
 .dark {
-  --background: oklch(0.155 0.005 286);
-  --foreground: oklch(0.95 0.004 286);
-  --card: oklch(0.195 0.006 286);
-  --card-foreground: oklch(0.95 0.004 286);
-  --popover: oklch(0.205 0.007 286);
-  --popover-foreground: oklch(0.95 0.004 286);
-  --primary: oklch(0.66 0.2 291);
-  --primary-foreground: oklch(0.15 0.02 293);
-  --secondary: oklch(0.245 0.007 286);
-  --secondary-foreground: oklch(0.95 0.004 286);
-  --muted: oklch(0.235 0.007 286);
-  --muted-foreground: oklch(0.7 0.008 286);
-  --accent: oklch(0.3 0.04 292);
-  --accent-foreground: oklch(0.94 0.03 293);
-  --destructive: oklch(0.66 0.2 26);
-  --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.72 0.15 153);
-  --warning: oklch(0.79 0.15 78);
-  --border: oklch(0.275 0.007 286);
-  --input: oklch(0.31 0.008 286);
-  --ring: oklch(0.66 0.2 291);
+  /* Graphite stack: page (#08) < rail (#0B) < panel (#0F) < panel-raised (#13). */
+  --background: oklch(0.105 0.005 240);
+  --foreground: oklch(0.93 0.004 240);
+  --card: oklch(0.135 0.006 240);
+  --card-foreground: oklch(0.93 0.004 240);
+  --popover: oklch(0.155 0.006 240);
+  --popover-foreground: oklch(0.95 0.004 240);
 
-  --surface-canvas: color-mix(in oklab, var(--card) 42%, transparent);
-  --surface-overlay: color-mix(in oklab, var(--background) 75%, transparent);
-  --surface-floating: color-mix(in oklab, var(--card) 94%, transparent);
+  /* Primary = phosphor green. Bright, slightly desaturated so it
+     doesn't bloom against the near-black base. */
+  --primary: oklch(0.84 0.21 145);
+  --primary-foreground: oklch(0.12 0.04 145);
+  --secondary: oklch(0.18 0.006 240);
+  --secondary-foreground: oklch(0.92 0.004 240);
+  --muted: oklch(0.17 0.006 240);
+  --muted-foreground: oklch(0.66 0.008 240);
+  --accent: oklch(0.22 0.05 145);
+  --accent-foreground: oklch(0.9 0.18 145);
+  --destructive: oklch(0.68 0.27 350);
+  --destructive-foreground: oklch(0.99 0 0);
+  --success: oklch(0.84 0.21 145);
+  --warning: oklch(0.82 0.18 75);
+  --border: oklch(0.24 0.007 240);
+  --input: oklch(0.2 0.007 240);
+  --ring: oklch(0.84 0.21 145);
 
-  --chart-1: oklch(0.68 0.19 291);
-  --chart-2: oklch(0.72 0.13 195);
-  --chart-3: oklch(0.79 0.15 78);
-  --chart-4: oklch(0.68 0.18 12);
-  --chart-5: oklch(0.73 0.15 153);
+  --surface-canvas: oklch(0.115 0.005 240);
+  --surface-overlay: oklch(0.105 0.005 240 / 0.78);
+  --surface-floating: oklch(0.155 0.006 240);
 
-  --sidebar: oklch(0.175 0.006 286);
-  --sidebar-foreground: oklch(0.95 0.004 286);
-  --sidebar-primary: oklch(0.66 0.2 291);
-  --sidebar-primary-foreground: oklch(0.15 0.02 293);
-  --sidebar-accent: oklch(0.27 0.035 292);
-  --sidebar-accent-foreground: oklch(0.94 0.03 293);
-  --sidebar-border: oklch(0.265 0.007 286);
-  --sidebar-ring: oklch(0.66 0.2 291);
+  --chart-1: oklch(0.84 0.21 145);
+  --chart-2: oklch(0.78 0.15 200);
+  --chart-3: oklch(0.82 0.18 75);
+  --chart-4: oklch(0.7 0.25 350);
+  --chart-5: oklch(0.7 0.14 285);
+
+  --sidebar: oklch(0.085 0.005 240);
+  --sidebar-foreground: oklch(0.86 0.004 240);
+  --sidebar-primary: oklch(0.84 0.21 145);
+  --sidebar-primary-foreground: oklch(0.12 0.04 145);
+  --sidebar-accent: oklch(0.18 0.04 145);
+  --sidebar-accent-foreground: oklch(0.9 0.18 145);
+  --sidebar-border: oklch(0.22 0.007 240);
+  --sidebar-ring: oklch(0.84 0.21 145);
 
   --ambient: radial-gradient(
-      1100px 560px at 16% -10%,
-      oklch(0.66 0.2 291 / 0.13),
+      1100px 580px at 12% -10%,
+      oklch(0.84 0.21 145 / 0.08),
       transparent 60%
     ),
     radial-gradient(
       900px 500px at 100% 0%,
-      oklch(0.55 0.18 333 / 0.08),
-      transparent 55%
+      oklch(0.6 0.18 200 / 0.05),
+      transparent 60%
     );
-  --surface-highlight: oklch(1 0 0 / 0.04);
+  --surface-highlight: oklch(1 0 0 / 0.03);
+  --grid-line: oklch(0.84 0.21 145 / 0.06);
+  --scanline: oklch(0.84 0.21 145 / 0.025);
+  --bloom-1: oklch(0.84 0.21 145 / 0.14);
+  --bloom-2: oklch(0.55 0.2 200 / 0.09);
+  --bloom-3: oklch(0.84 0.21 145 / 0.07);
+  --horizon-line: oklch(0.84 0.21 145 / 0.18);
+  --vignette-strength: oklch(0 0 0 / 0.55);
 }
 
 @theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -170,13 +184,13 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  /* Elevation: hairline top highlight + soft layered drop. The inset
-     highlight is what reads as "lifted" on dark surfaces. */
-  --shadow-card: 0 1px 0 0 oklch(0 0 0 / 0.22);
-  --shadow-pop: 0 1px 0 0 oklch(0 0 0 / 0.3),
-    0 24px 50px -16px oklch(0 0 0 / 0.7);
-  --shadow-glow: 0 0 0 1px oklch(0.66 0.2 291 / 0.35),
-    0 8px 26px -8px oklch(0.66 0.2 291 / 0.5);
+  /* Elevation: hairline + phosphor edge glow for active panels. */
+  --shadow-card: inset 0 1px 0 0 var(--surface-highlight),
+    0 1px 0 0 oklch(0 0 0 / 0.4);
+  --shadow-pop: 0 1px 0 0 oklch(0 0 0 / 0.5),
+    0 24px 60px -20px oklch(0 0 0 / 0.8);
+  --shadow-glow: 0 0 0 1px oklch(0.84 0.21 145 / 0.45),
+    0 8px 30px -8px oklch(0.84 0.21 145 / 0.35);
 
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, sans-serif;
@@ -195,30 +209,133 @@
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-feature-settings: "rlig" 1, "calt" 1, "cv11" 1, "ss01" 1;
-    letter-spacing: -0.011em;
+    letter-spacing: -0.008em;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    /* Fixed ambient wash behind all routes — subtle accent bloom that
-       never scrolls, so the page never reads as a flat default. */
+    position: relative;
+    /* Console substrate, layer 1 — the *structural* plane.
+       Pixel grid (radial dots at 32px) + larger sector grid (160px)
+       + scanlines + a base ambient wash. All fixed so the substrate
+       never scrolls — content floats over a stable CRT tube. */
     background-image:
+      /* fine pixel-dot grid */
       radial-gradient(
-        color-mix(in oklab, var(--foreground) 6%, transparent) 1px,
-        transparent 1px
+        circle at center,
+        color-mix(in oklab, var(--primary) 22%, transparent) 0.7px,
+        transparent 1.2px
       ),
+      /* sector grid every 5 cells — gives architectural rhythm */
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
+      /* scanlines */
+      repeating-linear-gradient(
+        0deg,
+        var(--scanline) 0,
+        var(--scanline) 1px,
+        transparent 1px,
+        transparent 4px
+      ),
+      /* base ambient corner blooms (static) */
       var(--ambient);
-    background-size: 22px 22px, 100% 100%;
+    background-size:
+      32px 32px,
+      160px 160px,
+      160px 160px,
+      100% 100%,
+      100% 100%;
     background-attachment: fixed;
-    background-repeat: repeat, no-repeat;
+    background-repeat: repeat, repeat, repeat, repeat, no-repeat;
+  }
+  /* Layer 2 — animated phosphor field. Three large soft blooms that
+     slowly drift and breathe, behind the static grid plane. Sits below
+     all content (z-index -2) and is non-interactive. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -8%;
+    z-index: -2;
+    pointer-events: none;
+    background:
+      radial-gradient(55% 45% at 18% 14%, var(--bloom-1), transparent 64%),
+      radial-gradient(45% 38% at 92% 8%, var(--bloom-2), transparent 60%),
+      radial-gradient(58% 42% at 50% 108%, var(--bloom-3), transparent 66%);
+    animation: synara-bloom-drift 32s ease-in-out infinite alternate;
+    will-change: transform, opacity;
+  }
+  /* Layer 3 — finish pass. A faint phosphor horizon line at ~58%
+     suggests a vanishing plane (the "looking into the tube" effect),
+     a corner-darkening vignette pulls the eye toward content, and a
+     periodic horizontal sweep beam sells the live-signal feel. */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      /* sweep beam — a soft phosphor band that traverses the viewport */
+      linear-gradient(
+        180deg,
+        transparent 0%,
+        transparent 46%,
+        color-mix(in oklab, var(--primary) 7%, transparent) 50%,
+        transparent 54%,
+        transparent 100%
+      ),
+      /* horizon line */
+      linear-gradient(
+        180deg,
+        transparent 57.6%,
+        var(--horizon-line) 58%,
+        transparent 58.4%
+      ),
+      /* edge vignette */
+      radial-gradient(120% 80% at 50% 50%, transparent 52%, var(--vignette-strength) 100%);
+    background-size: 100% 240%, 100% 100%, 100% 100%;
+    background-repeat: no-repeat, no-repeat, no-repeat;
+    background-position: 0 -100%, 0 0, 0 0;
+    animation: synara-sweep 11s linear infinite;
+    will-change: background-position;
+    mix-blend-mode: screen;
+  }
+  @keyframes synara-bloom-drift {
+    0% {
+      transform: translate3d(-1.5%, -1%, 0) scale(1.02);
+      opacity: 0.9;
+    }
+    50% {
+      transform: translate3d(1.5%, 1%, 0) scale(1.05);
+      opacity: 1;
+    }
+    100% {
+      transform: translate3d(-0.5%, 1.5%, 0) scale(1.03);
+      opacity: 0.95;
+    }
+  }
+  @keyframes synara-sweep {
+    0% {
+      background-position: 0 -110%, 0 0, 0 0;
+    }
+    100% {
+      background-position: 0 110%, 0 0, 0 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    body::before,
+    body::after {
+      animation: none;
+    }
   }
   h1,
   h2,
   h3 {
     text-wrap: balance;
-    letter-spacing: -0.025em;
-    font-weight: 650;
+    letter-spacing: -0.02em;
+    font-weight: 600;
   }
   ::selection {
-    background: oklch(0.66 0.2 291 / 0.3);
+    background: oklch(0.84 0.21 145 / 0.32);
+    color: var(--foreground);
   }
   /* Thin themed scrollbars — part of the "console" finish. */
   * {
@@ -238,48 +355,106 @@
   ::-webkit-scrollbar-thumb:hover {
     background-color: var(--muted-foreground);
   }
-  /* Focus is never obscured (WCAG 2.2 2.4.11) — offset ring on a
-     scrolled-into-view target stays clear of sticky chrome. */
+  /* WCAG 2.2 2.4.11 — focus never obscured. Phosphor ring, never the
+     default browser blue. */
   :where(a, button, [role="button"], input, select, textarea):focus-visible {
     @apply outline-2 outline-offset-2 outline-ring;
   }
 }
 
 @layer components {
-  /* Shared raised-surface treatment: page < .surface < .surface-raised. */
-  .surface {
+  /* Console panel: hairline phosphor-toned border, near-black fill,
+     subtle inset highlight along the top to read as "lit." */
+  .panel {
     background-color: var(--card);
-    border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+    border: 1px solid var(--border);
     box-shadow: var(--shadow-card);
+    position: relative;
+  }
+  .panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklab, var(--primary) 8%, transparent) 0,
+        transparent 1px
+      );
   }
 
-  /* Signature mono micro-label. Sits above every section/card title and
-     on sidebar group labels — the single strongest identity cue. */
+  /* Mono eyebrow: the single strongest identity cue, sits above every
+     section/card title and on rail group labels. */
   .eyebrow {
     font-family: var(--font-mono);
     font-size: 0.625rem;
     font-weight: 500;
     line-height: 1;
-    letter-spacing: 0.28em;
+    letter-spacing: 0.22em;
     text-transform: uppercase;
     color: var(--muted-foreground);
   }
 
-  /* Display heading: tighter, larger, fluid. Pairs with an .eyebrow. */
+  /* Prompt-style label: the dollar-sign / chevron prefix that makes
+     panel titles read as commands. */
+  .prompt::before {
+    content: "▌";
+    margin-right: 0.5rem;
+    color: var(--primary);
+    font-family: var(--font-mono);
+  }
+
+  /* Display heading. Pairs with .eyebrow. */
   .display {
-    font-weight: 680;
-    letter-spacing: -0.032em;
+    font-weight: 620;
+    letter-spacing: -0.028em;
     text-wrap: balance;
-    font-size: clamp(1.7rem, 1.25rem + 1.7vw, 2.5rem);
+    font-size: clamp(1.5rem, 1.1rem + 1.4vw, 2.1rem);
     line-height: 1.05;
   }
 
-  /* Numeric readout: tabular mono so figures stay column-aligned. */
+  /* Tabular mono — for every figure that lives next to another. */
   .metric {
     font-family: var(--font-mono);
-    font-weight: 600;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.01em;
+  }
+
+  /* Phosphor dot — re-used by status pills, live tags, recent feeds. */
+  .pulse-dot {
+    position: relative;
+    display: inline-block;
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 9999px;
+    background-color: var(--primary);
+    box-shadow: 0 0 0 0 oklch(0.84 0.21 145 / 0.6);
+    animation: synara-pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  .pulse-dot[data-state="off"] {
+    background-color: var(--destructive);
+    animation: none;
+  }
+  @keyframes synara-pulse {
+    0%, 100% {
+      box-shadow: 0 0 0 0 oklch(0.84 0.21 145 / 0.6);
+    }
+    50% {
+      box-shadow: 0 0 0 5px oklch(0.84 0.21 145 / 0);
+    }
+  }
+
+  /* Hover lift on panels and tiles — micro, not theatrical. */
+  .interactive {
+    transition:
+      border-color 180ms ease,
+      background-color 180ms ease,
+      transform 180ms ease;
+  }
+  .interactive:hover {
+    border-color: color-mix(in oklab, var(--primary) 35%, var(--border));
   }
 }
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Eye, EyeOff, KeyRound } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getToken, setToken } from "@/lib/api";
@@ -16,12 +16,22 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-export function TokenDialog() {
+/** Token dialog. Always controllable from outside (so the command
+ *  palette can open it) while still exposing its own icon trigger
+ *  inside the dock. Pass `open`/`onOpenChange` to drive it externally;
+ *  omit them for fully self-contained behaviour. */
+export function TokenDialog({
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
+}: {
+  open?: boolean;
+  onOpenChange?: (next: boolean) => void;
+} = {}) {
   const qc = useQueryClient();
-  // Dialog is controlled so we can reset `value` from storage every
-  // time it opens — otherwise an unsaved draft persists across
-  // open/close cycles and silently overrides a token saved elsewhere.
-  const [openState, setOpenState] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = controlledOpen !== undefined;
+  const openState = isControlled ? controlledOpen : internalOpen;
+
   const [value, setValue] = useState("");
   const [reveal, setReveal] = useState(false);
   const has = (getToken() ?? "") !== "";
@@ -33,26 +43,43 @@ export function TokenDialog() {
       setValue(getToken() ?? "");
       setReveal(false);
     }
-    setOpenState(next);
+    if (isControlled) controlledOnOpenChange?.(next);
+    else setInternalOpen(next);
   }
+
+  // Keep the form in sync when the *parent* opens us externally.
+  // (Internal opens go through onOpenChange which sets these directly.)
+  useEffect(() => {
+    if (isControlled && controlledOpen) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setValue(getToken() ?? "");
+      setReveal(false);
+    }
+  }, [isControlled, controlledOpen]);
 
   function save() {
     setToken(value.trim() || null);
     void qc.invalidateQueries();
-    setOpenState(false);
+    onOpenChange(false);
   }
 
   return (
     <Dialog open={openState} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <Button
-          variant={has ? "ghost" : "outline"}
-          size="sm"
-          className="gap-2"
-          aria-label="Set API bearer token"
+          variant="ghost"
+          size="icon"
+          className="relative size-9"
+          aria-label={has ? "API token set — click to change" : "Set API bearer token"}
+          title={has ? "Token set" : "Set token"}
         >
-          <KeyRound className="size-4" aria-hidden />
-          <span className="hidden sm:inline">{has ? "Token set" : "Set token"}</span>
+          <KeyRound className="size-[18px]" aria-hidden />
+          {has && (
+            <span
+              className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary shadow-[0_0_6px_var(--primary)]"
+              aria-hidden
+            />
+          )}
         </Button>
       </DialogTrigger>
       <DialogContent>

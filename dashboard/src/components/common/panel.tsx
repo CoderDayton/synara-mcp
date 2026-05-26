@@ -2,16 +2,15 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Flat console panel — hairline border, eyebrow + optional title row,
- * no drop shadow. The single Section primitive across Overview, Admin,
- * and Config; replaces the prior mix of Card/CardHeader and an inline
- * Panel in overview.tsx.
+ * Terminal panel — the single Section primitive. A hairline phosphor
+ * border, near-black fill, a compact mono header bar with a prompt
+ * mark, and an optional right-aligned aside for inline controls /
+ * live tags.
  *
- * - `eyebrow`     mono micro-label (the console identity cue)
- * - `title`       optional heading text (paired with `icon`/`subtitle`)
- * - `aside`       right-side controls (status pill, count, action)
- * - `bodyClassName` lets the caller drop the default padding when the
- *                  body holds a chart or a flush grid
+ * Variants:
+ *  - default: solid card surface
+ *  - canvas:  sunken substrate (graphs, code blocks)
+ *  - raised:  one notch above canvas, for stacked sub-panels
  */
 export function Panel({
   eyebrow,
@@ -22,6 +21,7 @@ export function Panel({
   children,
   className,
   bodyClassName,
+  variant = "default",
 }: {
   eyebrow?: ReactNode;
   title?: ReactNode;
@@ -31,33 +31,62 @@ export function Panel({
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
+  variant?: "default" | "canvas" | "raised";
 }) {
   const hasHeader = !!(eyebrow || title || aside);
+  const surface =
+    variant === "canvas"
+      ? "bg-surface-canvas"
+      : variant === "raised"
+        ? "bg-surface-floating"
+        : "bg-card";
   return (
     <section
       className={cn(
-        "flex flex-col border border-border/70 bg-card",
+        "panel relative flex flex-col",
+        surface,
         className,
       )}
     >
       {hasHeader && (
-        <header className="flex items-start justify-between gap-3 border-b border-border/70 px-5 py-3">
-          <div className="min-w-0 space-y-1">
-            {eyebrow && <div className="eyebrow">{eyebrow}</div>}
-            {title && (
-              <h2 className="flex items-center gap-2 text-sm font-semibold tracking-tight text-foreground">
+        <header
+          className={cn(
+            "relative z-10 flex items-center justify-between gap-3 border-b border-border px-4 py-2",
+            "before:absolute before:inset-x-0 before:bottom-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-primary/20 before:to-transparent",
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2.5">
+            {icon && (
+              <span className="grid size-5 shrink-0 place-items-center text-primary">
                 {icon}
-                {title}
-              </h2>
+              </span>
             )}
-            {subtitle && (
-              <p className="text-xs text-muted-foreground">{subtitle}</p>
-            )}
+            <div className="min-w-0 leading-tight">
+              {title && (
+                <h2 className="prompt truncate font-mono text-[0.72rem] font-medium uppercase tracking-wider text-foreground">
+                  {title}
+                </h2>
+              )}
+              {eyebrow && !title && (
+                <div className="eyebrow">{eyebrow}</div>
+              )}
+              {subtitle && (
+                <p className="mt-0.5 truncate text-[0.7rem] text-muted-foreground">
+                  {subtitle}
+                </p>
+              )}
+            </div>
           </div>
-          {aside && <div className="shrink-0">{aside}</div>}
+          {aside && (
+            <div className="flex shrink-0 items-center gap-2 font-mono text-[0.65rem] uppercase tracking-wider text-muted-foreground">
+              {aside}
+            </div>
+          )}
         </header>
       )}
-      <div className={cn("flex-1 p-5", bodyClassName)}>{children}</div>
+      <div className={cn("relative z-10 flex-1 p-4", bodyClassName)}>
+        {children}
+      </div>
     </section>
   );
 }

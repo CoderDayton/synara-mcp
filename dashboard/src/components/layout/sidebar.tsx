@@ -6,96 +6,120 @@ import {
   Settings2,
   Wrench,
 } from "lucide-react";
-import { StatusPanel } from "@/components/common/status-indicator";
-import { useHealth } from "@/lib/queries";
+import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const NAV = [
-  {
-    group: "Main",
-    items: [
-      { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
-      { to: "/memories", label: "Memories", icon: Brain, end: false },
-    ],
-  },
-  {
-    group: "Operations",
-    items: [{ to: "/admin", label: "Admin", icon: Wrench, end: false }],
-  },
-  {
-    group: "System",
-    items: [{ to: "/config", label: "Config", icon: Settings2, end: false }],
-  },
+type Item = { to: string; label: string; icon: LucideIcon; end: boolean };
+
+export const NAV_ITEMS: Item[] = [
+  { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
+  { to: "/memories", label: "Memories", icon: Brain, end: false },
+  { to: "/admin", label: "Admin", icon: Wrench, end: false },
+  { to: "/config", label: "Config", icon: Settings2, end: false },
 ];
 
-/** Path → label, derived from NAV so the mobile header title in
- *  app-shell never drifts from the sidebar's source of truth. */
+/** Path → label. Kept exported so the dock breadcrumb can resolve the
+ *  current route to a human name without duplicating the source. */
 export const ROUTE_TITLES: Record<string, string> = Object.fromEntries(
-  NAV.flatMap((s) => s.items.map((i) => [i.to, i.label] as const)),
+  NAV_ITEMS.map((i) => [i.to, i.label] as const),
 );
 
-export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
-  const { data } = useHealth();
+/** Inline top-nav: 4 mono labels with an active phosphor underline,
+ *  hover glow, and a filled glyph when current. Lives inside the dock. */
+export function TopNav() {
   return (
-    <div className="flex h-full flex-col gap-6 p-4 sm:p-5">
+    <nav
+      aria-label="Primary"
+      className="hidden items-center gap-0.5 md:flex"
+    >
+      {NAV_ITEMS.map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={item.end}
+          className={({ isActive }) =>
+            cn(
+              "group relative flex h-9 items-center gap-2 rounded-sm px-2.5 font-mono text-[0.72rem] uppercase tracking-wider transition-colors",
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+              isActive
+                ? "text-primary"
+                : "text-muted-foreground hover:text-foreground",
+            )
+          }
+        >
+          {({ isActive }) => (
+            <>
+              <item.icon
+                className={cn(
+                  "size-[14px] transition-all",
+                  isActive
+                    ? "text-primary drop-shadow-[0_0_4px_var(--primary)]"
+                    : "text-muted-foreground/70 group-hover:text-foreground",
+                )}
+                aria-hidden
+              />
+              <span>{item.label.toLowerCase()}</span>
+              {/* Underline — animates in from center on hover, fully lit on active */}
+              <span
+                aria-hidden
+                className={cn(
+                  "pointer-events-none absolute inset-x-2 -bottom-px h-px origin-center bg-primary transition-transform duration-200 ease-out",
+                  isActive
+                    ? "scale-x-100 shadow-[0_0_6px_var(--primary),0_0_12px_var(--primary)]"
+                    : "scale-x-0 group-hover:scale-x-75",
+                )}
+              />
+            </>
+          )}
+        </NavLink>
+      ))}
+    </nav>
+  );
+}
+
+/** Mobile drawer — labelled list, same NAV source. Used by the
+ *  hamburger toggle under the md breakpoint. */
+export function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
+  return (
+    <div className="flex h-full flex-col gap-5 p-4">
       <div className="flex items-center gap-3">
-        <div className="grid size-9 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary/65 text-white shadow-glow ring-1 ring-inset ring-white/15">
+        <span className="grid size-9 place-items-center border border-primary/40 bg-primary/10 text-primary">
           <ActivityIcon className="size-5" aria-hidden />
-        </div>
+        </span>
         <div className="leading-tight">
-          <div className="text-[0.95rem] font-semibold tracking-tight">
-            Synara
+          <div className="font-mono text-sm font-medium tracking-wide">
+            synara
           </div>
-          <div className="font-mono text-[0.7rem] tracking-wide text-muted-foreground">
-            {data ? `v${data.version}` : "memory console"}
+          <div className="font-mono text-[0.65rem] uppercase tracking-wider text-muted-foreground">
+            memory console
           </div>
         </div>
       </div>
 
-      <nav className="flex-1 space-y-5" aria-label="Primary">
-        {NAV.map((section) => (
-          <div key={section.group}>
-            <div className="eyebrow px-3 pb-2.5">{section.group}</div>
-            <ul className="space-y-1">
-              {section.items.map((item) => (
-                <li key={item.to}>
-                  <NavLink
-                    to={item.to}
-                    end={item.end}
-                    onClick={onNavigate}
-                    className={({ isActive }) =>
-                      cn(
-                        "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring",
-                        isActive
-                          ? "bg-sidebar-accent text-sidebar-accent-foreground before:absolute before:inset-y-1.5 before:left-0 before:w-1 before:rounded-r-full before:bg-primary"
-                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
-                      )
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <item.icon
-                          className={cn(
-                            "size-4 shrink-0 transition-colors",
-                            isActive
-                              ? "text-primary"
-                              : "text-muted-foreground group-hover:text-sidebar-foreground",
-                          )}
-                          aria-hidden
-                        />
-                        {item.label}
-                      </>
-                    )}
-                  </NavLink>
-                </li>
-              ))}
-            </ul>
-          </div>
+      <nav className="flex-1 space-y-1" aria-label="Primary">
+        {NAV_ITEMS.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end}
+            onClick={onNavigate}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-3 rounded px-3 py-2 text-sm transition-colors",
+                "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring",
+                isActive
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/40 hover:text-sidebar-foreground",
+              )
+            }
+          >
+            <item.icon className="size-4 shrink-0" aria-hidden />
+            <span className="font-mono text-xs uppercase tracking-wider">
+              {item.label}
+            </span>
+          </NavLink>
         ))}
       </nav>
-
-      <StatusPanel />
     </div>
   );
 }

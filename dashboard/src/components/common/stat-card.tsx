@@ -1,11 +1,12 @@
 import type { LucideIcon } from "lucide-react";
 import { TrendingDown, TrendingUp } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 type Trend = { value: string; dir: "up" | "down" | "flat" };
 
+/** Terminal-style metric tile. No card chrome — a hairline strip,
+ *  mono label above a tabular figure, with a tiny iconographic
+ *  glyph on the right edge as a visual anchor. */
 export function StatCard({
   label,
   value,
@@ -20,42 +21,41 @@ export function StatCard({
   trend?: Trend;
 }) {
   return (
-    <Card className="group transition-colors hover:border-primary/30">
-      <CardContent className="flex flex-col gap-4 p-4 sm:p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="eyebrow">{label}</div>
-          <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary ring-1 ring-inset ring-primary/15 transition-colors group-hover:bg-primary/15">
-            <Icon className="size-5" aria-hidden />
-          </div>
+    <div className="panel interactive group flex flex-col gap-2 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="eyebrow flex items-center gap-1.5">
+          <span className="inline-block h-1 w-1 bg-primary" aria-hidden />
+          {label}
         </div>
-        <div className="min-w-0">
-          <div className="metric text-3xl tracking-tight sm:text-4xl">
-            {value}
-          </div>
-          {(hint || trend) && (
-            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-              {trend && (
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "gap-1 px-1.5 font-mono tabular-nums",
-                    trend.dir === "up" && "text-success",
-                    trend.dir === "down" && "text-destructive",
-                  )}
-                >
-                  {trend.dir === "down" ? (
-                    <TrendingDown className="size-3" aria-hidden />
-                  ) : (
-                    <TrendingUp className="size-3" aria-hidden />
-                  )}
-                  {trend.value}
-                </Badge>
+        <Icon
+          className="size-4 text-muted-foreground transition-colors group-hover:text-primary"
+          aria-hidden
+        />
+      </div>
+      <div className="metric text-3xl leading-none text-foreground sm:text-4xl">
+        {value}
+      </div>
+      {(hint || trend) && (
+        <div className="flex items-center gap-2 text-[0.7rem]">
+          {trend && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 border border-border bg-muted/40 px-1.5 py-0.5 font-mono",
+                trend.dir === "up" && "border-primary/30 text-primary",
+                trend.dir === "down" && "border-destructive/30 text-destructive",
               )}
-              {hint && <span className="truncate">{hint}</span>}
-            </div>
+            >
+              {trend.dir === "down" ? (
+                <TrendingDown className="size-3" aria-hidden />
+              ) : (
+                <TrendingUp className="size-3" aria-hidden />
+              )}
+              {trend.value}
+            </span>
           )}
+          {hint && <span className="truncate text-muted-foreground">{hint}</span>}
         </div>
-      </CardContent>
-    </Card>
+      )}
+    </div>
   );
 }

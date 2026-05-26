@@ -133,17 +133,19 @@ export default function Memories() {
   const showReset = focus != null || !!query;
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-6 sm:gap-8">
+    <section className="flex min-h-0 flex-1 flex-col gap-3">
       <PageHeader
-        eyebrow="Store"
-        title="Memory map"
+        eyebrow="store"
+        title="memory map"
         subtitle="The successor graph, plasticity associations, and consolidation schemas of the live store — search to light up matches across the whole map."
       />
 
       {graph.data?.legacy && (
-        <Alert variant="destructive" className="border-warning/50">
-          <AlertTriangle className="size-4" aria-hidden />
-          <AlertTitle>Stale server — restart required</AlertTitle>
+        <Alert variant="destructive" className="border-warning/50 font-mono text-xs">
+          <AlertTriangle className="size-4 text-warning" aria-hidden />
+          <AlertTitle className="uppercase tracking-wider text-warning">
+            stale server — restart required
+          </AlertTitle>
           <AlertDescription>
             This dashboard is talking to a memory server that started
             before the enriched graph route was deployed. Nodes have no
@@ -154,7 +156,7 @@ export default function Memories() {
         </Alert>
       )}
 
-      <div className="relative flex min-h-[28rem] flex-1 overflow-hidden rounded-xl border border-border/70 bg-surface-canvas shadow-card">
+      <div className="panel relative flex min-h-[28rem] flex-1 overflow-hidden bg-surface-canvas">
         {/* Search operates on the whole map */}
         <form
           onSubmit={(e) => {

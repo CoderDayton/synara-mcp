@@ -1,71 +1,54 @@
 import { useHealth } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
-/** Live connection chrome — single source of truth for the green/red
- *  dot + label pair shown in the top bar and the sidebar footer. */
-
-export function StatusPill({ className }: { className?: string }) {
+/** Single source of truth for live MCP connection state.
+ *
+ *  Renders inline in the dock; no sidebar duplicate. Composed of a
+ *  pulsing phosphor dot, an `OK / OFF` literal, and a tabular row of
+ *  transport/version/uptime/embedding fields so the user always sees
+ *  *what kind* of connection is live, not just whether one exists. */
+export function StatusReadout({ className }: { className?: string }) {
   const { data, isError } = useHealth();
   const ok = !!data && !isError;
   return (
     <div
       className={cn(
-        "hidden items-center gap-2 rounded-full border border-border/60 bg-surface-overlay px-3 py-1.5 text-xs shadow-card backdrop-blur sm:flex",
+        "flex items-center gap-3 font-mono text-[0.7rem] uppercase tracking-wider",
         className,
       )}
+      role="status"
+      aria-live="polite"
     >
-      <span
-        className={cn(
-          "size-1.5 rounded-full",
-          ok ? "animate-pulse bg-success" : "bg-destructive",
-        )}
-        aria-hidden
-      />
-      <span className="font-medium">{ok ? "Connected" : "Offline"}</span>
-      {data && (
-        <span className="font-mono text-muted-foreground">
-          {data.transport} · v{data.version} ·{" "}
-          {Math.round(data.uptime_seconds)}s
+      <span className="flex items-center gap-2">
+        <span className="pulse-dot" data-state={ok ? "on" : "off"} aria-hidden />
+        <span className={ok ? "text-primary" : "text-destructive"}>
+          {ok ? "ok" : "off"}
         </span>
-      )}
-    </div>
-  );
-}
-
-export function StatusPanel() {
-  const { data, isError } = useHealth();
-  const ok = !!data && !isError;
-  return (
-    <div className="rounded-xl border border-sidebar-border/70 bg-surface-canvas p-3 text-xs shadow-card sm:p-4">
-      <div className="flex items-center gap-2 font-medium">
-        <span
-          className={cn(
-            "size-2 rounded-full ring-4",
-            ok
-              ? "bg-success ring-success/20"
-              : "bg-destructive ring-destructive/20",
-          )}
-          aria-hidden
-        />
-        <span className={ok ? "text-success" : "text-destructive"}>
-          {ok ? "Connected" : "Offline"}
-        </span>
-      </div>
+      </span>
       {data && (
-        <dl className="mt-2 space-y-1 text-muted-foreground">
-          <div className="flex justify-between gap-2">
-            <dt>Transport</dt>
-            <dd className="font-mono">{data.transport}</dd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <dt>Embedding</dt>
-            <dd className="font-mono">{data.embedding_backend}</dd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <dt>Uptime</dt>
-            <dd className="font-mono">{Math.round(data.uptime_seconds)}s</dd>
-          </div>
-        </dl>
+        <>
+          <span className="hidden h-3 w-px bg-border sm:inline-block" aria-hidden />
+          <span className="hidden items-center gap-3 text-muted-foreground sm:flex">
+            <span>
+              <span className="text-foreground/60">tx</span>{" "}
+              <span className="text-foreground">{data.transport}</span>
+            </span>
+            <span>
+              <span className="text-foreground/60">ver</span>{" "}
+              <span className="text-foreground">v{data.version}</span>
+            </span>
+            <span>
+              <span className="text-foreground/60">up</span>{" "}
+              <span className="text-foreground tabular-nums">
+                {Math.round(data.uptime_seconds)}s
+              </span>
+            </span>
+            <span className="hidden md:inline">
+              <span className="text-foreground/60">emb</span>{" "}
+              <span className="text-foreground">{data.embedding_backend}</span>
+            </span>
+          </span>
+        </>
       )}
     </div>
   );
