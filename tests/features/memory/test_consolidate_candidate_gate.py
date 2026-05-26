@@ -1,4 +1,4 @@
-"""v2 candidate-to-promotion gate: hits, TTL, and inert-default behaviour.
+"""Candidate-to-promotion gate: hits, TTL, and inert-default behaviour.
 
 All persistent state lives in the ``schema_candidates`` collection, so
 these tests poke the collection directly (no in-memory shortcut).
@@ -47,28 +47,7 @@ async def _all_candidates(svc: MemoryService) -> list[dict[str, Any]]:
 
 
 @pytest_asyncio.fixture
-async def svc_legacy() -> AsyncIterator[MemoryService]:
-    """Service with the v2 gate disabled (legacy one-pass schema formation).
-
-    Used by tests that need to verify the inert-default code path
-    against a baseline. The production default is now
-    ``consolidate_min_recurrence=2``; setting it to 1 pins the legacy
-    behaviour.
-    """
-    db = AsyncVectorDB(":memory:")
-    try:
-        cfg = MemoryConfig(
-            consolidate_min_age_seconds=0.0,
-            consolidate_min_retrievals=0,
-            consolidate_min_recurrence=1,
-        )
-        yield MemoryService(db, config=cfg, embed_fn=_embed)
-    finally:
-        await db.close()
-
-
-@pytest_asyncio.fixture
-async def svc_v2() -> AsyncIterator[MemoryService]:
+async def svc_gated() -> AsyncIterator[MemoryService]:
     db = AsyncVectorDB(":memory:")
     try:
         cfg = MemoryConfig(
@@ -118,26 +97,12 @@ def test_cosine_helper_matches_numpy_for_random_vectors() -> None:
 
 # ============================================================ aging behaviour
 @pytest.mark.asyncio
-async def test_age_candidates_inert_when_min_recurrence_default(
-    svc_legacy: MemoryService,
-) -> None:
-    await _seed_candidate(svc_legacy, _embed("anchor"), hits=1, age=999)
-    await cm._age_schema_candidates(svc_legacy)
-    # Default config has min_recurrence=1: the aging routine MUST NOT
-    # touch the buffer, otherwise downstream behaviour drifts for every
-    # existing caller that has not opted into v2.
-    rows = await _all_candidates(svc_legacy)
-    assert len(rows) == 1
-    assert rows[0]["age"] == 999
-
-
-@pytest.mark.asyncio
-async def test_age_candidates_drops_expired_entries(svc_v2: MemoryService) -> None:
-    await _seed_candidate(svc_v2, _embed("young"), hits=1, age=0)
-    keep_id = await _seed_candidate(svc_v2, _embed("on_the_edge"), hits=1, age=2)
-    await _seed_candidate(svc_v2, _embed("expired"), hits=1, age=3)
-    await cm._age_schema_candidates(svc_v2)
-    rows = await _all_candidates(svc_v2)
+async def test_age_candidates_drops_expired_entries(svc_gated: MemoryService) -> None:
+    await _seed_candidate(svc_gated, _embed("young"), hits=1, age=0)
+    keep_id = await _seed_candidate(svc_gated, _embed("on_the_edge"), hits=1, age=2)
+    await _seed_candidate(svc_gated, _embed("expired"), hits=1, age=3)
+    await cm._age_schema_candidates(svc_gated)
+    rows = await _all_candidates(svc_gated)
     # young: 0 -> 1 (kept). on_the_edge: 2 -> 3 (kept; max_age=3 inclusive).
     # expired: 3 -> 4 -> evicted.
     ages = sorted(r["age"] for r in rows)
@@ -167,21 +132,21 @@ async def test_age_candidates_disabled_when_max_age_zero() -> None:
 
 # ============================================================ end-to-end gate
 @pytest.mark.asyncio
-async def test_v2_first_pass_creates_candidate_not_schema(svc_v2: MemoryService) -> None:
+async def test_first_pass_creates_candidate_not_schema(svc_gated: MemoryService) -> None:
     # Two episodes from one synthetic topic; with min_recurrence=2 the
     # first consolidate pass MUST leave the semantic store empty and
     # park a candidate instead.
     for i in range(2):
-        await svc_v2.encode_episode(
+        await svc_gated.encode_episode(
             f"alpha keyword cluster sample {i}",
             session_id="s1",
             salience=0.6,
         )
-    await svc_v2.consolidate(min_cluster_size=2)
-    assert await svc_v2.semantic.count() == 0
-    cand_count = await svc_v2.schema_candidates.count()
+    await svc_gated.consolidate(min_cluster_size=2)
+    assert await svc_gated.semantic.count() == 0
+    cand_count = await svc_gated.schema_candidates.count()
     assert cand_count >= 1
-    rows = await _all_candidates(svc_v2)
+    rows = await _all_candidates(svc_gated)
     # All freshly-parked candidates start at hits=1, then aging bumps
     # age once before the gate runs -- so we expect age in {0, 1}.
     for r in rows:
@@ -190,8 +155,8 @@ async def test_v2_first_pass_creates_candidate_not_schema(svc_v2: MemoryService)
 
 
 @pytest.mark.asyncio
-async def test_v2_recurrence_promotes_when_hit_count_crosses_threshold(
-    svc_v2: MemoryService,
+async def test_recurrence_promotes_when_hit_count_crosses_threshold(
+    svc_gated: MemoryService,
 ) -> None:
     """Pre-seed a hits=min_recurrence-1 candidate at the headline
     embedding of the cluster we're about to consolidate. The gate must
@@ -204,82 +169,95 @@ async def test_v2_recurrence_promotes_when_hit_count_crosses_threshold(
     recall_eval and self_learning_sim A/B runs.
     """
     for i in range(2):
-        await svc_v2.encode_episode(
+        await svc_gated.encode_episode(
             f"epsilon promote me {i}",
             session_id="s1",
             salience=0.6,
         )
-    eps = await svc_v2.episodic.get_documents(filter_dict=None)
+    eps = await svc_gated.episodic.get_documents(filter_dict=None)
     head_text = max(eps, key=lambda r: float(r[2].get("salience", 0.0)))[1]
     # Seed at the headline's embedding: build_gist puts the headline
     # first, so cosine_distance(headline_emb, full_gist_emb) is small.
-    await _seed_candidate(svc_v2, _embed(head_text), hits=1, age=0)
-    pre_schema_count = await svc_v2.semantic.count()
+    await _seed_candidate(svc_gated, _embed(head_text), hits=1, age=0)
+    pre_schema_count = await svc_gated.semantic.count()
 
-    await svc_v2.consolidate(min_cluster_size=2)
+    await svc_gated.consolidate(min_cluster_size=2)
 
-    new_schemas = (await svc_v2.semantic.count()) - pre_schema_count
+    new_schemas = (await svc_gated.semantic.count()) - pre_schema_count
     if new_schemas == 0:
         pytest.skip("test-embedder gist drift defeated the seeded match")
     assert new_schemas >= 1
     # The seeded candidate should be gone (promoted), though the gate
     # may have created a fresh candidate for a different K-Means
     # cluster on the same pass.
-    rows = await _all_candidates(svc_v2)
+    rows = await _all_candidates(svc_gated)
     assert all(int(r["id"]) != 0 for r in rows) or len(rows) >= 0
 
 
 @pytest.mark.asyncio
-async def test_v2_candidate_evicted_after_max_age(svc_v2: MemoryService) -> None:
+async def test_candidate_evicted_after_max_age(svc_gated: MemoryService) -> None:
     for i in range(2):
-        await svc_v2.encode_episode(
+        await svc_gated.encode_episode(
             f"gamma never-recurs phrase {i}",
             session_id="s1",
             salience=0.6,
         )
-    await svc_v2.consolidate(min_cluster_size=2)
-    after_pass1 = await svc_v2.schema_candidates.count()
+    await svc_gated.consolidate(min_cluster_size=2)
+    after_pass1 = await svc_gated.schema_candidates.count()
     assert after_pass1 >= 1
 
     # Run max_age (=3) more empty consolidate passes; each ages every
     # candidate by one tick. With no new clusters to refresh ages, the
     # original candidates must eventually be evicted.
     for _ in range(3):
-        await svc_v2.consolidate(min_cluster_size=2)
-    rows = await _all_candidates(svc_v2)
+        await svc_gated.consolidate(min_cluster_size=2)
+    rows = await _all_candidates(svc_gated)
     # Either all rows have advanced age (recently re-parked), or buffer
     # is now empty -- both are valid "TTL is firing" signals.
     assert all(r["age"] > 0 for r in rows) or not rows
 
 
 @pytest.mark.asyncio
-async def test_v2_disabled_when_min_recurrence_is_one(svc_legacy: MemoryService) -> None:
-    # Same workload as the v2 tests, but with the gate explicitly
-    # disabled: the very first consolidate must promote directly to a
-    # schema with no candidates parked. Guards against accidental
-    # behaviour leakage from the new default back into the legacy path.
-    for i in range(3):
-        await svc_legacy.encode_episode(
-            f"delta one-shot promote {i}",
-            session_id="s1",
-            salience=0.6,
+async def test_first_pass_never_promotes_directly() -> None:
+    # Buffer-only invariant: with the default config, a fresh cluster
+    # CANNOT become a durable schema on the very first consolidate
+    # pass -- it must always be parked as a candidate first.
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = MemoryConfig(
+            consolidate_min_age_seconds=0.0,
+            consolidate_min_retrievals=0,
         )
-    await svc_legacy.consolidate(min_cluster_size=2)
-    assert await svc_legacy.semantic.count() >= 1
-    assert await svc_legacy.schema_candidates.count() == 0
+        svc = MemoryService(db, config=cfg, embed_fn=_embed)
+        for i in range(3):
+            await svc.encode_episode(
+                f"delta one-shot guard {i}",
+                session_id="s1",
+                salience=0.6,
+            )
+        await svc.consolidate(min_cluster_size=2)
+        assert await svc.semantic.count() == 0
+        assert await svc.schema_candidates.count() >= 1
+    finally:
+        await db.close()
 
 
 # ============================================================ config invariants
-def test_v2_config_field_default_is_active() -> None:
+def test_config_field_default_is_active() -> None:
     cfg = MemoryConfig()
-    # v2 is on by default: a fresh-cluster gist must recur across two
-    # consolidate passes before becoming a durable schema. Empirically
-    # this halves over-absorption with no recall@k regression.
+    # Candidate buffer is the SOLE promotion path: a fresh-cluster gist must recur
+    # across two consolidate passes before becoming a durable schema.
     assert cfg.consolidate_min_recurrence == 2
     assert cfg.consolidate_candidate_max_age == 5
-    assert cfg.consolidate_min_recurrence > 1
+    # Hygiene knobs default off so existing fixtures behave the same.
+    assert cfg.consolidate_min_hit_sessions == 1
+    assert cfg.consolidate_min_hit_epochs == 1
+    assert cfg.consolidate_min_schema_size == 0
+    assert cfg.consolidate_candidate_hit_decay == 0.0
+    assert cfg.consolidate_min_promotion_confidence == 0.0
+    assert cfg.forget_schema_unused_seconds == 0.0
 
 
-def test_v2_candidate_collection_is_present_by_default() -> None:
+def test_candidate_collection_is_present_by_default() -> None:
     cfg = MemoryConfig()
     assert cfg.schema_candidate_collection

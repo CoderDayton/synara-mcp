@@ -18,7 +18,7 @@ class MemoryConfig:
 
     episodic_collection: str = "memory_episodic"
     semantic_collection: str = "memory_semantic"
-    # Backing collection for the v2 schema-candidate buffer (see
+    # Backing collection for the schema-candidate buffer (see
     # consolidate_min_recurrence). Always created; only populated when
     # the recurrence gate is active. Kept separate from the semantic
     # collection so production recall queries don't need a kind-filter.
@@ -113,20 +113,19 @@ class MemoryConfig:
     # this gate, every consolidate fire produces fresh duplicates of the
     # same underlying topics ~25x bloat under daily reactor cadence.
     consolidate_schema_merge_distance: float = 0.25
-    # v2 candidate-to-promotion gate. When > 1, a stage-2 K-Means cluster
-    # whose gist does not match an existing schema does NOT immediately
-    # become a durable schema; instead its gist embedding enters the
-    # persistent ``schema_candidates`` collection. A subsequent
-    # consolidate pass whose new cluster gist lands within
-    # consolidate_schema_merge_distance of that candidate bumps its hit
-    # count; promotion to a durable schema only happens once
-    # hits >= consolidate_min_recurrence. Default 2 -- under real
-    # sentence-transformer embeddings this halves mixed-topic over-
-    # absorption (eval: 2 -> 0 mixed schemas) and cuts engineered noisy-
-    # topic bloat in the sim by ~50%, with no recall@k regression. Set
-    # to 1 to disable the gate (legacy "one pass = one schema").
+    # Candidate-to-promotion gate (the sole promotion path). A stage-2
+    # K-Means cluster whose gist does not match an existing schema does
+    # NOT immediately become a durable schema; instead its gist embedding
+    # enters the persistent ``schema_candidates`` collection. A
+    # subsequent consolidate pass whose new cluster gist lands within
+    # ``consolidate_schema_merge_distance`` of that candidate bumps its
+    # hit count; promotion to a durable schema only happens once
+    # hits >= consolidate_min_recurrence. Effective floor is 1 at
+    # runtime (``max(1, ...)`` inside the stage-2 path): callers may
+    # opt into 1 to get fast-promote-on-park (one pass = one schema,
+    # still routed through the candidate buffer).
     consolidate_min_recurrence: int = 2
-    # v2 candidate buffer TTL: a pending candidate that does not recur
+    # Candidate buffer TTL: a pending candidate that does not recur
     # within this many consolidate passes is dropped (the episodes it
     # would have promoted remain UNCONSOLIDATED and re-enter the next
     # pass). Default 5 gives real-embedder workloads ~5 opportunities
@@ -135,6 +134,38 @@ class MemoryConfig:
     # buffer from growing unboundedly with one-off K-Means noise. 0
     # disables expiry (candidates live forever).
     consolidate_candidate_max_age: int = 5
+    # Cross-session diversity required for promotion. When >= 2, a
+    # candidate's accumulated hits must come from at least this many
+    # distinct ``session_id`` values before it can be promoted. Defends
+    # against same-loop in-session repetition minting durable schema.
+    # Default 1 = off (back-compat).
+    consolidate_min_hit_sessions: int = 1
+    # Cross-epoch diversity required for promotion. When >= 2, hits must
+    # span at least this many distinct consolidate-pass epochs. Defends
+    # against dream-replay or same-pass inflation. Default 1 = off.
+    consolidate_min_hit_epochs: int = 1
+    # Minimum source-episode count required at fresh-schema promotion
+    # time. A K-Means cluster smaller than this is rejected even if it
+    # cleared the candidate gate. 0 = off (back-compat); set to 3-4 to
+    # prevent microtrends from calcifying.
+    consolidate_min_schema_size: int = 0
+    # Per-tick power-law decay applied to a parked candidate's hit count
+    # in ``_age_schema_candidates``: ``hits = max(1, floor(hits * (1 -
+    # decay)))``. Mirrors episodic forgetting on the candidate buffer so
+    # stale candidates cannot snipe promotion on one re-occurrence.
+    # 0.0 = off (back-compat).
+    consolidate_candidate_hit_decay: float = 0.0
+    # Minimum confidence required at fresh-schema promotion. The cluster
+    # is rejected if its computed confidence (see
+    # ``consolidate_confidence_full_at``) is below this floor. 0.0 = off.
+    consolidate_min_promotion_confidence: float = 0.0
+    # Cold-schema eviction in the forget pass: semantic schemas whose
+    # ``last_hit_at`` is older than this many seconds are deleted. A
+    # schema's ``last_hit_at`` is set at creation and bumped by every
+    # absorb-merge and every ``recall_semantic_memory`` hit. 0.0 = off
+    # (no schema lifecycle pruning); set to e.g. 60*60*24*30 (30 days)
+    # for a slow ontology garbage-collector.
+    forget_schema_unused_seconds: float = 0.0
     # CA3 iterative pattern completion (modern Hopfield, Ramsauer 2020).
     # ``recall_completion_iters > 0`` enables the iteration; each step
     # softmax-recombines stored vectors at inverse-temperature

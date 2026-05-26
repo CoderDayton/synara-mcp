@@ -212,7 +212,9 @@ async def test_memory_stats_tool(
     mcp, _ = wired
     async with Client(mcp) as client:
         empty = await client.call_tool("memory_stats", {})
-        assert empty.data == {"episodic_count": 0, "semantic_count": 0}
+        assert empty.data["episodic_count"] == 0
+        assert empty.data["semantic_count"] == 0
+        assert empty.data["schema_candidate_count"] == 0
         await client.call_tool("store_episode", {"content": "one episode", "session_id": "s1"})
         after = await client.call_tool("memory_stats", {})
         assert after.data["episodic_count"] == 1

@@ -109,10 +109,10 @@ async def test_consolidate_is_idempotent_on_stable_episode_set(
         consolidate_min_cluster=2,
         dg_pattern_separation=False,
         reactor_consolidate_after_novel=999,  # disable reactor trigger
-        # Idempotence is a property of the legacy single-pass path; the
-        # v2 gate moves the "schema appears" event by one pass which
-        # would shift the idempotence comparison off-by-one. Pin to
-        # legacy so this test keeps measuring what it was designed for.
+        # Idempotence is a property of the fast-promote-on-park path;
+        # min_recurrence>=2 moves the "schema appears" event by one
+        # pass which would shift the idempotence comparison off-by-one.
+        # Pin to 1 so this test keeps measuring what it was designed for.
         consolidate_min_recurrence=1,
     )
     svc = MemoryService(db, config=cfg, embed_fn=_hash_embed)

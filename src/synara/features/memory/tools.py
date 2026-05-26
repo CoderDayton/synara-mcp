@@ -290,7 +290,8 @@ def register_tools(
             "Use to check store size before a bulk operation, when "
             "diagnosing recall returning nothing, or to surface a "
             "health-check count. Returns {episodic_count, "
-            "semantic_count}. No params."
+            "semantic_count, schema_candidate_count, "
+            "consolidate_epoch, ...hygiene counters}. No params."
         ),
     )
     async def memory_stats(ctx: Context) -> dict[str, int]:

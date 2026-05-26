@@ -28,9 +28,9 @@ class MemoryType(StrEnum):
 
     EPISODIC = "episodic"
     SEMANTIC = "semantic"
-    # v2 candidate-to-promotion gate (consolidate_min_recurrence > 1):
-    # cluster gists wait here until their embedding recurs across enough
-    # consolidate passes to earn a SEMANTIC schema row. Filtered out of
+    # Candidate-to-promotion gate: cluster gists wait here until their
+    # embedding recurs across enough consolidate passes
+    # (``consolidate_min_recurrence``) to earn a SEMANTIC schema row. Filtered out of
     # production recall paths by the service code; isolated in its own
     # collection so similarity_search on the semantic store can stay
     # filter-free.
@@ -107,9 +107,9 @@ def default_registry(
 ) -> MemoryTypeRegistry:
     """Build the standard registry used by the existing code path.
 
-    Includes :attr:`MemoryType.SCHEMA_CANDIDATE` for the v2 candidate-
+    Includes :attr:`MemoryType.SCHEMA_CANDIDATE` for the candidate-
     to-promotion gate; the collection exists unconditionally so the
-    feature can be toggled at runtime without a schema migration.
+    promotion threshold can be tuned at runtime without a schema migration.
     """
     return MemoryTypeRegistry(
         by_type={

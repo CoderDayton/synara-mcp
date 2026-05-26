@@ -95,6 +95,8 @@ class MemoryServicePort(Protocol):
     memory_types: MemoryTypeRegistry
     _replay_cursor: int
     schema_candidates: Any
+    _consolidate_epoch: int
+    _hygiene_counters: dict[str, int]
 
     def collection_for(self, kind: MemoryType) -> Any: ...
     def _ensure_projector(self, dim: int) -> DGProjector: ...

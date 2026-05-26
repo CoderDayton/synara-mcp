@@ -157,8 +157,8 @@ class MemoryService:
         # ``service.episodic`` / ``service.semantic`` attribute API.
         self.episodic = self._collections[MemoryType.EPISODIC]
         self.semantic = self._collections[MemoryType.SEMANTIC]
-        # v2 candidate buffer; the collection is always wired up so
-        # toggling consolidate_min_recurrence at runtime doesn't require
+        # Schema-candidate buffer; the collection is always wired up so
+        # tuning consolidate_min_recurrence at runtime doesn't require
         # a schema migration. Present unconditionally on the service.
         self.schema_candidates = self._collections[MemoryType.SCHEMA_CANDIDATE]
         self._embed = _normalise_embed_fn(embed_fn) if embed_fn is not None else None
@@ -190,6 +190,24 @@ class MemoryService:
         # memory only (rebuilt on restart), which is fine because the
         # power-law strength signal converges across many cycles.
         self._replay_cursor: int = 0
+        # Monotonic consolidate-pass counter. Advanced at the top of
+        # ``neocortex.consolidate.run`` so the candidate gate can
+        # require hits to span distinct epochs (cross-pass diversity).
+        # Process-local; rebuilt as 0 on restart, which is safe because
+        # epoch identity only matters within a single run-stream.
+        self._consolidate_epoch: int = 0
+        # Hygiene counters: lifetime per-process tallies of how the
+        # promotion gate behaves. Surfaced via ``stats()`` /
+        # ``memory_stats`` so simulators can observe which gate fires.
+        self._hygiene_counters: dict[str, int] = {
+            "schemas_promoted": 0,
+            "candidates_parked": 0,
+            "candidates_rejected_size": 0,
+            "candidates_rejected_confidence": 0,
+            "candidates_rejected_session_diversity": 0,
+            "candidates_rejected_epoch_diversity": 0,
+            "schemas_evicted_unused": 0,
+        }
         self._sr: _SR | None = (
             _SR(
                 gamma=self.config.sr_gamma,
@@ -498,10 +516,14 @@ class MemoryService:
 
     # ------------------------------------------------------------------ stats
     async def stats(self) -> dict[str, int]:
-        return {
+        out: dict[str, int] = {
             "episodic_count": await self.episodic.count(),
             "semantic_count": await self.semantic.count(),
+            "schema_candidate_count": await self.schema_candidates.count(),
+            "consolidate_epoch": int(self._consolidate_epoch),
         }
+        out.update(self._hygiene_counters)
+        return out
 
     # --------------------------------------------------- operation delegates
     # Sibling-module operations are bound as thin delegates so callers
@@ -718,6 +740,7 @@ class MemoryService:
         fetch_k = k if kind is None else max(k * 4, 32)
         hits = await self.semantic.similarity_search(q, k=fetch_k)
         out: list[dict[str, Any]] = []
+        hit_bumps: list[tuple[int, dict[str, Any]]] = []
         for doc, dist in hits:
             md = dict(doc.metadata)
             if kind is not None and str(md.get("kind", "")) != kind:
@@ -732,6 +755,18 @@ class MemoryService:
             )
             if len(out) >= k:
                 break
+        # Bump ``last_hit_at`` on the schemas we actually returned so the
+        # cold-schema eviction path (forget.run with
+        # forget_schema_unused_seconds > 0) treats a recently-recalled
+        # schema as alive.
+        if out and self.config.forget_schema_unused_seconds > 0:
+            now = now_seconds()
+            for r in out:
+                sid = int(r["id"])
+                if sid >= 0:
+                    hit_bumps.append((sid, {"last_hit_at": now}))
+            if hit_bumps:
+                await self.semantic.update_metadata(hit_bumps)
         return out
 
 

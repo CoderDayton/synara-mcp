@@ -189,8 +189,8 @@ async def test_consolidate_forms_schemas_and_links_episodes() -> None:
     try:
         # Schema-eligibility gates default to ON; this test predates them
         # and assumes immediate consolidation, so disable both gates here.
-        # The v2 recurrence gate also defaults ON now -- pin it off so
-        # this test keeps measuring the stage-1/stage-2 mechanics.
+        # The recurrence gate also defaults ON now -- set min_recurrence=1
+        # so this test keeps measuring the stage-1/stage-2 mechanics.
         cfg = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=0,
@@ -252,7 +252,10 @@ async def test_reflect_returns_recent_episodes(service: MemoryService) -> None:
 
 
 async def test_stats_starts_empty(service: MemoryService) -> None:
-    assert await service.stats() == {"episodic_count": 0, "semantic_count": 0}
+    s = await service.stats()
+    assert s["episodic_count"] == 0
+    assert s["semantic_count"] == 0
+    assert s["schema_candidate_count"] == 0
 
 
 async def test_store_semantic_memory_persists_with_metadata(
@@ -378,9 +381,9 @@ async def test_consolidate_absorbs_into_existing_schema() -> None:
     db = AsyncVectorDB(":memory:")
     try:
         # Disable age/retrieval gates so the absorb path triggers on
-        # freshly-encoded, never-recalled episodes (legacy test contract).
-        # Pin v2 off so the first consolidate actually forms the schema
-        # that the second consolidate is supposed to absorb into.
+        # freshly-encoded, never-recalled episodes. Set min_recurrence=1
+        # so the first consolidate actually forms the schema that the
+        # second consolidate is supposed to absorb into.
         cfg = MemoryConfig(
             consolidate_min_age_seconds=0.0,
             consolidate_min_retrievals=0,

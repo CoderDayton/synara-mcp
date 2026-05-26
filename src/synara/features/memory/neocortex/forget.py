@@ -76,7 +76,7 @@ def access_times_from_meta(md: dict[str, Any], *, fallback_now: float) -> list[f
     return [enc] + [last] * max(rc, 0)
 
 
-async def run(
+async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
     service: MemoryService,
     *,
     strength_floor: float = 0.05,
@@ -137,9 +137,41 @@ async def run(
             service._sr.evict_nodes(set(weak))
         await service.episodic.delete_by_ids(weak)
         removed = len(weak)
+
+    # Cold-schema eviction: optional ontology garbage-collector. Off by
+    # default (forget_schema_unused_seconds == 0). When enabled, deletes
+    # semantic schemas whose ``last_hit_at`` is older than the threshold.
+    # Schemas without ``last_hit_at`` (legacy rows) are skipped --
+    # absence is treated as "unknown, assume alive" so an upgrade does
+    # not mass-delete existing ontology.
+    cold_threshold = float(service.config.forget_schema_unused_seconds)
+    schemas_removed = 0
+    cold_schema_ids: list[int] = []
+    if cold_threshold > 0.0:
+        sem_rows = await service.semantic.get_documents(filter_dict=None, limit=max_scan)
+        for sch_id, _text, smd in sem_rows:
+            last_hit = smd.get("last_hit_at")
+            if last_hit is None:
+                continue
+            try:
+                age = now - float(last_hit)
+            except (TypeError, ValueError):
+                continue
+            if age > cold_threshold:
+                cold_schema_ids.append(int(sch_id))
+        if cold_schema_ids and not dry_run:
+            await service.semantic.delete_by_ids(cold_schema_ids)
+            schemas_removed = len(cold_schema_ids)
+            counters = service._hygiene_counters
+            counters["schemas_evicted_unused"] = (
+                counters.get("schemas_evicted_unused", 0) + schemas_removed
+            )
+
     return {
         "candidate_ids": weak,
         "removed": removed,
         "dry_run": dry_run,
         "scanned": len(rows),
+        "cold_schema_candidate_ids": cold_schema_ids,
+        "schemas_removed": schemas_removed,
     }

@@ -35,12 +35,39 @@ sharp-wave ripples (SWR) followed by neocortical schema integration:
   ``consolidated_into=<schema_id>`` so ``forget`` knows their gist is
   preserved upstream.
 
-The merge threshold is intentionally one-sided in v1: above it, cluster
+The merge threshold is intentionally one-sided: above it, cluster
 merges; below, fresh schema. The neuroscience literature (Sinclair &
 Barense 2019, Yassa & Stark 2011) supports a middle "reconsolidate"
-zone with prediction-error-gated forking after repeated mismatches; v2
-should add that once we have evidence the simple two-zone version
-under- or over-absorbs at our embedding density.
+zone with prediction-error-gated forking after repeated mismatches;
+add that once we have evidence the simple two-zone version under- or
+over-absorbs at our embedding density.
+
+Ontology hygiene knobs (all optional, all default off / back-compat):
+
+* ``consolidate_min_recurrence`` (effective floor 1) — the schema-
+  candidate buffer is the SOLE promotion path. A K-Means cluster's
+  gist is parked and only promoted to a durable schema once it
+  recurs ``consolidate_min_recurrence`` times. Setting it to 1
+  fast-promotes on first park (still through the buffer).
+* ``consolidate_min_hit_sessions`` — require hits to come from N
+  distinct ``session_id`` values before promoting. Defends against an
+  in-session loop minting schema from same-context repetition.
+* ``consolidate_min_hit_epochs`` — require hits to span N distinct
+  consolidate-pass epochs. Defends against same-pass / dream-replay
+  inflation of the hit count.
+* ``consolidate_min_schema_size`` — minimum source-episode count at
+  promotion. Stops 2-episode microtrends from calcifying.
+* ``consolidate_candidate_hit_decay`` — per-tick power-law decay on
+  parked-candidate hits. Mirrors episodic forgetting so stale
+  candidates cannot snipe promotion on a single re-occurrence.
+* ``consolidate_min_promotion_confidence`` — reject promotion when
+  derived confidence is below the floor.
+* ``forget_schema_unused_seconds`` — cold-schema eviction in
+  ``forget.run``: semantic schemas whose ``last_hit_at`` is older than
+  this are deleted. ``last_hit_at`` is set at schema creation, bumped
+  on every absorb-merge, and bumped on every ``recall_semantic_memory``
+  hit (only when the knob is enabled, to keep recall write-free
+  otherwise).
 """
 
 from __future__ import annotations
@@ -61,57 +88,69 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 
 async def _age_schema_candidates(service: MemoryService) -> None:
-    """Tick every v2 candidate's age forward and evict expired rows.
+    """Tick every parked candidate's age forward, decay hits, and evict expired rows.
 
     Called once per ``run()`` invocation so each consolidate pass is
     one tick. Candidates whose gist has not recurred within
     ``consolidate_candidate_max_age`` ticks are dropped; their episodes
-    remain UNCONSOLIDATED and re-enter the next pass through K-Means
-    (which may produce a different gist embedding and start a fresh
-    candidacy). Operates directly on the persistent
-    ``schema_candidates`` collection so the buffer survives restarts.
-    Inert when ``consolidate_min_recurrence <= 1`` or when
-    ``consolidate_candidate_max_age <= 0``.
+    remain UNCONSOLIDATED and re-enter the next pass through K-Means.
+    When ``consolidate_candidate_hit_decay > 0`` the hit count also
+    decays each tick (floor of 1) so stale candidates cannot snipe
+    promotion on one re-occurrence. Inert only when
+    ``consolidate_candidate_max_age <= 0`` AND decay is off.
     """
     cfg = service.config
-    if cfg.consolidate_min_recurrence <= 1 or cfg.consolidate_candidate_max_age <= 0:
+    if cfg.consolidate_candidate_max_age <= 0 and cfg.consolidate_candidate_hit_decay <= 0.0:
         return
     if await service.schema_candidates.count() == 0:
         return
     max_age = cfg.consolidate_candidate_max_age
+    decay = max(0.0, min(1.0, cfg.consolidate_candidate_hit_decay))
     rows = await service.schema_candidates.get_documents(filter_dict=None)
     updates: list[tuple[int, dict[str, Any]]] = []
     evict: list[int] = []
     for doc_id, _text, md in rows:
         new_age = int(md.get("age", 0)) + 1
-        if new_age > max_age:
+        if max_age > 0 and new_age > max_age:
             evict.append(int(doc_id))
-        else:
-            updates.append((int(doc_id), {"age": new_age}))
+            continue
+        patch: dict[str, Any] = {"age": new_age}
+        if decay > 0.0:
+            cur_hits = int(md.get("hits", 0))
+            patch["hits"] = max(1, int(cur_hits * (1.0 - decay)))
+        updates.append((int(doc_id), patch))
     if updates:
         await service.schema_candidates.update_metadata(updates)
     if evict:
         await service.schema_candidates.delete_by_ids(evict)
 
 
-async def _v2_promote_or_park(
+async def _v2_promote_or_park(  # noqa: PLR0912, PLR0915 -- branch-per-gate aids audit
     service: MemoryService,
     *,
     summary: str,
     summary_emb: list[float],
     merge_dist: float,
     min_recurrence: int,
+    session_id: str | None,
+    epoch: int,
 ) -> bool:
-    """v2 candidate gate, persistent-buffer edition.
+    """Candidate-to-promotion gate (the sole promotion path).
 
     Returns ``True`` when the caller should fall through to fresh-schema
-    creation (the candidate just crossed ``min_recurrence`` hits and has
+    creation (the candidate just crossed all diversity gates and has
     been removed from the buffer). Returns ``False`` when the cluster
     was instead parked as a new candidate or had its hit count bumped
-    short of promotion -- the caller should skip schema creation.
-    Operates on ``service.schema_candidates`` so all state survives
-    restarts; the in-memory shortcut is gone.
+    short of promotion -- the caller skips schema creation.
+
+    Hits, observed sessions, and observed epochs are tracked per
+    candidate so optional ``consolidate_min_hit_sessions`` /
+    ``consolidate_min_hit_epochs`` gates can require diversity before
+    promotion. Operates on ``service.schema_candidates`` so all state
+    survives restarts.
     """
+    cfg = service.config
+    counters = service._hygiene_counters
     nearest_id: int | None = None
     if await service.schema_candidates.count() > 0:
         try:
@@ -125,15 +164,38 @@ async def _v2_promote_or_park(
                 if candidate_id >= 0:
                     nearest_id = candidate_id
     if nearest_id is None:
-        # New candidate: park it with hits=1, age=0.
+        # New candidate. When the recurrence threshold is met by a
+        # single hit AND both diversity knobs are at their off defaults,
+        # promote immediately without writing to the buffer -- this
+        # preserves legacy "one pass = one schema" behaviour for callers
+        # that explicitly opt in via min_recurrence=1, while still
+        # routing through the candidate-buffer code path. Diversity is keyed on the
+        # *knob*, not on what this single hit happens to carry, so
+        # anonymous (session_id=None) callers are not silently denied
+        # fast-promote. The caller increments ``schemas_promoted``.
+        if (
+            min_recurrence <= 1
+            and cfg.consolidate_min_hit_sessions <= 1
+            and cfg.consolidate_min_hit_epochs <= 1
+        ):
+            return True
+        sess_seed = [session_id] if session_id else []
         new_ids = await service.schema_candidates.add_texts(
             [summary],
-            metadatas=[{"hits": 1, "age": 0}],
+            metadatas=[
+                {
+                    "hits": 1,
+                    "age": 0,
+                    "sessions": sess_seed,
+                    "epochs": [int(epoch)],
+                }
+            ],
             embeddings=[summary_emb],
         )
         if new_ids:
             new_id = int(new_ids[0])
             await service.schema_candidates.update_metadata([(new_id, {"id": new_id})])
+        counters["candidates_parked"] = counters.get("candidates_parked", 0) + 1
         return False
     # Existing candidate matched: bump hits and either promote or wait.
     existing = await service.schema_candidates.get_documents({"id": nearest_id}, limit=1)
@@ -144,22 +206,87 @@ async def _v2_promote_or_park(
         return False
     _, _, md = existing[0]
     new_hits = int(md.get("hits", 0)) + 1
-    if new_hits < min_recurrence:
-        # Reset age on a hit: the candidate is clearly still alive.
-        await service.schema_candidates.update_metadata(
-            [(nearest_id, {"hits": new_hits, "age": 0})],
-        )
+    prior_sessions = [str(s) for s in (md.get("sessions") or []) if isinstance(s, str)]
+    prior_epochs = [int(e) for e in (md.get("epochs") or []) if isinstance(e, int)]
+    if session_id and session_id not in prior_sessions:
+        prior_sessions = [*prior_sessions, session_id]
+    if int(epoch) not in prior_epochs:
+        prior_epochs = [*prior_epochs, int(epoch)]
+    distinct_sessions = len(prior_sessions)
+    distinct_epochs = len(prior_epochs)
+    patch: dict[str, Any] = {
+        "hits": new_hits,
+        "age": 0,  # alive on a hit
+        "sessions": prior_sessions,
+        "epochs": prior_epochs,
+    }
+    # Diversity gates are inert at their off defaults (knob <= 1) -- the
+    # candidate's observed sessions/epochs are recorded for telemetry
+    # but do NOT block promotion. This preserves back-compat for the
+    # common case where ``_infer_cluster_session`` returned None
+    # (cluster has tied session contributions) and the prior_sessions
+    # list is empty.
+    promote = new_hits >= min_recurrence
+    need_sess = cfg.consolidate_min_hit_sessions
+    need_epoch = cfg.consolidate_min_hit_epochs
+    if need_sess > 1 and distinct_sessions < need_sess:
+        promote = False
+    if need_epoch > 1 and distinct_epochs < need_epoch:
+        promote = False
+    if not promote:
+        await service.schema_candidates.update_metadata([(nearest_id, patch)])
+        # Telemetry: bucket why we did NOT promote.
+        if new_hits >= min_recurrence:
+            if (
+                cfg.consolidate_min_hit_sessions > 1
+                and distinct_sessions < cfg.consolidate_min_hit_sessions
+            ):
+                counters["candidates_rejected_session_diversity"] = (
+                    counters.get("candidates_rejected_session_diversity", 0) + 1
+                )
+            if (
+                cfg.consolidate_min_hit_epochs > 1
+                and distinct_epochs < cfg.consolidate_min_hit_epochs
+            ):
+                counters["candidates_rejected_epoch_diversity"] = (
+                    counters.get("candidates_rejected_epoch_diversity", 0) + 1
+                )
         return False
-    # Crossed the recurrence threshold: drop the candidate and let the
+    # Crossed every diversity gate: drop the candidate and let the
     # caller create the durable schema row.
     await service.schema_candidates.delete_by_ids([nearest_id])
     return True
 
 
+def _infer_cluster_session(
+    members: Sequence[tuple[str, dict[str, Any]]],
+) -> str | None:
+    """Plurality session_id among cluster members, or None on a tie / absence.
+
+    Used by the candidate gate to record which session contributed
+    this hit, enabling cross-session diversity gating without making
+    the caller pass session_id through every cluster. Ties return
+    ``None`` so the gate does not credit a contested cluster to an
+    arbitrary winner (which would depend on dict insertion order).
+    """
+    counts: dict[str, int] = {}
+    for _text, md in members:
+        sid = md.get("session_id")
+        if isinstance(sid, str) and sid:
+            counts[sid] = counts.get(sid, 0) + 1
+    if not counts:
+        return None
+    top_sid, top_count = max(counts.items(), key=lambda kv: kv[1])
+    # Tie => no plurality winner; refuse to credit the cluster.
+    if sum(1 for c in counts.values() if c == top_count) > 1:
+        return None
+    return top_sid
+
+
 def _cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
     """Cosine distance for two equal-length, non-zero vectors.
 
-    Used by the v2 candidate gate to compare an in-memory gist embedding
+    Used by the candidate gate to compare an in-memory gist embedding
     against buffered candidates without a DB round-trip. Returns 1.0 on
     a length mismatch or all-zero vector so the caller treats them as
     non-matching rather than crashing the consolidate pass.
@@ -335,6 +462,7 @@ async def _merge_into_schema(
                     "source_episode_ids": new_sources,
                     "confidence": float(new_conf),
                     "updated_at": now,
+                    "last_hit_at": now,
                 },
             )
         ]
@@ -449,6 +577,10 @@ async def run(
     cfg = service.config
     candidates = _apply_eligibility_gates(cfg, candidates)
     candidates = _cap_candidates(cfg, candidates)
+    # Advance the consolidate-pass epoch before aging so the candidate
+    # gate sees a monotonically increasing tick for each pass. Epoch
+    # is the primitive that powers cross-epoch diversity gating.
+    service._consolidate_epoch = int(service._consolidate_epoch) + 1
     await _age_schema_candidates(service)
     floor = min_cluster_size or cfg.consolidate_min_cluster
     if len(candidates) < floor:
@@ -508,7 +640,7 @@ async def run(
     return formed
 
 
-async def _process_stage2_cluster(
+async def _process_stage2_cluster(  # noqa: PLR0911 -- explicit branch-per-gate aids audit
     service: MemoryService,
     *,
     ep_ids: Sequence[int],
@@ -547,36 +679,55 @@ async def _process_stage2_cluster(
                 if merged is not None:
                     return merged, False
 
-    # Compute the summary embedding once: needed both for the v2
+    # Compute the summary embedding once: needed both for the
     # candidate gate below and (if we promote) for the schema add_texts
-    # call. Falls back to None when no embed_fn is configured, in which
-    # case the candidate gate degrades to legacy behaviour for safety.
+    # call. If no embed_fn is configured the gate cannot run, so
+    # promotion is rejected outright -- the caller skips the cluster
+    # rather than minting an ungated schema.
     summary_emb_batch = await service.vectorise([summary])
     summary_emb: list[float] | None = list(summary_emb_batch[0]) if summary_emb_batch else None
+    cfg = service.config
+    counters = service._hygiene_counters
+    if summary_emb is None or merge_dist <= 0:
+        return None
 
-    # v2 candidate-to-promotion gate. Inert when min_recurrence <= 1.
-    # Operates on a separate ``schema_candidates`` collection so
-    # production recall paths never see pending gists, and so the
-    # buffer survives process restarts.
-    min_recurrence = service.config.consolidate_min_recurrence
-    if min_recurrence > 1 and summary_emb is not None and merge_dist > 0:
-        promoted = await _v2_promote_or_park(
-            service,
-            summary=summary,
-            summary_emb=summary_emb,
-            merge_dist=merge_dist,
-            min_recurrence=min_recurrence,
+    # Candidate-to-promotion gate (the sole promotion path). Operates
+    # on a separate ``schema_candidates`` collection so production
+    # recall paths never see pending gists, and so the buffer survives
+    # process restarts.
+    min_recurrence = max(1, int(cfg.consolidate_min_recurrence))
+    cluster_session = _infer_cluster_session(members)
+    promoted = await _v2_promote_or_park(
+        service,
+        summary=summary,
+        summary_emb=summary_emb,
+        merge_dist=merge_dist,
+        min_recurrence=min_recurrence,
+        session_id=cluster_session,
+        epoch=int(service._consolidate_epoch),
+    )
+    if not promoted:
+        return None
+
+    # Min-source-episode floor: a cluster too small to be ontology gets
+    # dropped after clearing the diversity gates.
+    if cfg.consolidate_min_schema_size > 0 and len(ep_ids) < cfg.consolidate_min_schema_size:
+        counters["candidates_rejected_size"] = counters.get("candidates_rejected_size", 0) + 1
+        return None
+
+    confidence = _schema_confidence(len(ep_ids), cfg.consolidate_confidence_full_at)
+    if confidence < cfg.consolidate_min_promotion_confidence:
+        counters["candidates_rejected_confidence"] = (
+            counters.get("candidates_rejected_confidence", 0) + 1
         )
-        if not promoted:
-            return None
-
-    confidence = _schema_confidence(len(ep_ids), service.config.consolidate_confidence_full_at)
+        return None
     sem_meta: dict[str, Any] = {
         "source_episode_ids": list(ep_ids),
         "tags": tag_union,
         "confidence": float(confidence),
         "created_at": now,
         "updated_at": now,
+        "last_hit_at": now,
     }
     sem_ids = await service.semantic.add_texts(
         [summary],
@@ -585,6 +736,7 @@ async def _process_stage2_cluster(
     )
     sem_id = int(sem_ids[0])
     await service.semantic.update_metadata([(sem_id, {"id": sem_id})])
+    counters["schemas_promoted"] = counters.get("schemas_promoted", 0) + 1
     await service.episodic.update_metadata(
         [(int(eid), {"consolidated_into": sem_id}) for eid in ep_ids]
     )
