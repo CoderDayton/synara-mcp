@@ -15,13 +15,6 @@ import { Empty, ErrorState, Loading } from "@/components/common/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { MemoryGraph } from "@/components/memories/memory-graph";
 import { MemoryInspector } from "@/components/memories/memory-inspector";
 
@@ -35,8 +28,11 @@ function recallIds(list: MemoryList | undefined): number[] {
 export default function Memories() {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
+  // Camera focus only — drives a viewport pan/zoom on the existing
+  // UMAP layout. We deliberately do NOT pass this to the server: the
+  // global UMAP manifold must stay stable across recenter clicks, so
+  // every fetch sees the same node set.
   const [focus, setFocus] = useState<number | null>(null);
-  const [depth, setDepth] = useState(2);
   const [selected, setSelected] = useState<GraphNode | null>(null);
 
   const search = useMemories({
@@ -44,11 +40,7 @@ export default function Memories() {
     q: query || undefined,
     limit: 60,
   });
-  const graph = useGraph(
-    focus != null
-      ? { focus, depth, max_nodes: 260 }
-      : { depth: 1, max_nodes: 260 },
-  );
+  const graph = useGraph({ depth: 1, max_nodes: 260 });
 
   const matchIds = useMemo(
     () => (query ? recallIds(search.data) : []),
@@ -59,18 +51,12 @@ export default function Memories() {
     [matchIds],
   );
 
-  // "Search the whole map": if the top hit isn't already on the
-  // current canvas, recenter on it so its neighbourhood loads — the
-  // highlight then lands on real nodes instead of nothing.
+  // "Search the whole map": pan the camera to the top hit so its
+  // neighbourhood is visible. Camera-only — no refetch, no relayout.
   useEffect(() => {
     if (!query || matchIds.length === 0 || !graph.data) return;
-    const present = new Set(
-      graph.data.nodes.map((n) => (n.kind === "episodic" ? n.id : -1)),
-    );
-    // Intentional view-state sync from async recall results — there is
-    // no earlier point (results arrive after submit, via react-query).
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!matchIds.some((id) => present.has(id))) setFocus(matchIds[0]);
+    setFocus(matchIds[0]);
   }, [query, matchIds, graph.data]);
 
   function reset() {
@@ -83,7 +69,6 @@ export default function Memories() {
   const showEmpty =
     graph.data && graph.data.nodes.length === 0 && !graph.isLoading;
 
-  const showDepth = focus != null;
   const showReset = focus != null || !!query;
 
   return (
@@ -101,7 +86,7 @@ export default function Memories() {
           <AlertDescription>
             This dashboard is talking to a memory server that started
             before the enriched graph route was deployed. Nodes have no
-            salience, session, or successor/plasticity structure until
+            salience, context, or successor/plasticity structure until
             the MCP server process is restarted. The map below is a
             best-effort legacy view.
           </AlertDescription>
@@ -150,40 +135,18 @@ export default function Memories() {
         </form>
 
         {/* Top-right: focus controls — depth + reset, only shown when relevant */}
-        {(showDepth || showReset) && (
+        {showReset && (
           <div className="absolute top-3 right-3 z-20 flex items-center gap-1 rounded-lg border border-border/70 bg-surface-overlay p-1 shadow-card backdrop-blur sm:top-4 sm:right-4">
-            {showDepth && (
-              <Select
-                value={String(depth)}
-                onValueChange={(v) => setDepth(Number(v))}
-              >
-                <SelectTrigger
-                  size="sm"
-                  aria-label="Neighbourhood depth"
-                  className="h-8 gap-2 border-0 bg-transparent px-2 shadow-none focus-visible:ring-0 dark:bg-transparent dark:hover:bg-transparent"
-                >
-                  <span className="eyebrow">depth</span>
-                  <SelectValue className="font-mono text-xs tabular-nums" />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  <SelectItem value="1">1</SelectItem>
-                  <SelectItem value="2">2</SelectItem>
-                  <SelectItem value="3">3</SelectItem>
-                </SelectContent>
-              </Select>
-            )}
-            {showReset && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={reset}
-                className="h-8 px-2"
-              >
-                <RotateCcw className="size-3.5" aria-hidden />
-                Reset
-              </Button>
-            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={reset}
+              className="h-8 px-2"
+            >
+              <RotateCcw className="size-3.5" aria-hidden />
+              Reset
+            </Button>
           </div>
         )}
 
@@ -207,6 +170,7 @@ export default function Memories() {
             <MemoryGraph
               data={graph.data}
               selectedKey={selected?.key ?? null}
+              cameraFocus={focus}
               highlight={highlight}
               onSelect={setSelected}
               onFocus={(id) => setFocus(id)}
@@ -224,10 +188,7 @@ export default function Memories() {
           <aside className="absolute inset-y-0 right-0 z-30 w-full border-l border-border/60 bg-surface-floating backdrop-blur sm:w-[22rem] lg:static lg:bg-surface-canvas lg:backdrop-blur-none">
             <MemoryInspector
               node={selected}
-              onFocus={(id) => {
-                setFocus(id);
-                setDepth((d) => Math.max(d, 2));
-              }}
+              onFocus={(id) => setFocus(id)}
               onClose={() => setSelected(null)}
             />
           </aside>

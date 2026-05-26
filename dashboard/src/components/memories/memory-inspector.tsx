@@ -5,7 +5,7 @@
  * and overlays the live ranking signals the map encodes. For a schema
  * node it shows the consolidation summary.
  */
-import { Crosshair, X } from "lucide-react";
+import { CircleHelp, Crosshair, X } from "lucide-react";
 import { useMemoryDetail } from "@/lib/queries";
 import type { GraphNode } from "@/lib/api";
 import { relativeTime, shortSession } from "@/lib/format";
@@ -15,6 +15,12 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { DeleteMemoryButton } from "@/components/memories/delete-memory-button";
 
 /** Layout-shaped placeholder for the trace section while the detail
@@ -56,10 +62,39 @@ function TraceSkeleton() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
   return (
     <div className="space-y-1">
-      <div className="eyebrow">{label}</div>
+      <div className="eyebrow flex items-center gap-1">
+        <span>{label}</span>
+        {hint && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`What is ${label.toLowerCase()}?`}
+                className="inline-flex size-3 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
+              >
+                <CircleHelp className="size-3" aria-hidden />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              className="max-w-xs border border-border/70 bg-popover/95 text-xs leading-snug text-popover-foreground shadow-card backdrop-blur"
+            >
+              {hint}
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
       <div className="metric text-sm text-foreground">{value}</div>
     </div>
   );
@@ -78,14 +113,35 @@ function EpisodicBody({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Stat label="Salience" value={node.salience.toFixed(2)} />
-        <Stat label="Retrievals" value={String(node.retrieval_count)} />
-        <Stat label="Session" value={shortSession(node.session_id)} />
-        <Stat label="Encoded" value={relativeTime(node.encoded_at)} />
-        <Stat label="Last recall" value={relativeTime(node.last_accessed)} />
+        <Stat
+          label="Salience"
+          value={node.salience.toFixed(2)}
+          hint="How important this memory is. Drives retention (low-salience traces are forgotten first) and gets a small bonus during recall."
+        />
+        <Stat
+          label="Retrievals"
+          value={String(node.retrieval_count)}
+          hint="How many times this episode has been recalled. Each retrieval reinforces the trace and refreshes its last-access time."
+        />
+        <Stat
+          label="Context"
+          value={shortSession(node.session_id)}
+          hint="The context the memory was encoded in — modelling state-dependent retrieval. Episodes from the same context get a small ranking bonus when recalled in that same context."
+        />
+        <Stat
+          label="Encoded"
+          value={relativeTime(node.encoded_at)}
+          hint="When this episode was first stored."
+        />
+        <Stat
+          label="Last recall"
+          value={relativeTime(node.last_accessed)}
+          hint="When this episode was most recently retrieved. Recency is one input to the forgetting policy."
+        />
         <Stat
           label="Schema"
           value={node.consolidated_into > 0 ? `#${node.consolidated_into}` : "none"}
+          hint="The semantic schema (gist) this episode has been consolidated into, if any. Consolidation distils repeated episodes into reusable semantic memory."
         />
       </div>
 
@@ -178,11 +234,20 @@ function SemanticBody({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Stat label="Confidence" value={node.confidence.toFixed(2)} />
-        <Stat label="Sources" value={String(node.source_count)} />
+        <Stat
+          label="Confidence"
+          value={node.confidence.toFixed(2)}
+          hint="How well-supported this schema is. Grows as more episodes consolidate into it; saturates at the confidence ceiling."
+        />
+        <Stat
+          label="Sources"
+          value={String(node.source_count)}
+          hint="How many episodes were absorbed into this schema during consolidation."
+        />
         <Stat
           label="Origin"
           value={node.user_asserted ? "user-asserted" : "consolidated"}
+          hint="Whether the schema was distilled automatically from episodes (consolidated) or written directly by the caller (user-asserted)."
         />
       </div>
       {node.preview && (
@@ -221,6 +286,7 @@ export function MemoryInspector({
     );
   }
   return (
+    <TooltipProvider delayDuration={120}>
     <div className="flex h-full flex-col">
       <div className="flex items-start justify-between gap-3 border-b border-border/60 p-4">
         <div className="min-w-0">
@@ -250,5 +316,6 @@ export function MemoryInspector({
         </div>
       </ScrollArea>
     </div>
+    </TooltipProvider>
   );
 }

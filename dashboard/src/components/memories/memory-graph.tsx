@@ -16,9 +16,9 @@
  *
  * Selecting a node spreads activation: its association edges animate and
  * everything else dims — the same neighbourhood the recall pipeline
- * would walk. Layout is a settled d3-force simulation; node positions
- * persist across focus changes so expansion animates instead of
- * reshuffling.
+ * would walk. Layout is ELK's 'layered' (Sugiyama-style hierarchic)
+ * pass — the same top-down shape yFiles' HierarchicLayout produces —
+ * recomputed whenever the graph signature changes.
  */
 import {
   Background,
@@ -30,6 +30,7 @@ import {
   Panel,
   Position,
   ReactFlow,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeProps,
@@ -45,9 +46,11 @@ import {
   nodeRadius,
   type Positions,
 } from "./graph-layout";
-// `?worker` is Vite's worker import. The worker is built as a
-// separate chunk and lazy-loaded by the page that needs the graph.
-import LayoutWorker from "./layout.worker?worker";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 
 type NodeData = {
   node: GraphNode;
@@ -122,44 +125,101 @@ function EpisodicNode({ data, selected }: NodeProps<FlowNode>) {
     (consolidated ? ", consolidated" : "") +
     ". Enter to inspect, F to recenter.";
   return (
-    <div
-      title={`#${n.id}${n.preview ? ` — ${n.preview}` : ""}`}
-      role="button"
-      tabIndex={0}
-      aria-label={label}
-      aria-pressed={selected}
-      onKeyDown={(e) => handleNodeKey(e, data)}
-      style={{
-        width: r * 2,
-        height: r * 2,
-        opacity: data.dim ? 0.16 : 1,
-        background: `oklch(0.30 0.05 ${hue} / 0.55)`,
-        borderColor:
-          n.is_focus || selected
-            ? "var(--color-primary)"
-            : `oklch(0.72 0.12 ${hue} / 0.75)`,
-        boxShadow:
-          n.is_focus || selected || data.active
-            ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
-            : "var(--shadow-card)",
-      }}
-      className="grid place-items-center rounded-[30%] border-[1.5px] font-mono transition-[opacity,box-shadow,transform] duration-300"
-    >
-      {hiddenHandles()}
-      <span
-        className="leading-none font-semibold"
-        style={{ fontSize: clamp(r * 0.42, 8, 13), color: "var(--color-foreground)" }}
-      >
-        #{n.id}
-      </span>
-      {consolidated && (
-        <span
-          className="absolute -top-1 -right-1 size-2 rounded-full"
-          style={{ background: "var(--color-chart-2)" }}
-          title="consolidated into a schema"
-        />
-      )}
-    </div>
+    <HoverCard>
+      <HoverCardTrigger asChild>
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label={label}
+          aria-pressed={selected}
+          onKeyDown={(e) => handleNodeKey(e, data)}
+          style={{
+            width: r * 2,
+            height: r * 2,
+            opacity: data.dim ? 0.16 : 1,
+            background: `oklch(0.30 0.05 ${hue} / 0.55)`,
+            borderColor:
+              n.is_focus || selected
+                ? "var(--color-primary)"
+                : `oklch(0.72 0.12 ${hue} / 0.75)`,
+            boxShadow:
+              n.is_focus || selected || data.active
+                ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
+                : "var(--shadow-card)",
+          }}
+          className="grid place-items-center rounded-[30%] border-[1.5px] font-mono transition-[opacity,box-shadow,transform] duration-300"
+        >
+          {hiddenHandles()}
+          <span
+            className="leading-none font-semibold"
+            style={{ fontSize: clamp(r * 0.42, 8, 13), color: "var(--color-foreground)" }}
+          >
+            #{n.id}
+          </span>
+          {consolidated && (
+            <span
+              className="absolute -top-1 -right-1 size-2 rounded-full"
+              style={{ background: "var(--color-chart-2)" }}
+            />
+          )}
+        </div>
+      </HoverCardTrigger>
+      <HoverCardContent side="top" className="w-72 p-0">
+        <div
+          className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2 text-xs font-mono"
+          style={{ background: `oklch(0.30 0.05 ${hue} / 0.30)` }}
+        >
+          <span className="flex items-center gap-1.5 font-semibold">
+            <span
+              className="size-2 rounded-sm"
+              style={{ background: `oklch(0.72 0.12 ${hue} / 0.85)` }}
+              aria-hidden
+            />
+            Episode #{n.id}
+          </span>
+          {n.is_focus && (
+            <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[0.6rem] font-medium tracking-wide text-primary uppercase">
+              focus
+            </span>
+          )}
+        </div>
+        {n.preview && (
+          <div className="line-clamp-3 px-3 py-2 text-xs leading-snug text-muted-foreground">
+            {n.preview}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-y-1 border-t border-border/60 px-3 py-2 font-mono text-[0.65rem]">
+          <div>
+            <div className="text-[0.55rem] tracking-wider text-muted-foreground uppercase">
+              Salience
+            </div>
+            <div className="tabular-nums text-foreground">{n.salience.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="text-[0.55rem] tracking-wider text-muted-foreground uppercase">
+              Retrievals
+            </div>
+            <div className="tabular-nums text-foreground">{n.retrieval_count}</div>
+          </div>
+          {n.session_id && (
+            <div>
+              <div className="text-[0.55rem] tracking-wider text-muted-foreground uppercase">
+                Context
+              </div>
+              <div className="text-foreground">{shortSession(n.session_id)}</div>
+            </div>
+          )}
+          {consolidated && (
+            <div>
+              <div className="text-[0.55rem] tracking-wider text-muted-foreground uppercase">
+                Schema
+              </div>
+              <div className="text-foreground">⌬{n.consolidated_into}</div>
+            </div>
+          )}
+        </div>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
@@ -170,36 +230,71 @@ function SemanticNode({ data, selected }: NodeProps<FlowNode>) {
   const conf = clamp(n.confidence, 0, 1);
   const label = `Schema #${n.id}, confidence ${conf.toFixed(2)}, ${n.source_count} sources. Enter to inspect.`;
   return (
-    <div
-      title={`schema #${n.id}${n.preview ? ` — ${n.preview}` : ""}`}
-      role="button"
-      tabIndex={0}
-      aria-label={label}
-      aria-pressed={selected}
-      onKeyDown={(e) => handleNodeKey(e, data)}
-      style={{
-        width: r * 2,
-        height: r * 2,
-        opacity: data.dim ? 0.16 : 1,
-        background: "oklch(0.30 0.06 230 / 0.4)",
-        borderColor: selected
-          ? "var(--color-primary)"
-          : `oklch(0.72 0.13 230 / ${0.35 + conf * 0.6})`,
-        boxShadow:
-          selected || data.active
-            ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
-            : "0 0 18px -8px oklch(0.72 0.13 230 / 0.7)",
-      }}
-      className="grid place-items-center rounded-full border-2 border-dashed font-mono transition-[opacity,box-shadow] duration-300"
-    >
-      {hiddenHandles()}
-      <span
-        className="px-1 text-center leading-tight font-semibold"
-        style={{ fontSize: clamp(r * 0.3, 8, 12), color: "var(--color-chart-2)" }}
-      >
-        ⌬{n.id}
-      </span>
-    </div>
+    <HoverCard>
+      <HoverCardTrigger asChild>
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label={label}
+          aria-pressed={selected}
+          onKeyDown={(e) => handleNodeKey(e, data)}
+          style={{
+            width: r * 2,
+            height: r * 2,
+            opacity: data.dim ? 0.16 : 1,
+            background: "oklch(0.30 0.06 230 / 0.4)",
+            borderColor: selected
+              ? "var(--color-primary)"
+              : `oklch(0.72 0.13 230 / ${0.35 + conf * 0.6})`,
+            boxShadow:
+              selected || data.active
+                ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
+                : "0 0 18px -8px oklch(0.72 0.13 230 / 0.7)",
+          }}
+          className="grid place-items-center rounded-full border-2 border-dashed font-mono transition-[opacity,box-shadow] duration-300"
+        >
+          {hiddenHandles()}
+          <span
+            className="px-1 text-center leading-tight font-semibold"
+            style={{ fontSize: clamp(r * 0.3, 8, 12), color: "var(--color-chart-2)" }}
+          >
+            ⌬{n.id}
+          </span>
+        </div>
+      </HoverCardTrigger>
+      <HoverCardContent side="top" className="w-72 p-0">
+        <div
+          className="flex items-center gap-1.5 border-b border-border/60 px-3 py-2 font-mono text-xs font-semibold"
+          style={{ background: "oklch(0.30 0.06 230 / 0.30)" }}
+        >
+          <span
+            className="size-2 rounded-sm"
+            style={{ background: "var(--color-chart-2)" }}
+            aria-hidden
+          />
+          <span style={{ color: "var(--color-chart-2)" }}>Schema ⌬{n.id}</span>
+        </div>
+        {n.preview && (
+          <div className="line-clamp-3 px-3 py-2 text-xs leading-snug text-muted-foreground">
+            {n.preview}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-y-1 border-t border-border/60 px-3 py-2 font-mono text-[0.65rem]">
+          <div>
+            <div className="text-[0.55rem] tracking-wider text-muted-foreground uppercase">
+              Confidence
+            </div>
+            <div className="tabular-nums text-foreground">{conf.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="text-[0.55rem] tracking-wider text-muted-foreground uppercase">
+              Sources
+            </div>
+            <div className="tabular-nums text-foreground">{n.source_count}</div>
+          </div>
+        </div>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
@@ -208,78 +303,86 @@ const NODE_TYPES: NodeTypes = {
   semantic: SemanticNode,
 };
 
+/** Refits the viewport whenever the layout signature settles — UMAP
+ *  is async so ReactFlow's built-in fitView runs before positions
+ *  arrive and ends up framing the (0,0) placeholders. When a camera
+ *  focus is set ("Recenter map" / 'F' / search hit) we pan to that
+ *  node instead of refitting the whole graph, so the user's spatial
+ *  understanding of the UMAP manifold is preserved. */
+function ViewportController({
+  version,
+  focusKey,
+}: {
+  version: number;
+  focusKey: string | null;
+}) {
+  const { fitView, setCenter, getNode, getZoom } = useReactFlow();
+  useEffect(() => {
+    if (version === 0) return;
+    const t = requestAnimationFrame(() => {
+      if (focusKey) {
+        const node = getNode(focusKey);
+        if (node) {
+          const w = (node.measured?.width ?? node.width ?? 0) / 2;
+          const h = (node.measured?.height ?? node.height ?? 0) / 2;
+          void setCenter(node.position.x + w, node.position.y + h, {
+            zoom: Math.max(getZoom(), 1.2),
+            duration: 450,
+          });
+          return;
+        }
+      }
+      void fitView({ padding: 0.25, duration: 350, maxZoom: 1.4 });
+    });
+    return () => cancelAnimationFrame(t);
+  }, [version, focusKey, fitView, setCenter, getNode, getZoom]);
+  return null;
+}
+
 /* -------------------------------------------------------------- the surface */
 
 export function MemoryGraph({
   data,
   selectedKey,
+  cameraFocus,
   onSelect,
   onFocus,
   highlight,
 }: {
   data: GraphData | undefined;
   selectedKey: string | null;
+  /** Camera-only focus: pans the viewport to this episode without
+   *  refetching or re-laying-out. Keeps the UMAP manifold stable
+   *  across recenter clicks. */
+  cameraFocus?: number | null;
   onSelect: (node: GraphNode | null) => void;
   onFocus: (episodeId: number) => void;
   /** Search hits (node keys). When set, the map dims everything else
    *  and rings the matches — search acts on the whole graph. */
   highlight?: Set<string>;
 }) {
-  // d3-force layout runs in a Worker so a graph with many nodes does
-  // not block the main thread. Previous positions seed the next run so
-  // focus/expand glides instead of teleporting. The Worker is created
-  // lazily on the first signature change and reused for the lifetime
-  // of the component; messages are tagged with a monotonic id so
-  // stale results from a superseded request are ignored.
+  // ELK's 'layered' pass runs on the main thread — for the graph sizes
+  // this view shows it settles in a few ms. The request id discards
+  // stale results so a slow settle can't overwrite a newer one driven
+  // by a focus change.
   const posRef = useRef<Positions>(new Map());
   const [layout, setLayout] = useState<Positions>(new Map());
-  const workerRef = useRef<Worker | null>(null);
+  const [layoutVersion, setLayoutVersion] = useState(0);
   const reqIdRef = useRef(0);
-  const latestSettledIdRef = useRef(0);
   const sig = layoutSignature(data);
 
   useEffect(() => {
-    return () => {
-      workerRef.current?.terminate();
-      workerRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    // Synchronous path for: (a) empty graphs — no force pass is
-    // worth dispatching; (b) test environments / hosts without
-    // Worker (jsdom under vitest). Keeps the component renderable
-    // without a real browser worker shim.
-    if (!data || data.nodes.length === 0 || typeof Worker === "undefined") {
-      const settled = computeLayout(data, posRef.current);
+    const id = ++reqIdRef.current;
+    let canceled = false;
+    void computeLayout(data).then((settled) => {
+      if (canceled || id !== reqIdRef.current) return;
       posRef.current = settled;
       setLayout(settled);
-      return;
-    }
-    if (!workerRef.current) {
-      workerRef.current = new LayoutWorker();
-      workerRef.current.onmessage = (
-        e: MessageEvent<{
-          id: number;
-          positions: Array<[string, { x: number; y: number }]>;
-        }>,
-      ) => {
-        // Drop stale results: only the latest dispatch wins. This
-        // prevents an older, slower settle from overwriting a newer
-        // focus-change layout.
-        if (e.data.id < latestSettledIdRef.current) return;
-        latestSettledIdRef.current = e.data.id;
-        const next = new Map(e.data.positions);
-        posRef.current = next;
-        setLayout(next);
-      };
-    }
-    const id = ++reqIdRef.current;
-    workerRef.current.postMessage({
-      id,
-      data,
-      prev: Array.from(posRef.current.entries()),
+      setLayoutVersion((v) => v + 1);
     });
+    return () => {
+      canceled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig]);
 
@@ -315,13 +418,21 @@ export function MemoryGraph({
     const flowNodes: FlowNode[] = data.nodes.map((n) => {
       const p = layout.get(n.key) ?? { x: 0, y: 0 };
       const r = nodeRadius(n);
+      // is_focus is now driven client-side from the camera focus so
+      // the global UMAP fetch never has to be re-issued for recenter.
+      const node: GraphNode =
+        n.kind === "episodic" && cameraFocus != null && n.id === cameraFocus
+          ? { ...n, is_focus: true }
+          : n.kind === "episodic"
+            ? { ...n, is_focus: false }
+            : n;
       return {
         id: n.key,
         type: n.kind,
         position: { x: p.x - r, y: p.y - r },
         selected: n.key === selectedKey,
         data: {
-          node: n,
+          node,
           dim: focusing && !lit.has(n.key),
           active: searchOn
             ? lit.has(n.key)
@@ -391,7 +502,7 @@ export function MemoryGraph({
       });
     });
     return { nodes: flowNodes, edges: flowEdges };
-  }, [data, layout, selectedKey, active, searchOn, highlight, onSelect, onFocus]);
+  }, [data, layout, selectedKey, active, searchOn, highlight, onSelect, onFocus, cameraFocus]);
 
   const summary = data
     ? `Memory map: ${data.nodes.length} node${data.nodes.length === 1 ? "" : "s"}, ${data.sr_edges.length} successor edge${data.sr_edges.length === 1 ? "" : "s"}.` +
@@ -420,6 +531,10 @@ export function MemoryGraph({
       elementsSelectable
       className="bg-transparent"
     >
+      <ViewportController
+        version={layoutVersion}
+        focusKey={cameraFocus != null ? `ep:${cameraFocus}` : null}
+      />
       <Background
         variant={BackgroundVariant.Dots}
         gap={22}
@@ -482,12 +597,12 @@ export function MemoryGraph({
           </span>
         </Panel>
       )}
-      {data && data.focus != null && (
+      {cameraFocus != null && (
         <Panel
           position="top-left"
           className="!m-3 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 font-mono text-[0.6rem] text-primary sm:text-[0.62rem]"
         >
-          focused on #{data.focus} — double-click a node to recenter
+          focused on #{cameraFocus} — double-click a node to recenter
         </Panel>
       )}
       <Panel
