@@ -190,6 +190,10 @@ class MemoryService:
         # memory only (rebuilt on restart), which is fine because the
         # power-law strength signal converges across many cycles.
         self._replay_cursor: int = 0
+        # Lazy HNSW reconciliation flag. See ``_ensure_index_ready``: we
+        # flush+rebuild on first recall to recover from an
+        # encode-without-consolidate desync or a crashed-process index.
+        self._index_ready: bool = False
         # Monotonic consolidate-pass counter. Advanced at the top of
         # ``neocortex.consolidate.run`` so the candidate gate can
         # require hits to span distinct epochs (cross-pass diversity).
@@ -539,6 +543,48 @@ class MemoryService:
         if self._sr is not None:
             await self._sr.load()
 
+    async def _ensure_index_ready(self) -> None:
+        """Reconcile the HNSW index against the SQLite catalog once.
+
+        simplevecdb buffers ``add_texts`` writes through a pending queue
+        and only flushes / rebuilds the usearch index during consolidate
+        (or when its own thresholds fire — 5000 pending rows by default).
+        Between encode and the first consolidate, ``similarity_search``
+        sees an empty index and returns no hits — even though
+        ``count() > 0`` and embeddings are stored. The same desync can
+        also survive a process crash that loses the in-memory index
+        without rolling back the SQLite catalog.
+
+        This guard, invoked at the top of recall, is the canonical fix:
+        flush any buffered adds (cheap when none) and call
+        ``rebuild_index`` iff the catalog disagrees with the index
+        (``coll.dim is None`` while ``count() > 0``). The work runs at
+        most once per service lifetime; thereafter writers' own pending
+        flushes keep the index current.
+        """
+        if self._index_ready:
+            return
+        # Set early so re-entrant recalls under the same lock don't both
+        # try to rebuild. A failure path below resets it so a transient
+        # error doesn't permanently disable the recovery.
+        self._index_ready = True
+        try:
+            for coll in (self.episodic, self.semantic):
+                cnt = await coll.count()
+                if cnt == 0:
+                    continue
+                # flush_pending is a no-op when there's nothing buffered;
+                # cheap to call unconditionally.
+                await coll.flush_pending()
+                if coll.dim is None:
+                    # Catalog has rows but index is empty/desynced —
+                    # rebuild from the stored embeddings.
+                    await coll.rebuild_index()
+        except Exception:
+            self._index_ready = False
+            _LOG.exception("index-ready guard failed; will retry on next recall")
+            raise
+
     async def encode_episode(
         self,
         content: str,
@@ -571,6 +617,7 @@ class MemoryService:
         mode: str = "auto",
     ) -> list[dict[str, Any]]:
         await self._ensure_sr_loaded()
+        await self._ensure_index_ready()
         with _start_request("recall", enabled=self.config.tracing_enabled) as _trace_ctx:
             with _trace_ctx.span(
                 "recall.run",
@@ -733,6 +780,7 @@ class MemoryService:
             raise ValidationError(f"k exceeds max_recall_k ({self.config.max_recall_k})")
         if await self.semantic.count() == 0:
             return []
+        await self._ensure_index_ready()
         q = await self.query_arg(query)
         # When a kind filter is requested, over-fetch and filter in Python
         # so cosine ranking still drives the final order; semantic store
