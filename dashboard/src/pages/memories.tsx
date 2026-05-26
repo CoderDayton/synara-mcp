@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, RotateCcw, Search, X } from "lucide-react";
 import { useGraph, useMemories } from "@/lib/queries";
-import type { GraphNode, MemoryList } from "@/lib/api";
+import type { GraphNode, MemoryList, RecallMode } from "@/lib/api";
 import { PageHeader } from "@/components/common/page-header";
 import { Empty, ErrorState, Loading } from "@/components/common/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -24,6 +24,47 @@ function recallIds(list: MemoryList | undefined): number[] {
     .map((h) => (typeof h.id === "number" ? h.id : -1))
     .filter((id) => id >= 0);
 }
+
+function recallMode(list: MemoryList | undefined): RecallMode | null {
+  if (!list || !("query" in list)) return null;
+  return list.recall_mode ?? null;
+}
+
+/** Combine the episodic + semantic search modes into a single label
+ *  that reflects how the lit-up node set was produced. Substring wins
+ *  the override when either leg fell back, so the user knows they're
+ *  not seeing pure semantic recall. */
+function combineModes(
+  a: RecallMode | null,
+  b: RecallMode | null,
+): RecallMode | null {
+  const modes = [a, b].filter((m): m is RecallMode => m != null);
+  if (modes.length === 0) return null;
+  if (modes.includes("hybrid")) return "hybrid";
+  if (modes.includes("substring") && modes.includes("semantic")) return "hybrid";
+  if (modes.includes("substring")) return "substring";
+  if (modes.includes("semantic")) return "semantic";
+  return "empty";
+}
+
+const MODE_LABEL: Record<RecallMode, { text: string; hint: string }> = {
+  semantic: {
+    text: "semantic",
+    hint: "Matches ranked by vector similarity (cosine + SR re-ranking).",
+  },
+  substring: {
+    text: "substring",
+    hint: "Vector recall returned nothing — falling back to literal substring matches.",
+  },
+  hybrid: {
+    text: "hybrid",
+    hint: "Vector recall + literal substring matches both contributed to these hits.",
+  },
+  empty: {
+    text: "no hits",
+    hint: "Neither vector recall nor a substring scan found anything.",
+  },
+};
 
 export default function Memories() {
   const [draft, setDraft] = useState("");
@@ -63,6 +104,13 @@ export default function Memories() {
   }, [matchIds, semanticMatchIds]);
   const totalHits = matchIds.length + semanticMatchIds.length;
   const searchError = episodicSearch.error ?? semanticSearch.error;
+  const mode = useMemo(
+    () =>
+      query
+        ? combineModes(recallMode(episodicSearch.data), recallMode(semanticSearch.data))
+        : null,
+    [query, episodicSearch.data, semanticSearch.data],
+  );
 
   // "Search the whole map": pan the camera to the top hit so its
   // neighbourhood is visible. Camera-only — no refetch, no relayout.
@@ -127,8 +175,31 @@ export default function Memories() {
             className="h-8 border-0 bg-transparent px-1 shadow-none focus-visible:ring-0"
           />
           {query && (
-            <span className="shrink-0 px-1 font-mono text-[0.65rem] text-muted-foreground">
-              {totalHits} hit{totalHits === 1 ? "" : "s"}
+            <span
+              className="flex shrink-0 items-center gap-1.5 px-1 font-mono text-[0.65rem] text-muted-foreground"
+              role="status"
+              aria-live="polite"
+            >
+              <span>
+                {totalHits} hit{totalHits === 1 ? "" : "s"}
+              </span>
+              {mode && (
+                <span
+                  title={MODE_LABEL[mode].hint}
+                  className={
+                    "rounded px-1.5 py-0.5 text-[0.6rem] uppercase tracking-wide " +
+                    (mode === "substring"
+                      ? "bg-warning/15 text-warning"
+                      : mode === "hybrid"
+                        ? "bg-chart-1/15 text-chart-1"
+                        : mode === "empty"
+                          ? "bg-muted text-muted-foreground"
+                          : "bg-chart-2/15 text-chart-2")
+                  }
+                >
+                  {MODE_LABEL[mode].text}
+                </span>
+              )}
             </span>
           )}
           {(query || draft) && (

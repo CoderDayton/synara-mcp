@@ -168,9 +168,24 @@ export interface RecallHit {
   [k: string]: unknown;
 }
 
+/** Which leg of the dashboard search produced the result set.
+ *
+ *  - `semantic` — only the vector recall returned hits.
+ *  - `substring` — recall was empty; the substring fallback found
+ *    literal matches (cold-store or mode-mismatch case).
+ *  - `hybrid` — both legs contributed; the UI may highlight the overlap.
+ *  - `empty` — neither leg matched. */
+export type RecallMode = "semantic" | "substring" | "hybrid" | "empty";
+
 export type MemoryList =
   | { kind: string; items: MemoryListItem[]; count: number; offset: number }
-  | { kind: string; query: string; items: RecallHit[]; count: number };
+  | {
+      kind: string;
+      query: string;
+      items: RecallHit[];
+      count: number;
+      recall_mode: RecallMode;
+    };
 
 export interface MemoryDetail {
   id: number;
