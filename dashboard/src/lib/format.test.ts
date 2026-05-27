@@ -84,22 +84,22 @@ describe("relativeTime", () => {
 });
 
 describe("sessionHue", () => {
-  it("falls back to a neutral hue for null / undefined / empty", () => {
-    expect(sessionHue(null)).toBe(286);
-    expect(sessionHue(undefined)).toBe(286);
-    expect(sessionHue("")).toBe(286);
+  it("falls back to the neutral indigo for null / undefined / empty", () => {
+    expect(sessionHue(null)).toBe(275);
+    expect(sessionHue(undefined)).toBe(275);
+    expect(sessionHue("")).toBe(275);
   });
   it("is deterministic for the same session id", () => {
     expect(sessionHue("alpha")).toBe(sessionHue("alpha"));
   });
-  it("disperses across the 0–359 hue circle", () => {
+  it("snaps to the curated palette", () => {
     const hues = new Set(
       ["a", "b", "c", "d", "e", "f", "g", "h"].map((s) => sessionHue(s)),
     );
     expect(hues.size).toBeGreaterThan(1);
+    const palette = new Set([275, 200, 175, 145, 95, 50, 320, 245]);
     for (const h of hues) {
-      expect(h).toBeGreaterThanOrEqual(0);
-      expect(h).toBeLessThan(360);
+      expect(palette.has(h)).toBe(true);
     }
   });
 });
