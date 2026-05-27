@@ -1,9 +1,17 @@
 import { lazy, Suspense } from "react";
-import { Activity, Brain, Cpu, Database } from "lucide-react";
-import { useHealth, useMemories, useStats } from "@/lib/queries";
+import { Activity, Brain, Database, Sparkles } from "lucide-react";
+import { toast } from "sonner";
+import {
+  useConsolidate,
+  useHealth,
+  useMemories,
+  useStats,
+} from "@/lib/queries";
+import { formatDuration } from "@/lib/format";
 import { ErrorState, Loading } from "@/components/common/states";
 import { Panel } from "@/components/common/panel";
 import { StatCard } from "@/components/common/stat-card";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const StoreChart = lazy(() => import("@/components/overview/store-chart"));
@@ -17,13 +25,6 @@ const TOOLS: Array<[string, string]> = [
   ["store_semantic_memory", "write a semantic memory"],
   ["recall_semantic_memory", "semantic memory recall"],
   ["memory_stats", "store + tunable snapshot"],
-];
-
-const PIPELINE: Array<{ label: string; sub: string }> = [
-  { label: "encode", sub: "store_episode → embedding" },
-  { label: "hippocampus", sub: "episodic · SR · plasticity" },
-  { label: "consolidate", sub: "cluster → schemas" },
-  { label: "neocortex", sub: "durable semantic memory" },
 ];
 
 const MCP_SNIPPET = `{
@@ -83,7 +84,7 @@ export default function Overview() {
         </div>
         <dl className="grid grid-cols-3 gap-x-6 gap-y-1 text-[0.7rem]">
           {[
-            ["uptime", h ? `${Math.round(h.uptime_seconds)}s` : "—"],
+            ["uptime", h ? formatDuration(h.uptime_seconds) : "—"],
             ["embed", h ? h.embedding_backend : "—"],
             ["model", h ? h.embedding_model.split("/").slice(-1)[0] : "—"],
           ].map(([k, v]) => (
@@ -160,28 +161,7 @@ export default function Overview() {
         )}
       </Panel>
 
-      {/* Pipeline — narrow */}
-      <Panel
-        title="memory pipeline"
-        icon={<Cpu className="size-3.5" aria-hidden />}
-        className="lg:col-span-2"
-      >
-        <ol className="relative space-y-3 pl-1 before:absolute before:bottom-1 before:left-[3px] before:top-1 before:w-px before:bg-primary/30">
-          {PIPELINE.map((stage) => (
-            <li key={stage.label} className="relative flex gap-3">
-              <span className="z-10 mt-1 size-1.5 shrink-0 rounded-full bg-primary shadow-[0_0_6px_var(--primary)]" />
-              <div className="min-w-0">
-                <div className="font-mono text-[0.72rem] uppercase tracking-wider text-foreground">
-                  {stage.label}
-                </div>
-                <div className="mt-0.5 font-mono text-[0.65rem] text-muted-foreground">
-                  {stage.sub}
-                </div>
-              </div>
-            </li>
-          ))}
-        </ol>
-      </Panel>
+      <HippocampusPressure ep={ep} sem={sem} />
 
       {/* MCP tools grid */}
       <Panel
@@ -257,5 +237,72 @@ export default function Overview() {
         )}
       </Panel>
     </div>
+  );
+}
+
+function HippocampusPressure({ ep, sem }: { ep: number; sem: number }) {
+  const m = useConsolidate();
+  const ratio = sem > 0 ? Math.max(1, Math.round(ep / sem)) : null;
+  const hasQueue = ep > 0;
+
+  function run() {
+    m.mutate(
+      { session_id: null, n_clusters: null, min_cluster_size: null },
+      {
+        onSuccess: (r) =>
+          toast.success(
+            r.schemas_formed > 0
+              ? `Formed ${r.schemas_formed} schema(s).`
+              : "Nothing new to consolidate.",
+          ),
+        onError: (e) =>
+          toast.error(e instanceof Error ? e.message : "Consolidate failed"),
+      },
+    );
+  }
+
+  return (
+    <Panel
+      title="hippocampus pressure"
+      eyebrow="queue"
+      icon={<Sparkles className="size-3.5" aria-hidden />}
+      className="lg:col-span-2"
+      bodyClassName="flex flex-col gap-3"
+    >
+      <div>
+        <div className="metric text-3xl text-foreground tabular-nums leading-none">
+          {ep.toLocaleString()}
+        </div>
+        <div className="mt-1 text-[0.7rem] text-muted-foreground">
+          raw episodes awaiting consolidation
+        </div>
+      </div>
+
+      <div className="font-mono text-[0.7rem] text-muted-foreground">
+        {sem > 0 ? (
+          <>
+            <span className="text-foreground tabular-nums">
+              {sem.toLocaleString()}
+            </span>{" "}
+            schema{sem === 1 ? "" : "s"} ·{" "}
+            <span className="text-primary tabular-nums">{ratio}×</span> ratio
+          </>
+        ) : hasQueue ? (
+          <span className="text-primary">no schemas yet</span>
+        ) : (
+          "store is idle"
+        )}
+      </div>
+
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={run}
+        disabled={!hasQueue || m.isPending}
+        className="mt-auto w-full font-mono text-[0.72rem]"
+      >
+        {m.isPending ? "consolidating…" : "consolidate now"}
+      </Button>
+    </Panel>
   );
 }

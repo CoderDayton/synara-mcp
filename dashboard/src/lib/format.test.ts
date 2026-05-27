@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clamp,
+  formatDuration,
   relativeTime,
   sessionHue,
   shortSession,
@@ -15,6 +16,30 @@ describe("clamp", () => {
   });
   it("clamps to the upper bound", () => {
     expect(clamp(99, 0, 10)).toBe(10);
+  });
+});
+
+describe("formatDuration", () => {
+  it("returns em-dash for negative / NaN", () => {
+    expect(formatDuration(-1)).toBe("—");
+    expect(formatDuration(Number.NaN)).toBe("—");
+  });
+  it("renders seconds under a minute", () => {
+    expect(formatDuration(0)).toBe("0s");
+    expect(formatDuration(42)).toBe("42s");
+  });
+  it("renders minutes under an hour", () => {
+    expect(formatDuration(60)).toBe("1m");
+    expect(formatDuration(59 * 60)).toBe("59m");
+  });
+  it("renders hours with minutes when present, hours-only when even", () => {
+    expect(formatDuration(60 * 60)).toBe("1h");
+    expect(formatDuration(60 * 60 + 60 * 7)).toBe("1h 07m");
+    expect(formatDuration(21474)).toBe("5h 57m");
+  });
+  it("renders days with hours when present, days-only when even", () => {
+    expect(formatDuration(60 * 60 * 24)).toBe("1d");
+    expect(formatDuration(60 * 60 * 24 * 2 + 60 * 60 * 4)).toBe("2d 04h");
   });
 });
 

@@ -1,3 +1,4 @@
+import { formatDuration } from "@/lib/format";
 import { useHealth } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +41,7 @@ export function StatusReadout({ className }: { className?: string }) {
             <span>
               <span className="text-foreground/60">up</span>{" "}
               <span className="text-foreground tabular-nums">
-                {Math.round(data.uptime_seconds)}s
+                {formatDuration(data.uptime_seconds)}
               </span>
             </span>
             <span className="hidden md:inline">
