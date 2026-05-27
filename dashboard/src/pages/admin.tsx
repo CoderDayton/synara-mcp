@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   AlertTriangle,
   Brain,
@@ -774,11 +774,6 @@ export default function Admin() {
   const ep = stats.data?.episodic_count ?? 0;
   const sem = stats.data?.semantic_count ?? 0;
 
-  // Memoize so the transcript prop reference is stable across renders; the
-  // cards consume it inside mutation callbacks and we don't want a fresh
-  // closure to mask a missed callback.
-  const appendStable = useMemo(() => append, [append]);
-
   return (
     <div>
       <PageHeader
@@ -793,14 +788,14 @@ export default function Admin() {
         </div>
 
         <div className="flex lg:col-span-3">
-          <ForgetCard epCount={ep} append={appendStable} />
+          <ForgetCard epCount={ep} append={append} />
         </div>
         <div className="flex lg:col-span-3">
-          <ConsolidateCard epCount={ep} append={appendStable} />
+          <ConsolidateCard epCount={ep} append={append} />
         </div>
 
         <div className="lg:col-span-4">
-          <ReflectCard append={appendStable} />
+          <ReflectCard append={append} />
         </div>
         <div className="lg:col-span-2">
           <TranscriptPanel entries={entries} onClear={clear} />

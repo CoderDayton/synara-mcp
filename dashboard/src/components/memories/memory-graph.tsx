@@ -38,7 +38,7 @@ import {
   type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GraphData, GraphNode } from "@/lib/api";
 import { clamp, sessionHue, shortSession } from "@/lib/format";
 import {
@@ -47,6 +47,15 @@ import {
   nodeRadius,
   type Positions,
 } from "./graph-layout";
+import {
+  bridgeThreshold,
+  buildClusterHulls,
+  computeBridgeScores,
+  detectCommunities,
+  polygonPath,
+  type CommunityEdge,
+  type HullEntry,
+} from "./community";
 import {
   HoverCard,
   HoverCardContent,
@@ -57,6 +66,11 @@ type NodeData = {
   node: GraphNode;
   dim: boolean;
   active: boolean;
+  /** This node sits above the bridge-score threshold — it routes
+   *  activation between communities. The disc renderer draws an
+   *  outer halo when true so these routing abstractions are visible
+   *  at a glance. */
+  isBridge: boolean;
   /** Keyboard handlers threaded through node data so each rendered
    *  node can self-activate without relying on ReactFlow's mouse-only
    *  event hooks. Bound to the same callbacks ReactFlow's click hooks
@@ -158,10 +172,14 @@ function EpisodicNode({ data, selected }: NodeProps<FlowNode>) {
                 n.is_focus || selected
                   ? "var(--color-primary)"
                   : `oklch(0.72 0.12 ${hue} / 0.75)`,
+              // Active states win; the bridge halo only shows on
+              // resting nodes so the selection ring stays unambiguous.
               boxShadow:
                 n.is_focus || selected || data.active
                   ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
-                  : "var(--shadow-card)",
+                  : data.isBridge
+                    ? `0 0 0 1px oklch(0.72 0.12 ${hue} / 0.55), 0 0 0 4px oklch(0.85 0.1 ${hue} / 0.18), 0 0 16px -2px oklch(0.85 0.12 ${hue} / 0.45)`
+                    : "var(--shadow-card)",
             }}
             className="absolute inset-0 grid place-items-center rounded-[30%] border-[1.5px] transition-[opacity,box-shadow,transform] duration-300"
           >
@@ -328,6 +346,63 @@ const NODE_TYPES: NodeTypes = {
   semantic: SemanticNode,
 };
 
+/** Community hulls — convex polygons traced around each cluster of
+ *  co-activating episodes. Rendered as low-alpha SVG paths behind
+ *  every other ReactFlow layer (`zIndex: -1` undercuts the renderer's
+ *  stacking context) and follow the viewport via a single `<g>`
+ *  transform updated imperatively on pan/zoom. */
+function CommunityHullsLayer({ hulls }: { hulls: HullEntry[] }) {
+  const store = useStoreApi();
+  const gRef = useRef<SVGGElement>(null);
+
+  useEffect(() => {
+    let raf = 0;
+    const apply = (state?: ReturnType<typeof store.getState>) => {
+      raf = 0;
+      const s = state ?? store.getState();
+      const g = gRef.current;
+      if (!g) return;
+      const tx = s.transform[0];
+      const ty = s.transform[1];
+      const zoom = s.transform[2];
+      g.setAttribute("transform", `translate(${tx} ${ty}) scale(${zoom})`);
+    };
+    const schedule = (s: ReturnType<typeof store.getState>) => {
+      if (!raf) raf = requestAnimationFrame(() => apply(s));
+    };
+    const unsub = store.subscribe(schedule);
+    apply();
+    return () => {
+      unsub();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [store]);
+
+  if (hulls.length === 0) return null;
+  return (
+    <svg
+      aria-hidden
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      style={{ zIndex: -1 }}
+    >
+      <g ref={gRef}>
+        {hulls.map((h) => (
+          <path
+            key={h.community}
+            d={polygonPath(h.polygon)}
+            fill={`oklch(0.65 0.13 ${h.hue} / 0.07)`}
+            stroke={`oklch(0.72 0.13 ${h.hue} / 0.28)`}
+            strokeWidth={1.25}
+            strokeLinejoin="round"
+            // Keep stroke width visually constant across zooms.
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+      </g>
+    </svg>
+  );
+}
+
 /** Captions live on a single overlay layer above the canvas — not as
  *  children of each node. The whole layer is `pointer-events: none`,
  *  so labels never intercept clicks/drags: pan-drag and hover-card
@@ -374,43 +449,42 @@ function CaptionsOverlay({ nodes }: { nodes: FlowNode[] }) {
   const layerRef = useRef<HTMLDivElement>(null);
   const elRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  // Static per-caption data. Only re-runs when the node list itself
-  // changes (selection, search, data refresh) — *not* on pan/zoom.
-  const captions = useMemo<CaptionStatic[]>(() => {
-    const out: CaptionStatic[] = [];
-    for (const fn of nodes) {
-      const n = fn.data.node;
-      if (!n.preview) continue;
-      const r = nodeRadius(n);
-      const cx = fn.position.x + r;
-      const cy = fn.position.y + r;
-      if (n.kind === "episodic") {
-        const hue = sessionHue(n.session_id);
-        out.push({
-          key: fn.id,
-          cx,
-          cy,
-          r,
-          preview: n.preview,
-          dim: fn.data.dim,
-          className: EPISODIC_CAPTION_CLS,
-          style: { borderColor: `oklch(0.72 0.12 ${hue} / 0.35)` },
-        });
-      } else {
-        out.push({
-          key: fn.id,
-          cx,
-          cy,
-          r,
-          preview: n.preview,
-          dim: fn.data.dim,
-          className: SEMANTIC_CAPTION_CLS,
-          style: SEMANTIC_CAPTION_STYLE,
-        });
-      }
+  // Static per-caption data. Identity is preserved across renders
+  // when `nodes` is stable — the React Compiler auto-memoizes — so
+  // the imperative effect below still re-subscribes only on actual
+  // node-list changes (selection, search, data refresh).
+  const captions: CaptionStatic[] = [];
+  for (const fn of nodes) {
+    const n = fn.data.node;
+    if (!n.preview) continue;
+    const r = nodeRadius(n);
+    const cx = fn.position.x + r;
+    const cy = fn.position.y + r;
+    if (n.kind === "episodic") {
+      const hue = sessionHue(n.session_id);
+      captions.push({
+        key: fn.id,
+        cx,
+        cy,
+        r,
+        preview: n.preview,
+        dim: fn.data.dim,
+        className: EPISODIC_CAPTION_CLS,
+        style: { borderColor: `oklch(0.72 0.12 ${hue} / 0.35)` },
+      });
+    } else {
+      captions.push({
+        key: fn.id,
+        cx,
+        cy,
+        r,
+        preview: n.preview,
+        dim: fn.data.dim,
+        className: SEMANTIC_CAPTION_CLS,
+        style: SEMANTIC_CAPTION_STYLE,
+      });
     }
-    return out;
-  }, [nodes]);
+  }
 
   // Imperative position pump. Subscribes once to the ReactFlow store,
   // coalesces store changes through rAF, and writes positions
@@ -618,39 +692,81 @@ export function MemoryGraph({
     return () => {
       canceled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig]);
 
   const active = selectedKey;
   const searchOn = !active && !!highlight && highlight.size > 0;
 
-  const { nodes, edges } = useMemo<{ nodes: FlowNode[]; edges: Edge[] }>(() => {
-    if (!data) return { nodes: [], edges: [] };
-
-    // Two ways the map narrows: a selected node lights its
-    // spreading-activation neighbourhood; a search lights every hit
-    // across the whole graph. Either dims the rest.
-    const lit = new Set<string>();
-    if (active) {
-      lit.add(active);
+  // Community structure + bridge nodes. Computed from the SR +
+  // plasticity edge weights — these are the functional/transition
+  // graph, distinct from the embedding-similarity manifold UMAP draws
+  // positions from. The React Compiler auto-memoizes the result so
+  // this only re-runs when `data` or `layout` actually change.
+  let hulls: HullEntry[] = [];
+  const bridgeKeys = new Set<string>();
+  if (data && data.nodes.length > 0) {
+    const episodicKeys = data.nodes
+      .filter((n) => n.kind === "episodic")
+      .map((n) => n.key);
+    if (episodicKeys.length > 0) {
+      const edgeList: CommunityEdge[] = [];
       for (const e of data.sr_edges) {
-        if (`ep:${e.src}` === active) lit.add(`ep:${e.dst}`);
-        if (`ep:${e.dst}` === active) lit.add(`ep:${e.src}`);
+        edgeList.push({
+          src: `ep:${e.src}`,
+          dst: `ep:${e.dst}`,
+          w: clamp(e.m, 0, 1),
+        });
       }
       for (const e of data.plasticity_edges) {
-        if (`ep:${e.src}` === active) lit.add(`ep:${e.dst}`);
-        if (`ep:${e.dst}` === active) lit.add(`ep:${e.src}`);
+        edgeList.push({
+          src: `ep:${e.src}`,
+          dst: `ep:${e.dst}`,
+          w: clamp(e.strength, 0, 1),
+        });
       }
-      for (const e of data.consolidation_edges) {
-        if (`ep:${e.src}` === active) lit.add(e.dst);
-        if (e.dst === active) lit.add(`ep:${e.src}`);
-      }
-    } else if (searchOn && highlight) {
-      for (const k of highlight) lit.add(k);
-    }
-    const focusing = active != null || searchOn;
+      const comms = detectCommunities(episodicKeys, edgeList);
+      const scores = computeBridgeScores(episodicKeys, edgeList, comms);
+      const thresh = bridgeThreshold(scores);
+      for (const [k, v] of scores) if (v > 0 && v >= thresh) bridgeKeys.add(k);
 
-    const flowNodes: FlowNode[] = data.nodes.map((n) => {
+      const placed: Array<{ key: string; x: number; y: number; r: number }> = [];
+      for (const n of data.nodes) {
+        if (n.kind !== "episodic") continue;
+        const p = layout.get(n.key);
+        if (!p) continue;
+        placed.push({ key: n.key, x: p.x, y: p.y, r: nodeRadius(n) });
+      }
+      hulls = buildClusterHulls(placed, comms);
+    }
+  }
+
+  // Two ways the map narrows: a selected node lights its
+  // spreading-activation neighbourhood; a search lights every hit
+  // across the whole graph. Either dims the rest. The compiler
+  // memoizes everything below; explicit useMemo isn't needed.
+  const lit = new Set<string>();
+  if (active && data) {
+    lit.add(active);
+    for (const e of data.sr_edges) {
+      if (`ep:${e.src}` === active) lit.add(`ep:${e.dst}`);
+      if (`ep:${e.dst}` === active) lit.add(`ep:${e.src}`);
+    }
+    for (const e of data.plasticity_edges) {
+      if (`ep:${e.src}` === active) lit.add(`ep:${e.dst}`);
+      if (`ep:${e.dst}` === active) lit.add(`ep:${e.src}`);
+    }
+    for (const e of data.consolidation_edges) {
+      if (`ep:${e.src}` === active) lit.add(e.dst);
+      if (e.dst === active) lit.add(`ep:${e.src}`);
+    }
+  } else if (searchOn && highlight) {
+    for (const k of highlight) lit.add(k);
+  }
+  const focusing = active != null || searchOn;
+
+  const flowNodes: FlowNode[] = !data
+    ? []
+    : data.nodes.map((n) => {
       const p = layout.get(n.key) ?? { x: 0, y: 0 };
       const r = nodeRadius(n);
       // is_focus is now driven client-side from the camera focus so
@@ -661,27 +777,29 @@ export function MemoryGraph({
           : n.kind === "episodic"
             ? { ...n, is_focus: false }
             : n;
-      return {
-        id: n.key,
-        type: n.kind,
-        position: { x: p.x - r, y: p.y - r },
-        selected: n.key === selectedKey,
-        data: {
-          node,
-          dim: focusing && !lit.has(n.key),
-          active: searchOn
-            ? lit.has(n.key)
-            : active != null && lit.has(n.key) && n.key !== active,
-          onSelect,
-          onFocus,
-        },
-      };
-    });
+        return {
+          id: n.key,
+          type: n.kind,
+          position: { x: p.x - r, y: p.y - r },
+          selected: n.key === selectedKey,
+          data: {
+            node,
+            dim: focusing && !lit.has(n.key),
+            active: searchOn
+              ? lit.has(n.key)
+              : active != null && lit.has(n.key) && n.key !== active,
+            isBridge: bridgeKeys.has(n.key),
+            onSelect,
+            onFocus,
+          },
+        };
+      });
 
-    const dimEdge = (a: string, b: string) =>
-      focusing && !(lit.has(a) && lit.has(b));
+  const dimEdge = (a: string, b: string) =>
+    focusing && !(lit.has(a) && lit.has(b));
 
-    const flowEdges: Edge[] = [];
+  const flowEdges: Edge[] = [];
+  if (data) {
     data.sr_edges.forEach((e, i) => {
       const s = `ep:${e.src}`;
       const t = `ep:${e.dst}`;
@@ -736,8 +854,9 @@ export function MemoryGraph({
         },
       });
     });
-    return { nodes: flowNodes, edges: flowEdges };
-  }, [data, layout, selectedKey, active, searchOn, highlight, onSelect, onFocus, cameraFocus]);
+  }
+  const nodes = flowNodes;
+  const edges = flowEdges;
 
   const summary = data
     ? `Memory map: ${data.nodes.length} node${data.nodes.length === 1 ? "" : "s"}, ${data.sr_edges.length} successor edge${data.sr_edges.length === 1 ? "" : "s"}.` +
@@ -777,6 +896,7 @@ export function MemoryGraph({
         color="color-mix(in oklab, var(--color-foreground) 9%, transparent)"
       />
       <ZoomControls />
+      <CommunityHullsLayer hulls={hulls} />
       <CaptionsOverlay nodes={nodes} />
       <MiniMap
         pannable
@@ -819,6 +939,14 @@ export function MemoryGraph({
               style={{ borderColor: "var(--color-chart-2)" }}
             />
             consolidation → schema
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span
+              aria-hidden
+              className="size-2 rounded-sm border border-muted-foreground/40"
+              style={{ background: "oklch(0.65 0.13 200 / 0.18)" }}
+            />
+            community · halo = bridge
           </span>
           <span className="mt-1 flex items-center gap-2 border-t border-border/60 pt-1.5 text-foreground/70">
             <span>ω {data.omega.toFixed(2)}</span>

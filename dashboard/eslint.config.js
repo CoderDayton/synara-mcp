@@ -29,6 +29,14 @@ export default defineConfig([
         tsconfigRootDir: import.meta.dirname,
       },
     },
+    rules: {
+      // React Compiler is enabled in vite.config.ts and auto-memoizes
+      // values whose inputs are stable. The `exhaustive-deps` rule's
+      // entire purpose (enforce manual memoization correctness) is
+      // subsumed; leaving it on produces noise around plain `const`
+      // values that the compiler has already covered.
+      'react-hooks/exhaustive-deps': 'off',
+    },
   },
   // Tests use vi.fn().mockResolvedValue with arbitrary unknown bodies
   // — typing the fetch shim strictly would only add ceremony.

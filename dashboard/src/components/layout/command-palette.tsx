@@ -1,8 +1,6 @@
 import {
   type ReactNode,
-  useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -103,66 +101,57 @@ export function CommandPalette({
     }
   }, [open]);
 
-  const actions: Action[] = useMemo(
-    () => [
-      ...NAV_ITEMS.map<Action>((n) => ({
-        id: `nav:${n.to}`,
-        label: n.label,
-        hint: n.to,
-        group: "Navigate",
-        icon: n.icon,
-        run: () => {
-          void navigate(n.to);
-          onOpenChange(false);
-        },
-        keywords: [n.to.replace(/^\//, ""), "go", "open"],
-      })),
-      {
-        id: "action:token",
-        label: "Set API token",
-        hint: "Bearer token for off-loopback servers",
-        group: "Actions",
-        icon: KeyRound,
-        keywords: ["auth", "bearer", "secret"],
-        run: () => {
-          onOpenChange(false);
-          // Defer so the palette close animation can run first.
-          setTimeout(onOpenTokenDialog, 60);
-        },
+  const actions: Action[] = [
+    ...NAV_ITEMS.map<Action>((n) => ({
+      id: `nav:${n.to}`,
+      label: n.label,
+      hint: n.to,
+      group: "Navigate",
+      icon: n.icon,
+      run: () => {
+        void navigate(n.to);
+        onOpenChange(false);
       },
-      {
-        id: "action:theme",
-        label: theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
-        hint: theme === "dark" ? "current: dark" : "current: light",
-        group: "Actions",
-        icon: theme === "dark" ? Sun : Moon,
-        keywords: ["theme", "dark", "light", "mode", "appearance"],
-        run: () => {
-          setTheme(theme === "dark" ? "light" : "dark");
-          onOpenChange(false);
-        },
+      keywords: [n.to.replace(/^\//, ""), "go", "open"],
+    })),
+    {
+      id: "action:token",
+      label: "Set API token",
+      hint: "Bearer token for off-loopback servers",
+      group: "Actions",
+      icon: KeyRound,
+      keywords: ["auth", "bearer", "secret"],
+      run: () => {
+        onOpenChange(false);
+        // Defer so the palette close animation can run first.
+        setTimeout(onOpenTokenDialog, 60);
       },
-    ],
-    [navigate, onOpenChange, onOpenTokenDialog, theme],
-  );
+    },
+    {
+      id: "action:theme",
+      label: theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
+      hint: theme === "dark" ? "current: dark" : "current: light",
+      group: "Actions",
+      icon: theme === "dark" ? Sun : Moon,
+      keywords: ["theme", "dark", "light", "mode", "appearance"],
+      run: () => {
+        setTheme(theme === "dark" ? "light" : "dark");
+        onOpenChange(false);
+      },
+    },
+  ];
 
-  const filtered = useMemo(() => {
-    const scored = actions
-      .map((a) => ({ a, s: fuzzyScore(query, a) }))
-      .filter((x) => x.s > 0)
-      .sort((x, y) => y.s - x.s);
-    return scored.map((x) => x.a);
-  }, [actions, query]);
+  const filtered = actions
+    .map((a) => ({ a, s: fuzzyScore(query, a) }))
+    .filter((x) => x.s > 0)
+    .sort((x, y) => y.s - x.s)
+    .map((x) => x.a);
 
-  const grouped = useMemo(() => {
-    const out: Array<[Action["group"], Action[]]> = [];
-    const order: Action["group"][] = ["Navigate", "Actions"];
-    for (const g of order) {
-      const items = filtered.filter((a) => a.group === g);
-      if (items.length) out.push([g, items]);
-    }
-    return out;
-  }, [filtered]);
+  const grouped: Array<[Action["group"], Action[]]> = [];
+  for (const g of ["Navigate", "Actions"] as Action["group"][]) {
+    const items = filtered.filter((a) => a.group === g);
+    if (items.length) grouped.push([g, items]);
+  }
 
   // Clamp active when the filter changes
   useEffect(() => {
@@ -181,27 +170,24 @@ export function CommandPalette({
     node?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActive((i) => Math.min(filtered.length - 1, i + 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActive((i) => Math.max(0, i - 1));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        filtered[active]?.run();
-      } else if (e.key === "Home") {
-        e.preventDefault();
-        setActive(0);
-      } else if (e.key === "End") {
-        e.preventDefault();
-        setActive(Math.max(0, filtered.length - 1));
-      }
-    },
-    [active, filtered],
-  );
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => Math.min(filtered.length - 1, i + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => Math.max(0, i - 1));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      filtered[active]?.run();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setActive(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setActive(Math.max(0, filtered.length - 1));
+    }
+  };
 
   // Build a flat index map so each row knows its global position for
   // keyboard cursor highlighting.

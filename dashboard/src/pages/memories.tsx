@@ -6,7 +6,7 @@
  * selecting a node traces its structure in the inspector. Browsing
  * with no query shows the global successor graph.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, RotateCcw, Search, X } from "lucide-react";
 import { useGraph, useMemories } from "@/lib/queries";
 import type { GraphNode, MemoryList, RecallMode } from "@/lib/api";
@@ -88,29 +88,16 @@ export default function Memories() {
   });
   const graph = useGraph({ depth: 1, max_nodes: 260 });
 
-  const matchIds = useMemo(
-    () => (query ? recallIds(episodicSearch.data) : []),
-    [episodicSearch.data, query],
-  );
-  const semanticMatchIds = useMemo(
-    () => (query ? recallIds(semanticSearch.data) : []),
-    [semanticSearch.data, query],
-  );
-  const highlight = useMemo(() => {
-    const s = new Set<string>();
-    for (const id of matchIds) s.add(`ep:${id}`);
-    for (const id of semanticMatchIds) s.add(`sem:${id}`);
-    return s;
-  }, [matchIds, semanticMatchIds]);
+  const matchIds = query ? recallIds(episodicSearch.data) : [];
+  const semanticMatchIds = query ? recallIds(semanticSearch.data) : [];
+  const highlight = new Set<string>();
+  for (const id of matchIds) highlight.add(`ep:${id}`);
+  for (const id of semanticMatchIds) highlight.add(`sem:${id}`);
   const totalHits = matchIds.length + semanticMatchIds.length;
   const searchError = episodicSearch.error ?? semanticSearch.error;
-  const mode = useMemo(
-    () =>
-      query
-        ? combineModes(recallMode(episodicSearch.data), recallMode(semanticSearch.data))
-        : null,
-    [query, episodicSearch.data, semanticSearch.data],
-  );
+  const mode = query
+    ? combineModes(recallMode(episodicSearch.data), recallMode(semanticSearch.data))
+    : null;
 
   // "Search the whole map": pan the camera to the top hit so its
   // neighbourhood is visible. Camera-only — no refetch, no relayout.

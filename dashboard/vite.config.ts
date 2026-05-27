@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import babel from "@rolldown/plugin-babel";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath, URL } from "node:url";
 
@@ -8,9 +9,24 @@ import { fileURLToPath, URL } from "node:url";
 // FastAPI dashboard app (gated by the optional [dashboard] extra), so the
 // build emits straight into the package's static dir. `base: "./"` keeps
 // asset URLs relative regardless of the mount path.
+// React Compiler (formerly React Forget) auto-memoizes component
+// output. With this in place hand-written `useMemo`/`useCallback`/
+// `React.memo` become redundant — values keep stable identity when
+// their inputs are stable, without the boilerplate.
+//
+// Wiring follows @vitejs/plugin-react v6's recommended pattern: the
+// main `react()` plugin runs the SWC-based JSX/HMR transform, then a
+// `@rolldown/plugin-babel` pass applies the compiler preset to the
+// same file set. `target: "19"` emits against React 19's built-in
+// compiler runtime (no `react-compiler-runtime` polyfill needed).
+
 export default defineConfig({
   base: "./",
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    babel({ presets: [reactCompilerPreset({ target: "19" })] }),
+    tailwindcss(),
+  ],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

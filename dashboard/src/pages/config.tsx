@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Info, Search, X } from "lucide-react";
 import { useHealth, useParams } from "@/lib/queries";
 import { PageHeader } from "@/components/common/page-header";
@@ -37,19 +37,16 @@ export default function Config() {
   const health = useHealth();
   const [filter, setFilter] = useState("");
 
-  const allEntries = useMemo(
-    () =>
-      Object.entries(params.data ?? {}).sort(([a], [b]) => a.localeCompare(b)),
-    [params.data],
+  const allEntries = Object.entries(params.data ?? {}).sort(([a], [b]) =>
+    a.localeCompare(b),
   );
-  const entries = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return allEntries;
-    return allEntries.filter(([k, v]) => {
-      if (k.toLowerCase().includes(q)) return true;
-      return fmt(v).toLowerCase().includes(q);
-    });
-  }, [allEntries, filter]);
+  const q = filter.trim().toLowerCase();
+  const entries = q
+    ? allEntries.filter(([k, v]) => {
+        if (k.toLowerCase().includes(q)) return true;
+        return fmt(v).toLowerCase().includes(q);
+      })
+    : allEntries;
 
   if (params.isLoading) return <Loading />;
   if (params.error) return <ErrorState error={params.error} />;
