@@ -2139,9 +2139,17 @@ dependencies = [
     { name = "simplevecdb", extra = ["server"] },
 ]
 
+[package.optional-dependencies]
+dashboard = [
+    { name = "fastapi" },
+    { name = "sse-starlette" },
+    { name = "uvicorn" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "bandit", specifier = ">=1.9.4" },
+    { name = "fastapi", marker = "extra == 'dashboard'", specifier = ">=0.136" },
     { name = "fastmcp", specifier = ">=3.2.4" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "mypy", specifier = ">=2.0.0" },
@@ -2150,7 +2158,10 @@ requires-dist = [
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "ruff", specifier = ">=0.15.12" },
     { name = "simplevecdb", extras = ["server"], specifier = ">=2.6.0,<3" },
+    { name = "sse-starlette", marker = "extra == 'dashboard'", specifier = ">=3.4" },
+    { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.46" },
 ]
+provides-extras = ["dashboard"]
 
 [[package]]
 name = "threadpoolctl"
