@@ -70,7 +70,7 @@ Restart the client. The first run downloads the local embedding model (once) unl
 
 ## Web dashboard
 
-An optional read/write admin console (memory browser, SR/plasticity graph, forget/consolidate/reflect, live stats) runs **in-process on the same event loop** as the MCP server — gated behind the `[dashboard]` extra and an env flag, so a default install never pulls in FastAPI/uvicorn.
+An optional read/write admin console (memory browser, SR/plasticity graph, forget/consolidate/reflect, live stats, per-tool telemetry — call counts, last-called, p50/p95) runs **in-process on the same event loop** as the MCP server — gated behind the `[dashboard]` extra and an env flag, so a default install never pulls in FastAPI/uvicorn.
 
 ```bash
 SYNARA_DASHBOARD=true uvx 'synara-mcp[dashboard]'
