@@ -33,6 +33,13 @@ _logger = logging.getLogger(__name__)
 
 
 def build_server(settings: Settings) -> FastMCP:
+    # SQLite single-writer invariant. Even in WAL mode, SQLite serializes
+    # writers and rejects concurrent ones with "database is locked", so
+    # this DB handle MUST be opened by exactly one process at a time. The
+    # multi-process coordinator (synara.coordination) enforces that: only
+    # the elected leader calls build_server(); followers proxy to it via
+    # HTTP and never touch the DB. Do not "helpfully" let followers open
+    # the DB read-only without also routing writes through the leader.
     if settings.db_path != ":memory:":
         Path(settings.db_path).resolve().parent.mkdir(parents=True, exist_ok=True)
     db = AsyncVectorDB(settings.db_path, quantization=Quantization.INT8)
