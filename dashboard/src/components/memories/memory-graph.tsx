@@ -952,8 +952,10 @@ export function MemoryGraph({
             <span>ω {data.omega.toFixed(2)}</span>
             <span>·</span>
             <span>{data.episode_count} ep</span>
-            {data.truncated && (
-              <span className="text-warning">· capped</span>
+            {(data.truncated || data.semantics_truncated) && (
+              <span className="text-warning">
+                · capped{data.semantics_truncated && !data.truncated ? " (semantics)" : ""}
+              </span>
             )}
           </span>
         </Panel>

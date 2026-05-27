@@ -58,12 +58,21 @@ class _FakeColl:
         return out
 
     async def get_documents(
-        self, query: dict[str, Any]
+        self,
+        filter_dict: dict[str, Any] | None = None,
+        *,
+        limit: int | None = None,
     ) -> Iterable[tuple[int, str, dict[str, Any]]]:
-        ids = query.get("id", [])
-        if not isinstance(ids, list):
-            ids = [ids]
-        return [(doc_id, *self._docs[doc_id]) for doc_id in ids if doc_id in self._docs]
+        if filter_dict is None:
+            rows = [(doc_id, *doc) for doc_id, doc in self._docs.items()]
+        else:
+            ids = filter_dict.get("id", [])
+            if not isinstance(ids, list):
+                ids = [ids]
+            rows = [(doc_id, *self._docs[doc_id]) for doc_id in ids if doc_id in self._docs]
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
 
     async def get_embeddings_by_ids(self, ids: list[int]) -> dict[int, Any]:
         return {}
@@ -196,7 +205,7 @@ async def test_semantic_overlay_emits_nodes_and_edges_when_schema_ids_present() 
     nodes, edges = await graph_mod._semantic_overlay(
         service,  # type: ignore[arg-type]
         docs,
-        schema_ids={schema_id},
+        semantic_ids={schema_id},
     )
     assert len(nodes) == 1
     node = nodes[0]
@@ -216,10 +225,55 @@ async def test_semantic_overlay_empty_schema_ids_returns_empty() -> None:
     nodes, edges = await graph_mod._semantic_overlay(
         service,  # type: ignore[arg-type]
         docs={},
-        schema_ids=set(),
+        semantic_ids=set(),
     )
     assert nodes == []
     assert edges == []
+
+
+async def test_all_semantic_ids_enumerates_every_doc_up_to_limit() -> None:
+    """Standalone (user-asserted) semantic memories with no consolidating
+    episodes must still surface — otherwise they're invisible on the map."""
+    semantic = _FakeColl(
+        documents={
+            1: ("orphan a", {"authored": True}),
+            2: ("orphan b", {"authored": True}),
+            3: ("schema c", {"source_episode_ids": [10, 11]}),
+        }
+    )
+    ids, truncated = await graph_mod._all_semantic_ids(semantic, limit=10)
+    assert ids == {1, 2, 3}
+    assert truncated is False
+
+
+async def test_all_semantic_ids_respects_limit_and_signals_truncation() -> None:
+    semantic = _FakeColl(documents={i: (f"s{i}", {}) for i in range(5)})
+    ids, truncated = await graph_mod._all_semantic_ids(semantic, limit=2)
+    assert len(ids) == 2
+    assert truncated is True
+
+
+async def test_semantic_overlay_labels_orphans_as_memory_not_schema() -> None:
+    """Authored (user-asserted) semantics get a ``memory #N`` label so
+    they're not visually confused with consolidated schemas."""
+    orphan_id, schema_id = 9, 7
+    semantic = _FakeColl(
+        documents={
+            orphan_id: ("orphan", {"authored": True}),
+            schema_id: ("schema", {"source_episode_ids": [1]}),
+        }
+    )
+    service = _StubService(semantic=semantic, consolidate_full_at=4)
+    nodes, _ = await graph_mod._semantic_overlay(
+        service,  # type: ignore[arg-type]
+        docs={},
+        semantic_ids={orphan_id, schema_id},
+    )
+    by_id = {n["id"]: n for n in nodes}
+    assert by_id[orphan_id]["label"] == f"memory #{orphan_id}"
+    assert by_id[orphan_id]["user_asserted"] is True
+    assert by_id[schema_id]["label"] == f"schema #{schema_id}"
+    assert by_id[schema_id]["user_asserted"] is False
 
 
 async def test_semantic_overlay_uses_default_confidence_when_metadata_missing() -> None:

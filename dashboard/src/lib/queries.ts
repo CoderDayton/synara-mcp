@@ -56,6 +56,13 @@ export const useMemoryDetail = (id: number | null) =>
     enabled: id != null,
   });
 
+export const useSemanticDetail = (id: number | null) =>
+  useQuery({
+    queryKey: ["semantic", id],
+    queryFn: () => api.semanticDetail(id as number),
+    enabled: id != null,
+  });
+
 export const useGraph = (q: {
   focus?: number;
   depth?: number;

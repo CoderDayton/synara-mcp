@@ -238,6 +238,32 @@ async def memory_detail(
     }
 
 
+@router.get("/semantic/{semantic_id}")
+async def semantic_detail(
+    service: _Service,
+    semantic_id: Annotated[int, Path(ge=0)],
+) -> dict[str, Any]:
+    target = await service.semantic.get_documents({"id": semantic_id})
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"semantic {semantic_id} not found",
+        )
+    _doc_id, text, md = target[0]
+    sources = [int(x) for x in md.get("source_episode_ids", [])]
+    return {
+        "id": semantic_id,
+        "content": text,
+        "kind": str(md.get("kind", "fact")),
+        "tags": [str(t) for t in md.get("tags", [])],
+        "confidence": float(md.get("confidence", 0.0)),
+        "user_asserted": bool(md.get("authored", False)),
+        "source_episode_ids": sources,
+        "created_at": float(md.get("created_at", 0.0)),
+        "updated_at": float(md.get("updated_at", md.get("created_at", 0.0))),
+    }
+
+
 @router.delete("/memories/{episode_id}")
 async def delete_memory(
     service: _Service,

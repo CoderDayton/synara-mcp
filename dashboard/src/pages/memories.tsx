@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MemoryGraph } from "@/components/memories/memory-graph";
 import { MemoryInspector } from "@/components/memories/memory-inspector";
+import { MemoryDialog } from "@/components/memories/memory-dialog";
 
 function recallIds(list: MemoryList | undefined): number[] {
   if (!list || !("query" in list)) return [];
@@ -75,6 +76,7 @@ export default function Memories() {
   // every fetch sees the same node set.
   const [focus, setFocus] = useState<number | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   const episodicSearch = useMemories({
     kind: "episodic",
@@ -247,14 +249,21 @@ export default function Memories() {
               <ErrorState error={graph.error} />
             </div>
           )}
-          {showEmpty && (
-            <div className="grid h-full place-items-center p-6">
-              <Empty
-                label="No memory graph yet"
-                hint="The map is built from successor transitions and plasticity edges. Store and recall a few episodes, then return."
-              />
-            </div>
-          )}
+          {showEmpty && (() => {
+            const epCount = graph.data?.episode_count ?? 0;
+            return (
+              <div className="grid h-full place-items-center p-6">
+                <Empty
+                  label={epCount === 0 ? "No memories stored yet" : "No graph structure yet"}
+                  hint={
+                    epCount === 0
+                      ? "Call store_episode (or store_semantic_memory) to seed the map. Successor edges form once two episodes land in the same ~60-second window; plasticity and schemas layer on after recalls and consolidations."
+                      : `${epCount} ${epCount === 1 ? "memory" : "memories"} stored — no SR transitions, plasticity edges, or schemas yet. Edges accrue between episodes accessed within ~60s of each other (stores and recalls both count). Burst a few more calls or run consolidate_episodes, then refresh.`
+                  }
+                />
+              </div>
+            );
+          })()}
           {graph.data && graph.data.nodes.length > 0 && (
             <MemoryGraph
               data={graph.data}
@@ -278,11 +287,20 @@ export default function Memories() {
             <MemoryInspector
               node={selected}
               onFocus={(id) => setFocus(id)}
-              onClose={() => setSelected(null)}
+              onClose={() => {
+                setSelected(null);
+                setDialogOpen(false);
+              }}
+              onOpenFull={() => setDialogOpen(true)}
             />
           </aside>
         )}
       </div>
+      <MemoryDialog
+        node={selected}
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+      />
     </section>
   );
 }

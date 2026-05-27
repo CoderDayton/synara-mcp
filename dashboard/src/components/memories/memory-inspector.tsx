@@ -5,7 +5,7 @@
  * and overlays the live ranking signals the map encodes. For a schema
  * node it shows the consolidation summary.
  */
-import { CircleHelp, Crosshair, X } from "lucide-react";
+import { CircleHelp, Crosshair, Maximize2, X } from "lucide-react";
 import { useMemoryDetail } from "@/lib/queries";
 import type { GraphNode } from "@/lib/api";
 import { relativeTime, shortSession } from "@/lib/format";
@@ -104,10 +104,12 @@ function EpisodicBody({
   node,
   onFocus,
   onClose,
+  onOpenFull,
 }: {
   node: Extract<GraphNode, { kind: "episodic" }>;
   onFocus: (id: number) => void;
   onClose: () => void;
+  onOpenFull: () => void;
 }) {
   const { data, isLoading, error } = useMemoryDetail(node.id);
   return (
@@ -211,15 +213,21 @@ function EpisodicBody({
       )}
 
       <Separator />
-      <div className="flex items-center justify-between">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => onFocus(node.id)}
-        >
-          <Crosshair className="size-4" aria-hidden />
-          Recenter map
-        </Button>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => onFocus(node.id)}
+          >
+            <Crosshair className="size-4" aria-hidden />
+            Recenter map
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onOpenFull}>
+            <Maximize2 className="size-4" aria-hidden />
+            View full
+          </Button>
+        </div>
         <DeleteMemoryButton id={node.id} onDeleted={onClose} />
       </div>
     </div>
@@ -228,8 +236,10 @@ function EpisodicBody({
 
 function SemanticBody({
   node,
+  onOpenFull,
 }: {
   node: Extract<GraphNode, { kind: "semantic" }>;
+  onOpenFull: () => void;
 }) {
   return (
     <div className="space-y-5">
@@ -256,11 +266,30 @@ function SemanticBody({
         </p>
       )}
       <p className="text-xs leading-relaxed text-muted-foreground">
-        A semantic schema is the gist distilled from{" "}
-        <span className="font-mono text-foreground">{node.source_count}</span>{" "}
-        episode{node.source_count === 1 ? "" : "s"}. Episodes that fed it are
-        drawn with a cyan link on the map.
+        {node.source_count > 0 ? (
+          <>
+            A semantic schema distilled from{" "}
+            <span className="font-mono text-foreground">{node.source_count}</span>{" "}
+            episode{node.source_count === 1 ? "" : "s"}. Episodes that fed it
+            are drawn with a cyan link on the map.
+          </>
+        ) : (
+          <>
+            A user-asserted semantic memory — written directly via{" "}
+            <span className="font-mono text-foreground">
+              store_semantic_memory
+            </span>
+            , with no consolidating episodes.
+          </>
+        )}
       </p>
+      <Separator />
+      <div>
+        <Button variant="ghost" size="sm" onClick={onOpenFull}>
+          <Maximize2 className="size-4" aria-hidden />
+          View full
+        </Button>
+      </div>
     </div>
   );
 }
@@ -269,10 +298,12 @@ export function MemoryInspector({
   node,
   onFocus,
   onClose,
+  onOpenFull,
 }: {
   node: GraphNode | null;
   onFocus: (id: number) => void;
   onClose: () => void;
+  onOpenFull: () => void;
 }) {
   if (!node) {
     return (
@@ -309,9 +340,14 @@ export function MemoryInspector({
       <ScrollArea className="min-h-0 flex-1">
         <div className="p-4 sm:p-5">
           {node.kind === "episodic" ? (
-            <EpisodicBody node={node} onFocus={onFocus} onClose={onClose} />
+            <EpisodicBody
+              node={node}
+              onFocus={onFocus}
+              onClose={onClose}
+              onOpenFull={onOpenFull}
+            />
           ) : (
-            <SemanticBody node={node} />
+            <SemanticBody node={node} onOpenFull={onOpenFull} />
           )}
         </div>
       </ScrollArea>

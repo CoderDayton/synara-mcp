@@ -32,6 +32,7 @@ router = APIRouter(tags=["graph"])
 _Service = Annotated[MemoryService, Depends(get_service)]
 
 _MAX_NODES_CAP = 1000
+_SEMANTIC_NODES_CAP = 1000
 _PREVIEW_CHARS = 140
 
 
@@ -261,15 +262,39 @@ def _episodic_node(
     }
 
 
+async def _all_semantic_ids(coll: Any, limit: int) -> tuple[set[int], bool]:
+    """Enumerate semantic doc ids up to ``limit``; signal truncation.
+
+    Lets standalone ``store_semantic_memory`` writes surface on the map
+    even when no episode has consolidated into them — otherwise the
+    graph route would only show schemas referenced from episodic
+    ``metadata.consolidated_into``, and user-asserted semantics would
+    be invisible. The returned bool is ``True`` when the semantic
+    collection has more rows than ``limit``, so callers can warn the
+    user instead of silently dropping orphans.
+    """
+    rows = list(await coll.get_documents(filter_dict=None, limit=limit + 1))
+    truncated = len(rows) > limit
+    out: set[int] = {int(doc_id) for doc_id, _t, _md in rows[:limit]}
+    return out, truncated
+
+
 async def _semantic_overlay(
     service: MemoryService,
     docs: dict[int, tuple[str, dict[str, Any]]],
-    schema_ids: set[int],
+    semantic_ids: set[int],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Schema nodes + episode→schema consolidation edges."""
-    if not schema_ids:
+    """Semantic nodes + episode→schema consolidation edges.
+
+    ``semantic_ids`` is the union of (a) schemas referenced by some
+    episode's ``consolidated_into`` and (b) standalone user-asserted
+    semantics enumerated via :func:`_all_semantic_ids`. Consolidation
+    edges only fire for the (a) subset — orphan semantics have no
+    incoming episodic edges by construction.
+    """
+    if not semantic_ids:
         return [], []
-    sorted_ids = sorted(schema_ids)
+    sorted_ids = sorted(semantic_ids)
     sdocs, sembeds = await asyncio.gather(
         _docs_by_id(service.semantic, sorted_ids),
         service.semantic.get_embeddings_by_ids(sorted_ids),
@@ -284,10 +309,12 @@ async def _semantic_overlay(
                 "id": sid,
                 "key": f"sem:{sid}",
                 "kind": "semantic",
-                "label": f"schema #{sid}",
+                "label": (
+                    f"memory #{sid}" if bool(md.get("authored", False)) else f"schema #{sid}"
+                ),
                 "confidence": float(md.get("confidence", min(1.0, len(sources) / full_at))),
                 "source_count": len(sources),
-                "user_asserted": bool(md.get("user_asserted", False)),
+                "user_asserted": bool(md.get("authored", False)),
                 "preview": _preview(text),
                 "embedding": _embedding_payload(sembeds.get(sid)),
             }
@@ -295,7 +322,7 @@ async def _semantic_overlay(
     edges = [
         {"src": nid, "dst": f"sem:{c}"}
         for nid, (_t, md) in docs.items()
-        if (c := int(md.get("consolidated_into", 0))) in schema_ids
+        if (c := int(md.get("consolidated_into", 0))) in semantic_ids
     ]
     return nodes, edges
 
@@ -340,7 +367,11 @@ async def sr_graph(
         text, md = docs.get(nid, ("", {}))
         node_objs.append(_episodic_node(nid, text, md, focus, ep_embeds.get(nid)))
     schema_ids = {c for _t, md in docs.values() if (c := int(md.get("consolidated_into", 0))) > 0}
-    schema_nodes, consolidation_edges = await _semantic_overlay(service, docs, schema_ids)
+    standalone_ids, semantics_truncated = await _all_semantic_ids(
+        service.semantic, _SEMANTIC_NODES_CAP
+    )
+    semantic_ids = schema_ids | standalone_ids
+    schema_nodes, consolidation_edges = await _semantic_overlay(service, docs, semantic_ids)
     node_objs.extend(schema_nodes)
 
     return {
@@ -352,4 +383,5 @@ async def sr_graph(
         "episode_count": episode_count,
         "focus": focus,
         "truncated": len(nodes) >= max_nodes,
+        "semantics_truncated": semantics_truncated,
     }

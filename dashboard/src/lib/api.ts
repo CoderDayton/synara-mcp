@@ -201,6 +201,18 @@ export interface MemoryDetail {
   }>;
 }
 
+export interface SemanticDetail {
+  id: number;
+  content: string;
+  kind: string;
+  tags: string[];
+  confidence: number;
+  user_asserted: boolean;
+  source_episode_ids: number[];
+  created_at: number;
+  updated_at: number;
+}
+
 export interface DeleteResult {
   deleted_ids: number[];
   count: number;
@@ -269,6 +281,7 @@ export interface GraphData {
   episode_count: number;
   focus: number | null;
   truncated: boolean;
+  semantics_truncated: boolean;
   /** True when the response came from a pre-enrichment server (the
    *  process was not restarted after a deploy): nodes arrive as bare
    *  ids with no salience/SR/plasticity metadata. The UI surfaces this
@@ -416,6 +429,7 @@ export function normalizeGraph(raw: unknown): GraphData {
     episode_count: num(r.episode_count, nodes.length),
     focus: typeof r.focus === "number" ? r.focus : null,
     truncated: r.truncated === true,
+    semantics_truncated: r.semantics_truncated === true,
     legacy,
   };
 }
@@ -485,6 +499,7 @@ export const api = {
     });
   },
   memoryDetail: (id: number) => request<MemoryDetail>(`/memories/${id}`),
+  semanticDetail: (id: number) => request<SemanticDetail>(`/semantic/${id}`),
   deleteMemory: (id: number) =>
     request<DeleteResult>(`/memories/${id}`, { method: "DELETE" }),
 
