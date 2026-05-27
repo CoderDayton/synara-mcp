@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Activity, Brain, Database, Sparkles } from "lucide-react";
+import { Activity, Brain, Database, History, Sparkles, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import {
   useConsolidate,
@@ -10,7 +10,7 @@ import {
 } from "@/lib/queries";
 import type { ToolMetricRow } from "@/lib/api";
 import { formatDuration, relativeTime } from "@/lib/format";
-import { ErrorState, Loading } from "@/components/common/states";
+import { Empty, ErrorState, Loading } from "@/components/common/states";
 import { Panel } from "@/components/common/panel";
 import { StatCard } from "@/components/common/stat-card";
 import { Button } from "@/components/ui/button";
@@ -137,18 +137,24 @@ export default function Overview() {
             </Suspense>
           </div>
         ) : (
-          <div className="space-y-3 text-xs">
-            <p className="text-muted-foreground">
-              Store is empty. Point an MCP client at this server, then call{" "}
-              <code className="border border-border bg-muted px-1 py-0.5 font-mono text-primary">
-                store_episode
-              </code>
-              .
-            </p>
-            <pre className="overflow-x-auto border border-border bg-surface-canvas p-3 font-mono text-[0.7rem] leading-relaxed text-foreground/90">
+          <Empty
+            dense
+            icon={Database}
+            label="Store is empty"
+            hint={
+              <>
+                Point an MCP client at this server, then call{" "}
+                <code className="border border-border bg-muted px-1 py-0.5 font-mono text-primary">
+                  store_episode
+                </code>
+                .
+              </>
+            }
+          >
+            <pre className="w-full overflow-x-auto border border-border bg-surface-canvas p-3 text-left font-mono text-[0.7rem] leading-relaxed text-foreground/90">
               {MCP_SNIPPET}
             </pre>
-          </div>
+          </Empty>
         )}
       </Panel>
 
@@ -172,9 +178,12 @@ export default function Overview() {
         bodyClassName="p-0"
       >
         {items.length === 0 ? (
-          <div className="p-4 text-[0.7rem] text-muted-foreground">
-            No episodes yet.
-          </div>
+          <Empty
+            dense
+            icon={History}
+            label="No episodes yet"
+            hint="Stored traces will stream in here as the MCP client encodes them."
+          />
         ) : (
           <ul className="divide-y divide-border">
             {items.slice(0, 6).map((it) => (
@@ -240,9 +249,16 @@ function ToolMetricsPanel() {
       bodyClassName="p-0"
     >
       {rows.length === 0 ? (
-        <div className="p-4 text-[0.7rem] text-muted-foreground">
-          {m.isLoading ? "fetching tool surface…" : "no tools registered."}
-        </div>
+        m.isLoading ? (
+          <Loading label="fetching tool surface" />
+        ) : (
+          <Empty
+            dense
+            icon={Wrench}
+            label="No tools registered"
+            hint="The server hasn't declared any MCP tools. Check the server logs."
+          />
+        )
       ) : (
         <ul className="divide-y divide-border">
           {rows.map((t) => (

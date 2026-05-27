@@ -7,6 +7,7 @@ import {
   Eye,
   ListTree,
   Radio,
+  ScrollText,
   Sparkles,
   Trash2,
   Zap,
@@ -26,6 +27,7 @@ import type {
 import { PageHeader } from "@/components/common/page-header";
 import { Panel } from "@/components/common/panel";
 import { ResultBlock } from "@/components/common/result-block";
+import { Empty } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -698,9 +700,12 @@ function TranscriptPanel({
       bodyClassName="p-0"
     >
       {entries.length === 0 ? (
-        <div className="px-4 py-3 font-mono text-[0.7rem] text-muted-foreground">
-          no operations yet · session-scoped log
-        </div>
+        <Empty
+          dense
+          icon={ScrollText}
+          label="No operations yet"
+          hint="Session-scoped log. Run an admin op and it'll appear here."
+        />
       ) : (
         <ul className="divide-y divide-border">
           {entries.map((e, i) => (
