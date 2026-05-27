@@ -23,7 +23,6 @@
 import {
   Background,
   BackgroundVariant,
-  Controls,
   Handle,
   MarkerType,
   MiniMap,
@@ -31,6 +30,8 @@ import {
   Position,
   ReactFlow,
   useReactFlow,
+  useStore,
+  useStoreApi,
   type Edge,
   type Node,
   type NodeProps,
@@ -112,6 +113,14 @@ function hiddenHandles() {
   );
 }
 
+/** Zoom level above which node captions fade in. Past the `fitView`
+ *  ceiling (1.4) so the overview stays clean and captions only appear
+ *  once the user has *deliberately* zoomed in to investigate. */
+const CAPTION_ZOOM_MIN = 1.5;
+/** Pixels of slack around the viewport when culling captions — keeps a
+ *  caption visible for a node that's just being panned in. */
+const CAPTION_VIEWPORT_PAD = 80;
+
 function EpisodicNode({ data, selected }: NodeProps<FlowNode>) {
   const n = data.node;
   if (n.kind !== "episodic") return null;
@@ -137,31 +146,39 @@ function EpisodicNode({ data, selected }: NodeProps<FlowNode>) {
             width: r * 2,
             height: r * 2,
             opacity: data.dim ? 0.16 : 1,
-            background: `oklch(0.30 0.05 ${hue} / 0.55)`,
-            borderColor:
-              n.is_focus || selected
-                ? "var(--color-primary)"
-                : `oklch(0.72 0.12 ${hue} / 0.75)`,
-            boxShadow:
-              n.is_focus || selected || data.active
-                ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
-                : "var(--shadow-card)",
           }}
-          className="grid place-items-center rounded-[30%] border-[1.5px] font-mono transition-[opacity,box-shadow,transform] duration-300"
+          className="relative grid place-items-center font-mono"
         >
           {hiddenHandles()}
-          <span
-            className="leading-none font-semibold"
-            style={{ fontSize: clamp(r * 0.42, 8, 13), color: "var(--color-foreground)" }}
+          <div
+            aria-hidden
+            style={{
+              background: `oklch(0.30 0.05 ${hue} / 0.55)`,
+              borderColor:
+                n.is_focus || selected
+                  ? "var(--color-primary)"
+                  : `oklch(0.72 0.12 ${hue} / 0.75)`,
+              boxShadow:
+                n.is_focus || selected || data.active
+                  ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
+                  : "var(--shadow-card)",
+            }}
+            className="absolute inset-0 grid place-items-center rounded-[30%] border-[1.5px] transition-[opacity,box-shadow,transform] duration-300"
           >
-            #{n.id}
-          </span>
-          {consolidated && (
             <span
-              className="absolute -top-1 -right-1 size-2 rounded-full"
-              style={{ background: "var(--color-chart-2)" }}
-            />
-          )}
+              className="leading-none font-semibold"
+              style={{ fontSize: clamp(r * 0.42, 8, 13), color: "var(--color-foreground)" }}
+            >
+              #{n.id}
+            </span>
+            {consolidated && (
+              <span
+                className="absolute -top-1 -right-1 size-2 rounded-full"
+                style={{ background: "var(--color-chart-2)" }}
+              />
+            )}
+          </div>
+
         </div>
       </HoverCardTrigger>
       <HoverCardContent side="top" className="w-72 p-0">
@@ -242,24 +259,32 @@ function SemanticNode({ data, selected }: NodeProps<FlowNode>) {
             width: r * 2,
             height: r * 2,
             opacity: data.dim ? 0.16 : 1,
-            background: "oklch(0.30 0.06 230 / 0.4)",
-            borderColor: selected
-              ? "var(--color-primary)"
-              : `oklch(0.72 0.13 230 / ${0.35 + conf * 0.6})`,
-            boxShadow:
-              selected || data.active
-                ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
-                : "0 0 18px -8px oklch(0.72 0.13 230 / 0.7)",
           }}
-          className="grid place-items-center rounded-full border-2 border-dashed font-mono transition-[opacity,box-shadow] duration-300"
+          className="relative grid place-items-center font-mono"
         >
           {hiddenHandles()}
-          <span
-            className="px-1 text-center leading-tight font-semibold"
-            style={{ fontSize: clamp(r * 0.3, 8, 12), color: "var(--color-chart-2)" }}
+          <div
+            aria-hidden
+            style={{
+              background: "oklch(0.30 0.06 230 / 0.4)",
+              borderColor: selected
+                ? "var(--color-primary)"
+                : `oklch(0.72 0.13 230 / ${0.35 + conf * 0.6})`,
+              boxShadow:
+                selected || data.active
+                  ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
+                  : "0 0 18px -8px oklch(0.72 0.13 230 / 0.7)",
+            }}
+            className="absolute inset-0 grid place-items-center rounded-full border-2 border-dashed transition-[opacity,box-shadow] duration-300"
           >
-            ⌬{n.id}
-          </span>
+            <span
+              className="px-1 text-center leading-tight font-semibold"
+              style={{ fontSize: clamp(r * 0.3, 8, 12), color: "var(--color-chart-2)" }}
+            >
+              ⌬{n.id}
+            </span>
+          </div>
+
         </div>
       </HoverCardTrigger>
       <HoverCardContent side="top" className="w-72 p-0">
@@ -302,6 +327,216 @@ const NODE_TYPES: NodeTypes = {
   episodic: EpisodicNode,
   semantic: SemanticNode,
 };
+
+/** Captions live on a single overlay layer above the canvas — not as
+ *  children of each node. The whole layer is `pointer-events: none`,
+ *  so labels never intercept clicks/drags: pan-drag and hover-card
+ *  still work even when the cursor is over a caption that visually
+ *  sits over another node's disc.
+ *
+ *  Performance shape:
+ *  - React renders each caption div **once** (per `nodes` identity).
+ *    Selection / focus / data updates regenerate `nodes`, which
+ *    rebuilds the static caption list — at most a few times per UI
+ *    interaction.
+ *  - Pan/zoom updates skip React entirely. We subscribe to the
+ *    ReactFlow store directly, coalesce via rAF, and update each
+ *    caption's `transform` (GPU compositing) + `display` (off-screen
+ *    cull) imperatively. For 500+ nodes the per-frame cost is a tight
+ *    O(N) loop of string assignments — no reconciliation, no diffing.
+ *  - Below the zoom threshold the whole layer is `display:none`; DOM
+ *    stays mounted so crossing the threshold doesn't re-render. */
+type CaptionStatic = {
+  key: string;
+  /** Flow-space centre of the disc. */
+  cx: number;
+  cy: number;
+  /** Disc radius — used to anchor the caption below the disc edge. */
+  r: number;
+  preview: string;
+  dim: boolean;
+  className: string;
+  style: React.CSSProperties;
+};
+
+const EPISODIC_CAPTION_CLS =
+  "max-w-[13rem] rounded-md border bg-surface-overlay/85 px-2 py-1 text-center font-mono text-[10px] leading-[1.25] font-medium tracking-tight text-foreground/85 shadow-card backdrop-blur-sm transition-opacity duration-200";
+const SEMANTIC_CAPTION_CLS =
+  "max-w-[13rem] rounded-md border border-l-2 bg-surface-overlay/85 px-2 py-1 text-center font-mono text-[10px] leading-[1.25] font-medium tracking-tight shadow-card backdrop-blur-sm transition-opacity duration-200";
+const SEMANTIC_CAPTION_STYLE: React.CSSProperties = {
+  borderColor: "oklch(0.72 0.13 230 / 0.35)",
+  borderLeftColor: "var(--color-chart-2)",
+  color: "color-mix(in oklab, var(--color-chart-2) 55%, var(--color-foreground))",
+};
+
+function CaptionsOverlay({ nodes }: { nodes: FlowNode[] }) {
+  const store = useStoreApi();
+  const layerRef = useRef<HTMLDivElement>(null);
+  const elRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // Static per-caption data. Only re-runs when the node list itself
+  // changes (selection, search, data refresh) — *not* on pan/zoom.
+  const captions = useMemo<CaptionStatic[]>(() => {
+    const out: CaptionStatic[] = [];
+    for (const fn of nodes) {
+      const n = fn.data.node;
+      if (!n.preview) continue;
+      const r = nodeRadius(n);
+      const cx = fn.position.x + r;
+      const cy = fn.position.y + r;
+      if (n.kind === "episodic") {
+        const hue = sessionHue(n.session_id);
+        out.push({
+          key: fn.id,
+          cx,
+          cy,
+          r,
+          preview: n.preview,
+          dim: fn.data.dim,
+          className: EPISODIC_CAPTION_CLS,
+          style: { borderColor: `oklch(0.72 0.12 ${hue} / 0.35)` },
+        });
+      } else {
+        out.push({
+          key: fn.id,
+          cx,
+          cy,
+          r,
+          preview: n.preview,
+          dim: fn.data.dim,
+          className: SEMANTIC_CAPTION_CLS,
+          style: SEMANTIC_CAPTION_STYLE,
+        });
+      }
+    }
+    return out;
+  }, [nodes]);
+
+  // Imperative position pump. Subscribes once to the ReactFlow store,
+  // coalesces store changes through rAF, and writes positions
+  // directly to each caption's DOM node. No React render on pan/zoom.
+  useEffect(() => {
+    let raf = 0;
+    const apply = () => {
+      raf = 0;
+      const layer = layerRef.current;
+      if (!layer) return;
+      const s = store.getState();
+      const tx = s.transform[0];
+      const ty = s.transform[1];
+      const zoom = s.transform[2];
+      const visible = zoom >= CAPTION_ZOOM_MIN;
+      layer.style.display = visible ? "" : "none";
+      if (!visible) return;
+      const vw = s.width;
+      const vh = s.height;
+      const minX = -CAPTION_VIEWPORT_PAD;
+      const maxX = vw + CAPTION_VIEWPORT_PAD;
+      const minY = -CAPTION_VIEWPORT_PAD;
+      const maxY = vh + CAPTION_VIEWPORT_PAD;
+      for (const c of captions) {
+        const el = elRefs.current.get(c.key);
+        if (!el) continue;
+        const sx = c.cx * zoom + tx;
+        const sy = c.cy * zoom + ty + c.r * zoom + 8;
+        if (sx < minX || sx > maxX || sy < minY || sy > maxY) {
+          if (el.style.display !== "none") el.style.display = "none";
+          continue;
+        }
+        if (el.style.display === "none") el.style.display = "";
+        el.style.transform = `translate3d(${sx}px, ${sy}px, 0) translateX(-50%)`;
+      }
+    };
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
+    const unsub = store.subscribe(schedule);
+    apply();
+    return () => {
+      unsub();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [store, captions]);
+
+  return (
+    <div
+      ref={layerRef}
+      aria-hidden
+      className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
+      style={{ display: "none" }}
+    >
+      {captions.map((c) => (
+        <div
+          key={c.key}
+          ref={(el) => {
+            if (el) elRefs.current.set(c.key, el);
+            else elRefs.current.delete(c.key);
+          }}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            // Off-screen until the first apply() runs — avoids a
+            // one-frame flash at (0,0) before positioning lands.
+            transform: "translate3d(-9999px, -9999px, 0)",
+            willChange: "transform",
+            opacity: c.dim ? 0.16 : 1,
+            ...c.style,
+          }}
+          className={c.className}
+        >
+          <span className="line-clamp-3 break-words whitespace-normal">{c.preview}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Compact zoom widget. Replaces ReactFlow's default Controls so the
+ *  current zoom is visible (the built-in Controls hide it) and the
+ *  styling matches the rest of the dashboard's glass panels. The
+ *  centre cell doubles as a "fit view" shortcut — clicking the
+ *  readout reframes the whole map. */
+function ZoomControls() {
+  const { zoomIn, zoomOut, fitView } = useReactFlow();
+  const zoom = useStore((s) => s.transform[2]);
+  const btn =
+    "grid size-7 place-items-center rounded text-base leading-none text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary";
+  return (
+    <Panel
+      position="bottom-right"
+      className="!m-3 flex items-center gap-0.5 rounded-md border border-border/70 bg-surface-overlay/85 p-1 font-mono shadow-card backdrop-blur"
+    >
+      <button
+        type="button"
+        aria-label="Zoom out"
+        title="Zoom out"
+        onClick={() => void zoomOut({ duration: 200 })}
+        className={btn}
+      >
+        −
+      </button>
+      <button
+        type="button"
+        aria-label={`Fit view (current zoom ${zoom.toFixed(2)}×)`}
+        title="Fit view"
+        onClick={() => void fitView({ padding: 0.25, duration: 300, maxZoom: 1.4 })}
+        className="min-w-12 rounded px-2 py-1 text-center text-[0.7rem] font-medium tabular-nums text-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+      >
+        {zoom.toFixed(2)}×
+      </button>
+      <button
+        type="button"
+        aria-label="Zoom in"
+        title="Zoom in"
+        onClick={() => void zoomIn({ duration: 200 })}
+        className={btn}
+      >
+        +
+      </button>
+    </Panel>
+  );
+}
 
 /** Refits the viewport whenever the layout signature settles — UMAP
  *  is async so ReactFlow's built-in fitView runs before positions
@@ -541,10 +776,8 @@ export function MemoryGraph({
         size={1}
         color="color-mix(in oklab, var(--color-foreground) 9%, transparent)"
       />
-      <Controls
-        showInteractive={false}
-        className="!rounded-md !border !border-border !bg-surface-floating !shadow-card !backdrop-blur [&_button]:!border-border [&_button]:!bg-transparent [&_button]:!text-muted-foreground hover:[&_button]:!text-foreground"
-      />
+      <ZoomControls />
+      <CaptionsOverlay nodes={nodes} />
       <MiniMap
         pannable
         zoomable
