@@ -13,7 +13,7 @@ from fastapi import Request
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from synara.config import Settings
-    from synara.features.memory import MemoryService
+    from synara.features.memory import MemoryService, ToolMetrics
 
 
 def get_service(request: Request) -> MemoryService:
@@ -22,3 +22,7 @@ def get_service(request: Request) -> MemoryService:
 
 def get_settings(request: Request) -> Settings:
     return cast("Settings", request.app.state.settings)
+
+
+def get_tool_metrics(request: Request) -> ToolMetrics:
+    return cast("ToolMetrics", request.app.state.tool_metrics)

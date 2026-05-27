@@ -6,8 +6,10 @@ import {
   useHealth,
   useMemories,
   useStats,
+  useToolMetrics,
 } from "@/lib/queries";
-import { formatDuration } from "@/lib/format";
+import type { ToolMetricRow } from "@/lib/api";
+import { formatDuration, relativeTime } from "@/lib/format";
 import { ErrorState, Loading } from "@/components/common/states";
 import { Panel } from "@/components/common/panel";
 import { StatCard } from "@/components/common/stat-card";
@@ -15,17 +17,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const StoreChart = lazy(() => import("@/components/overview/store-chart"));
-
-const TOOLS: Array<[string, string]> = [
-  ["store_episode", "encode an episodic trace"],
-  ["recall_episodes", "cross-session episodic recall"],
-  ["consolidate_episodes", "cluster traces → schemas"],
-  ["forget_episodes", "power-law decay prune"],
-  ["reflect_session", "summarise a session"],
-  ["store_semantic_memory", "write a semantic memory"],
-  ["recall_semantic_memory", "semantic memory recall"],
-  ["memory_stats", "store + tunable snapshot"],
-];
 
 const MCP_SNIPPET = `{
   "mcpServers": {
@@ -163,41 +154,7 @@ export default function Overview() {
 
       <HippocampusPressure ep={ep} sem={sem} />
 
-      {/* MCP tools grid */}
-      <Panel
-        title="exposed mcp tools"
-        eyebrow="surface"
-        className="lg:col-span-4"
-        aside={<span>{TOOLS.length} listed</span>}
-        bodyClassName="p-0"
-      >
-        <div className="grid grid-cols-1 divide-y divide-border sm:grid-cols-2 sm:divide-y-0 sm:[&>*]:border-b sm:[&>*]:border-border">
-          {TOOLS.map(([name, desc], i) => (
-            <div
-              key={name}
-              className={
-                "group flex items-center justify-between gap-3 px-4 py-2.5 transition-colors hover:bg-primary/5 " +
-                (i % 2 === 0 ? "sm:border-r sm:border-border" : "")
-              }
-            >
-              <div className="min-w-0">
-                <div className="truncate font-mono text-[0.72rem] text-primary group-hover:text-foreground">
-                  {name}
-                </div>
-                <div className="mt-0.5 truncate text-[0.65rem] text-muted-foreground">
-                  {desc}
-                </div>
-              </div>
-              <span
-                className="font-mono text-[0.6rem] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-                aria-hidden
-              >
-                ↗
-              </span>
-            </div>
-          ))}
-        </div>
-      </Panel>
+      <ToolMetricsPanel />
 
       {/* Recent episodes — live feed */}
       <Panel
@@ -237,6 +194,117 @@ export default function Overview() {
         )}
       </Panel>
     </div>
+  );
+}
+
+function formatMs(ms: number | null): string {
+  if (ms == null) return "—";
+  if (ms < 1) return `${ms.toFixed(2)}ms`;
+  if (ms < 10) return `${ms.toFixed(1)}ms`;
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+function ToolMetricsPanel() {
+  const m = useToolMetrics();
+  const rows: ToolMetricRow[] = m.data?.tools ?? [];
+  const totalCalls = rows.reduce((a, r) => a + r.count, 0);
+  const totalErrors = rows.reduce((a, r) => a + r.error_count, 0);
+  const live = totalCalls > 0;
+
+  return (
+    <Panel
+      title="exposed mcp tools"
+      eyebrow="live telemetry"
+      className="lg:col-span-4"
+      aside={
+        m.isLoading ? (
+          <span>loading…</span>
+        ) : (
+          <span className="flex items-center gap-2">
+            <span className="tabular-nums">{totalCalls.toLocaleString()} calls</span>
+            {totalErrors > 0 && (
+              <span className="text-destructive tabular-nums">
+                · {totalErrors} err
+              </span>
+            )}
+            {live && (
+              <span className="flex items-center gap-1 text-primary">
+                <span className="pulse-dot" aria-hidden />
+                live
+              </span>
+            )}
+          </span>
+        )
+      }
+      bodyClassName="p-0"
+    >
+      {rows.length === 0 ? (
+        <div className="p-4 text-[0.7rem] text-muted-foreground">
+          {m.isLoading ? "fetching tool surface…" : "no tools registered."}
+        </div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {rows.map((t) => (
+            <ToolRow key={t.name} row={t} />
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
+function ToolRow({ row }: { row: ToolMetricRow }) {
+  const called = row.count > 0;
+  const hasErrors = row.error_count > 0;
+  return (
+    <li className="grid grid-cols-[1fr_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-primary/5">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="truncate font-mono text-[0.72rem] text-primary">
+            {row.name}
+          </span>
+          {hasErrors && (
+            <span
+              className="font-mono text-[0.6rem] text-destructive tabular-nums"
+              title={`${row.error_count} error${row.error_count === 1 ? "" : "s"}`}
+            >
+              !{row.error_count}
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 truncate text-[0.65rem] text-muted-foreground">
+          {row.headline}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-3 font-mono text-[0.65rem] tabular-nums">
+        <span
+          className={called ? "text-foreground/90" : "text-muted-foreground/60"}
+          title="invocation count"
+        >
+          {row.count.toLocaleString()}×
+        </span>
+        <span
+          className={called ? "text-foreground/70" : "text-muted-foreground/40"}
+          title={
+            row.last_called_at
+              ? `last called ${new Date(row.last_called_at * 1000).toLocaleString()}`
+              : "never called"
+          }
+        >
+          {row.last_called_at ? relativeTime(row.last_called_at) : "—"}
+        </span>
+        <span
+          className={
+            "min-w-[3.5rem] text-right " +
+            (called ? "text-primary/90" : "text-muted-foreground/40")
+          }
+          title="p50 / p95 latency over last 200 calls"
+        >
+          {formatMs(row.p50_ms)} / {formatMs(row.p95_ms)}
+        </span>
+      </div>
+    </li>
   );
 }
 

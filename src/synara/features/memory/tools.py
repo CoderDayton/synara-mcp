@@ -22,13 +22,67 @@ System:
 
 from __future__ import annotations
 
-from typing import Any
+import functools
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 from fastmcp import Context, FastMCP
 
 from synara.features.embedding import Embedder
 
+from .metrics import ToolMetrics
 from .service import MemoryService
+
+_R = TypeVar("_R")
+
+
+def _instrument(
+    metrics: ToolMetrics | None,
+    name: str,
+) -> Callable[[Callable[..., Awaitable[_R]]], Callable[..., Awaitable[_R]]]:
+    """Wrap an async tool handler so each call updates ``metrics``.
+
+    When ``metrics is None`` the original handler is returned unchanged
+    so tests that don't wire a collector pay zero overhead. The wrapper
+    preserves the handler's signature via :func:`functools.wraps`, which
+    FastMCP's ``inspect.signature(..., follow_wrapped=True)`` honours —
+    so the registered tool schema is identical to the unwrapped version.
+    """
+    if metrics is None:
+        return lambda fn: fn
+
+    def decorator(fn: Callable[..., Awaitable[_R]]) -> Callable[..., Awaitable[_R]]:
+        @functools.wraps(fn)
+        async def wrapped(*args: Any, **kwargs: Any) -> _R:
+            t0 = time.perf_counter()
+            ok = False
+            try:
+                result = await fn(*args, **kwargs)
+                ok = True
+                return result
+            finally:
+                metrics.record(name, time.perf_counter() - t0, ok=ok)
+
+        return wrapped
+
+    return decorator
+
+
+# Single source of truth for the dashboard's per-tool headline. The
+# server pre-declares these on the metrics collector so the live panel
+# can render the full surface (including never-called tools) on the
+# first poll instead of waiting for a call to materialise each row.
+_TOOL_HEADLINES: dict[str, str] = {
+    "store_episode": "encode an episodic trace",
+    "recall_episodes": "cross-session episodic recall",
+    "consolidate_episodes": "cluster traces → schemas",
+    "forget_episodes": "power-law decay prune",
+    "reflect_session": "summarise a session",
+    "store_semantic_memory": "write a semantic memory",
+    "recall_semantic_memory": "semantic memory recall",
+    "memory_stats": "store + tunable snapshot",
+}
 
 # Shared compact definition. session_id is a caller-defined string
 # namespace, not an MCP/process session.
@@ -52,7 +106,12 @@ def register_tools(
     service: MemoryService,
     *,
     embedder: Embedder | None = None,
+    metrics: ToolMetrics | None = None,
 ) -> None:
+    if metrics is not None:
+        for tool_name, headline in _TOOL_HEADLINES.items():
+            metrics.declare(tool_name, headline=headline)
+
     @mcp.tool(
         name="store_episode",
         description=(
@@ -71,6 +130,7 @@ def register_tools(
             "critical traces."
         ),
     )
+    @_instrument(metrics, "store_episode")
     async def store_episode(
         content: str,
         session_id: str,
@@ -110,6 +170,7 @@ def register_tools(
             "for that case."
         ),
     )
+    @_instrument(metrics, "recall_episodes")
     async def recall_episodes(
         query: str,
         ctx: Context,
@@ -137,6 +198,7 @@ def register_tools(
             "min_cluster_size: discard smaller clusters, default 2."
         ),
     )
+    @_instrument(metrics, "consolidate_episodes")
     async def consolidate_episodes(
         ctx: Context,
         session_id: str | None = None,
@@ -172,6 +234,7 @@ def register_tools(
             "dry_run: default true. Set false to actually delete."
         ),
     )
+    @_instrument(metrics, "forget_episodes")
     async def forget_episodes(
         ctx: Context,
         strength_floor: float = 0.05,
@@ -209,6 +272,7 @@ def register_tools(
             "independently), default 5."
         ),
     )
+    @_instrument(metrics, "reflect_session")
     async def reflect_session(
         session_id: str,
         ctx: Context,
@@ -239,6 +303,7 @@ def register_tools(
             "confidence: 0..1, default 1.0 (author-asserted)."
         ),
     )
+    @_instrument(metrics, "store_semantic_memory")
     async def store_semantic_memory(
         content: str,
         ctx: Context,
@@ -272,6 +337,7 @@ def register_tools(
             "'preference'). Omit to search all kinds."
         ),
     )
+    @_instrument(metrics, "recall_semantic_memory")
     async def recall_semantic_memory(
         query: str,
         ctx: Context,
@@ -294,6 +360,7 @@ def register_tools(
             "consolidate_epoch, ...hygiene counters}. No params."
         ),
     )
+    @_instrument(metrics, "memory_stats")
     async def memory_stats(ctx: Context) -> dict[str, int]:
         result = await service.stats()
         await ctx.debug(f"stats: {result}")

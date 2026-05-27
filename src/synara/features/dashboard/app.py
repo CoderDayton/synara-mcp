@@ -29,6 +29,7 @@ from synara import __version__
 from .auth import make_auth_dependency
 from .config import DashboardConfig
 from .routes import admin, graph, health, memories, stats
+from .routes import tools as tools_route
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -241,7 +242,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from synara.config import Settings
     from synara.features.embedding import Embedder
-    from synara.features.memory import MemoryService
+    from synara.features.memory import MemoryService, ToolMetrics
 
 
 def build_dashboard_app(
@@ -250,6 +251,7 @@ def build_dashboard_app(
     db: AsyncVectorDB,
     embedder: Embedder | None,
     service: MemoryService,
+    tool_metrics: ToolMetrics | None = None,
 ) -> FastAPI:
     """Build the dashboard FastAPI app bound to live server objects."""
     app = FastAPI(
@@ -265,6 +267,16 @@ def build_dashboard_app(
     app.state.db = db
     app.state.embedder = embedder
     app.state.service = service
+    # Default to a fresh, empty collector so dashboard-only tests
+    # don't have to wire one. NOTE: the fallback is *observably empty*
+    # — `register_tools` is never called against it, so the
+    # ``/api/tool-metrics`` route will return ``{"tools": []}`` until
+    # something records into this instance. The frontend renders that
+    # as "no tools registered." In production, server.py passes the
+    # same instance the MCP tool wrappers write into.
+    from synara.features.memory import ToolMetrics as _ToolMetrics  # noqa: PLC0415
+
+    app.state.tool_metrics = tool_metrics if tool_metrics is not None else _ToolMetrics()
     app.state.started_at = time.monotonic()
 
     # Host allowlist runs *before* routing/auth so a hostile ``Host``
@@ -287,7 +299,7 @@ def build_dashboard_app(
 
     auth = make_auth_dependency(settings.dashboard)
     guarded = [Depends(auth)]
-    for module in (health, stats, memories, graph, admin):
+    for module in (health, stats, memories, graph, admin, tools_route):
         app.include_router(module.router, prefix="/api", dependencies=guarded)
 
     # Serve the bundled SPA when it has been built/committed. A source

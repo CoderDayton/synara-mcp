@@ -422,10 +422,53 @@ export function normalizeGraph(raw: unknown): GraphData {
 
 /* --------------------------------------------------------------- operations */
 
+export interface ToolMetricRow {
+  name: string;
+  headline: string;
+  count: number;
+  error_count: number;
+  last_called_at: number | null;
+  last_duration_seconds: number | null;
+  p50_ms: number | null;
+  p95_ms: number | null;
+}
+
+export interface ToolMetricsResponse {
+  tools: ToolMetricRow[];
+}
+
+function validateToolMetrics(raw: unknown): ToolMetricsResponse {
+  if (!isObj(raw)) fail("expected object");
+  const tools = raw.tools;
+  if (!Array.isArray(tools)) fail("expected tools[] array");
+  const rows: ToolMetricRow[] = tools.map((t, i) => {
+    if (!isObj(t)) fail(`tools[${i}] not object`);
+    const numOrNull = (v: unknown, field: string): number | null =>
+      v == null
+        ? null
+        : typeof v === "number" && Number.isFinite(v)
+          ? v
+          : fail(`expected number|null at tools[${i}].${field}`);
+    return {
+      name: asStr(t.name, `tools[${i}].name`),
+      headline: asStr(t.headline, `tools[${i}].headline`),
+      count: asNum(t.count, `tools[${i}].count`),
+      error_count: asNum(t.error_count, `tools[${i}].error_count`),
+      last_called_at: numOrNull(t.last_called_at, "last_called_at"),
+      last_duration_seconds: numOrNull(t.last_duration_seconds, "last_duration_seconds"),
+      p50_ms: numOrNull(t.p50_ms, "p50_ms"),
+      p95_ms: numOrNull(t.p95_ms, "p95_ms"),
+    };
+  });
+  return { tools: rows };
+}
+
 export const api = {
   health: () => request<Health>("/health", { validate: validateHealth }),
   stats: () => request<Stats>("/stats", { validate: validateStats }),
   params: () => request<Params>("/params"),
+  toolMetrics: () =>
+    request<ToolMetricsResponse>("/tool-metrics", { validate: validateToolMetrics }),
 
   memories: (q: {
     kind: "episodic" | "semantic";

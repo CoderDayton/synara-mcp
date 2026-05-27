@@ -27,6 +27,7 @@ from synara import __version__
 from synara.config import Settings
 from synara.features import memory
 from synara.features.embedding import build_embedder
+from synara.features.memory import ToolMetrics
 
 _logger = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ def build_server(settings: Settings) -> FastMCP:
         backend_kind,
         settings.embedding.model or "default",
     )
+
+    tool_metrics = ToolMetrics()
 
     @lifespan
     async def app_lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -64,6 +67,7 @@ def build_server(settings: Settings) -> FastMCP:
                         db=db,
                         embedder=embedder,
                         service=service,
+                        tool_metrics=tool_metrics,
                     )
                     await stack.enter_async_context(run_dashboard(dash_app, settings.dashboard))
                 yield {"db": db, "embedder": embedder, "settings": settings}
@@ -79,5 +83,5 @@ def build_server(settings: Settings) -> FastMCP:
         ),
         lifespan=app_lifespan,
     )
-    service = memory.register(mcp, db, embedder=embedder)
+    service = memory.register(mcp, db, embedder=embedder, metrics=tool_metrics)
     return mcp

@@ -37,6 +37,7 @@ from .memory_types import (
     MemoryTypeSpec,
     default_registry,
 )
+from .metrics import ToolMetrics, ToolSnapshot
 from .port import MemoryServicePort
 from .service import EmbedBatchFn, EmbedFn, MemoryConfig, MemoryService
 from .tools import register_tools
@@ -54,6 +55,8 @@ __all__ = [
     "RequestContext",
     "SignalRegistry",
     "SignalSpec",
+    "ToolMetrics",
+    "ToolSnapshot",
     "default_registry",
     "register",
     "start_request",
@@ -67,6 +70,7 @@ def register(
     config: MemoryConfig | None = None,
     embedder: Embedder | None = None,
     embed_fn: EmbedFn | None = None,
+    metrics: ToolMetrics | None = None,
 ) -> MemoryService:
     """Wire the memory feature into the FastMCP server.
 
@@ -87,5 +91,5 @@ def register(
         embed_fn=resolved_embed_fn,
         embed_batch_fn=embed_batch_fn,
     )
-    register_tools(mcp, service, embedder=embedder)
+    register_tools(mcp, service, embedder=embedder, metrics=metrics)
     return service

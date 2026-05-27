@@ -28,6 +28,13 @@ export const useStats = () =>
 export const useParams = () =>
   useQuery({ queryKey: ["params"], queryFn: api.params });
 
+export const useToolMetrics = () =>
+  useQuery({
+    queryKey: ["tool-metrics"],
+    queryFn: api.toolMetrics,
+    refetchInterval: 5_000,
+  });
+
 export const useMemories = (q: {
   kind: "episodic" | "semantic";
   q?: string;
