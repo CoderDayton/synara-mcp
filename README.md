@@ -93,15 +93,27 @@ It binds `127.0.0.1:8765` by default — open <http://127.0.0.1:8765>. On loopba
 
 ---
 
+## Telling your agent to use it
+
+Most agents won't call memory tools on their own. Drop a few lines into your `CLAUDE.md` / `AGENTS.md` so it knows when to reach for them:
+
+```md
+## Memory (synara-mcp)
+
+- Recall before responding when prior context could matter.
+- Store after a task, decision, or durable fact.
+- Reflect at end of session. Consolidation and forgetting are automatic — don't call them.
+```
+
+---
+
 ## Good to know
 
-**Synara needs zero setup, keeps memory local, and runs its own upkeep — the rest is detail.**
+**Maintenance is automatic.** A background reactor handles consolidation, power-law forgetting, and idle "dream" replay on its own schedule. Recall is cross-session by default; `session_id` biases ranking rather than restricting visibility.
 
-**It maintains itself.** A background reactor consolidates related episodes into semantic schemas, forgets weak traces on a power-law curve, and replays salient ones during idle "dream" cycles. Recall is cross-session by default — `session_id` biases ranking, it does not wall memories off. You store and recall; the housekeeping is automatic.
+**Storage is local.** Memory lives in a `simplevecdb` file under your cache directory and embeddings run on-device by default. If `SYNARA_EMBEDDING_URL` is set, that endpoint is the only external service that sees your text; the API key is read from the environment and never logged. Set `SYNARA_DB_PATH=:memory:` for an ephemeral store.
 
-**Your data stays put.** Memories live in a local `simplevecdb` file under your cache directory, and embeddings run on-device unless you set `SYNARA_EMBEDDING_URL`. A remote embedding endpoint is the only thing that ever sees your text — treat it as part of your trust boundary; the API key is read from the environment and never logged. Set `SYNARA_DB_PATH=:memory:` for a store that vanishes on exit.
-
-**It fails safe.** Invalid configuration is refused at startup, not silently ignored. `forget_episodes` is dry-run by default, so you see what would be pruned before anything is deleted. Tool input (`content`, `tags`, `k`, `session_id`) and remote embedding responses are size-capped, so a runaway caller or endpoint can't exhaust memory.
+**Defaults are safe.** Invalid configuration is rejected at startup rather than silently ignored. `forget_episodes` is dry-run by default, so deletions are previewed before they apply. Tool inputs (`content`, `tags`, `k`, `session_id`) and remote embedding responses are size-capped to prevent memory exhaustion.
 
 ---
 
@@ -138,22 +150,7 @@ The successor representation is a discounted transition graph over episode IDs (
 
 ## Development
 
-Setup, the local gate (ruff / mypy / bandit / pytest), conventions, and the PR checklist are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. The short version:
-
-```bash
-uv sync && uv run --no-sync pytest -q
-```
-
-`lefthook install` wires the full gate into pre-commit / pre-push.
-
-The dashboard SPA lives in `dashboard/` (Bun + Vite + React). Its production build is committed to `src/synara/features/dashboard/static/` and shipped in the wheel; editing the UI means rebuilding it:
-
-```bash
-cd dashboard && bun install && bun run dev    # API proxied to :8765
-cd dashboard && bun run build                 # → committed static/, refreshes the build manifest
-```
-
-A `dashboard-build-fresh` hook (pre-commit, pre-push, CI) fails if `dashboard/` sources change without a matching rebuild, so a stale UI can't ship.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the pre-commit gate, the dashboard SPA build, and PR requirements.
 
 ---
 
