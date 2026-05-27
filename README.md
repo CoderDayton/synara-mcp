@@ -24,9 +24,7 @@ Synara MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server
 
 ---
 
-## Why this exists
-
-In order of impact:
+## What you get
 
 **1. Recall is cross-session by default.** `session_id` is a context hint, not a filter — in-session episodes get a soft ranking bonus (state-dependent retrieval), but memories from every prior session are still returned and ranked by cosine + successor representation + spreading activation.
 

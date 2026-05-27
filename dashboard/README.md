@@ -30,9 +30,7 @@ The dashboard is a single-page React app served from the same Python process as 
 
 ---
 
-## Why this exists
-
-In order of impact:
+## What you get
 
 **1. The memory store is otherwise opaque.** Episodes, semantic schemas, the successor-representation graph, and plasticity edges are real objects that change every time the agent encodes or recalls. The dashboard makes that state directly observable — you can see which clusters are forming, which traces are about to be pruned, and which tools are actually being called.
 
