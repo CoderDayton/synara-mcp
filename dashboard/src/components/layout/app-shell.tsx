@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from "react";
 import { Link, Outlet } from "react-router-dom";
-import { Activity as ActivityIcon, Menu, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
 import { Loading } from "@/components/common/states";
@@ -15,8 +15,7 @@ import {
 } from "@/components/layout/command-palette";
 import { cn } from "@/lib/utils";
 
-/** Brand wordmark — phosphor activity glyph in a hairline cell + the
- *  mono "synara" wordmark. Always links to /. */
+/** Brand wordmark — Synara logo mark + mono wordmark. Always links to /. */
 function Brand() {
   return (
     <Link
@@ -24,13 +23,12 @@ function Brand() {
       aria-label="Synara — go to overview"
       className="group flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
     >
-      <span className="relative grid size-7 place-items-center border border-primary/50 bg-primary/10 text-primary transition-all group-hover:border-primary group-hover:shadow-[0_0_12px_var(--primary)]">
-        <ActivityIcon className="size-4" aria-hidden />
-        <span
-          aria-hidden
-          className="absolute -inset-px border border-primary/0 transition-all group-hover:-inset-1 group-hover:border-primary/30"
-        />
-      </span>
+      <img
+        src="/synara-logo.svg"
+        alt=""
+        aria-hidden
+        className="size-7 transition-all group-hover:drop-shadow-[0_0_8px_var(--primary)]"
+      />
       <span className="hidden font-mono text-sm font-medium uppercase tracking-[0.18em] text-foreground group-hover:text-primary sm:inline-block">
         synara
       </span>

@@ -167,19 +167,19 @@ function EpisodicNode({ data, selected }: NodeProps<FlowNode>) {
           <div
             aria-hidden
             style={{
-              background: `oklch(0.30 0.05 ${hue} / 0.55)`,
+              background: `oklch(0.34 0.10 ${hue} / 0.65)`,
               borderColor:
                 n.is_focus || selected
                   ? "var(--color-primary)"
-                  : `oklch(0.72 0.12 ${hue} / 0.75)`,
+                  : `oklch(0.80 0.18 ${hue} / 0.85)`,
               // Active states win; the bridge halo only shows on
               // resting nodes so the selection ring stays unambiguous.
               boxShadow:
                 n.is_focus || selected || data.active
                   ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
                   : data.isBridge
-                    ? `0 0 0 1px oklch(0.72 0.12 ${hue} / 0.55), 0 0 0 4px oklch(0.85 0.1 ${hue} / 0.18), 0 0 16px -2px oklch(0.85 0.12 ${hue} / 0.45)`
-                    : "var(--shadow-card)",
+                    ? `0 0 0 1.5px oklch(0.80 0.15 ${hue} / 0.6), 0 0 0 5px oklch(0.85 0.10 ${hue} / 0.18), 0 0 20px -2px oklch(0.85 0.15 ${hue} / 0.5)`
+                    : `0 0 14px -3px oklch(0.72 0.15 ${hue} / 0.35)`,
             }}
             className="absolute inset-0 grid place-items-center rounded-[30%] border-[1.5px] transition-[opacity,box-shadow,transform] duration-300"
           >
@@ -202,12 +202,12 @@ function EpisodicNode({ data, selected }: NodeProps<FlowNode>) {
       <HoverCardContent side="top" className="w-72 p-0">
         <div
           className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2 text-xs font-mono"
-          style={{ background: `oklch(0.30 0.05 ${hue} / 0.30)` }}
+          style={{ background: `oklch(0.34 0.10 ${hue} / 0.35)` }}
         >
           <span className="flex items-center gap-1.5 font-semibold">
             <span
               className="size-2 rounded-sm"
-              style={{ background: `oklch(0.72 0.12 ${hue} / 0.85)` }}
+              style={{ background: `oklch(0.80 0.18 ${hue} / 0.9)` }}
               aria-hidden
             />
             Episode #{n.id}
@@ -284,14 +284,14 @@ function SemanticNode({ data, selected }: NodeProps<FlowNode>) {
           <div
             aria-hidden
             style={{
-              background: "oklch(0.30 0.06 230 / 0.4)",
+              background: "oklch(0.34 0.10 195 / 0.55)",
               borderColor: selected
                 ? "var(--color-primary)"
-                : `oklch(0.72 0.13 230 / ${0.35 + conf * 0.6})`,
+                : `oklch(0.80 0.16 195 / ${0.4 + conf * 0.55})`,
               boxShadow:
                 selected || data.active
                   ? "0 0 0 2px var(--color-primary), 0 0 22px -4px var(--color-primary)"
-                  : "0 0 18px -8px oklch(0.72 0.13 230 / 0.7)",
+                  : "0 0 16px -4px oklch(0.78 0.15 195 / 0.5)",
             }}
             className="absolute inset-0 grid place-items-center rounded-full border-2 border-dashed transition-[opacity,box-shadow] duration-300"
           >
@@ -308,7 +308,7 @@ function SemanticNode({ data, selected }: NodeProps<FlowNode>) {
       <HoverCardContent side="top" className="w-72 p-0">
         <div
           className="flex items-center gap-1.5 border-b border-border/60 px-3 py-2 font-mono text-xs font-semibold"
-          style={{ background: "oklch(0.30 0.06 230 / 0.30)" }}
+          style={{ background: "oklch(0.34 0.10 195 / 0.35)" }}
         >
           <span
             className="size-2 rounded-sm"
@@ -390,8 +390,8 @@ function CommunityHullsLayer({ hulls }: { hulls: HullEntry[] }) {
           <path
             key={h.community}
             d={polygonPath(h.polygon)}
-            fill={`oklch(0.65 0.13 ${h.hue} / 0.07)`}
-            stroke={`oklch(0.72 0.13 ${h.hue} / 0.28)`}
+            fill={`oklch(0.65 0.12 ${h.hue} / 0.04)`}
+            stroke={`oklch(0.72 0.12 ${h.hue} / 0.18)`}
             strokeWidth={1.25}
             strokeLinejoin="round"
             // Keep stroke width visually constant across zooms.

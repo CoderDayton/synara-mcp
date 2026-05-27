@@ -21,8 +21,8 @@ export function StatusReadout({ className }: { className?: string }) {
       aria-live="polite"
     >
       <span className="flex items-center gap-2">
-        <span className="pulse-dot" data-state={ok ? "on" : "off"} aria-hidden />
-        <span className={ok ? "text-primary" : "text-destructive"}>
+        <span className="pulse-dot" data-state={ok ? "ok" : "off"} aria-hidden />
+        <span className={ok ? "text-success" : "text-destructive"}>
           {ok ? "ok" : "off"}
         </span>
       </span>

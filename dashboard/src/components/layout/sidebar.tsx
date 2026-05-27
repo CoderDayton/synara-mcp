@@ -1,11 +1,5 @@
 import { NavLink } from "react-router-dom";
-import {
-  Activity as ActivityIcon,
-  Brain,
-  LayoutDashboard,
-  Settings2,
-  Wrench,
-} from "lucide-react";
+import { Brain, LayoutDashboard, Settings2, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -83,9 +77,12 @@ export function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div className="flex h-full flex-col gap-5 p-4">
       <div className="flex items-center gap-3">
-        <span className="grid size-9 place-items-center border border-primary/40 bg-primary/10 text-primary">
-          <ActivityIcon className="size-5" aria-hidden />
-        </span>
+        <img
+          src="/synara-logo.svg"
+          alt=""
+          aria-hidden
+          className="size-9"
+        />
         <div className="leading-tight">
           <div className="font-mono text-sm font-medium tracking-wide">
             synara

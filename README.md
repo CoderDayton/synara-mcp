@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/synara-logo.svg" width="128" height="128" alt="Synara MCP Logo" />
+  <img src="https://files.catbox.moe/54z916.svg" width="128" height="128" alt="Synara MCP Logo" />
 </p>
 
 <h1 align="center">Synara MCP</h1>

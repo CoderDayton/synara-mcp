@@ -43,15 +43,30 @@ export function relativeTime(epochSeconds: number): string {
  * Deterministic hue for a session id. Sessions are a *context hint* in
  * the memory model, not a hard partition — colour-coding them lets the
  * map show state-dependent clustering without implying isolation.
+ *
+ * Hues snap to a curated palette so adjacent sessions never collide in
+ * a muddy hue range. Picks skip red and warm-yellow zones that clash
+ * with the indigo theme; the warm slot is the logo's amber.
  */
+const SESSION_HUE_PALETTE = [
+  275, // indigo  (theme primary)
+  200, // sky
+  175, // teal
+  145, // mint
+  95, // lime
+  50, // amber   (logo hub)
+  320, // magenta
+  245, // violet
+] as const;
+
 export function sessionHue(sessionId: string | null | undefined): number {
-  if (!sessionId) return 286; // neutral violet-grey, matches the theme base
+  if (!sessionId) return 275; // neutral indigo, matches the theme base
   let h = 2166136261;
   for (let i = 0; i < sessionId.length; i++) {
     h ^= sessionId.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  return Math.abs(h) % 360;
+  return SESSION_HUE_PALETTE[Math.abs(h) % SESSION_HUE_PALETTE.length];
 }
 
 export function shortSession(sessionId: string | null | undefined): string {

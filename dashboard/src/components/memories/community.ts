@@ -165,18 +165,19 @@ export type HullEntry = {
   centroidX: number;
 };
 
-/** Hue palette chosen to (a) stay readable on the warm-graphite
- *  theme, (b) avoid clashing with the salmon-red primary, and (c)
- *  remain distinguishable at low alpha. */
+/** Hue palette aligned with the indigo theme + sessionHue palette.
+ *  Leads with cyan so single-community views read as a calm wash,
+ *  not a warning. Hues spread evenly around the wheel and skip the
+ *  red zone reserved for --destructive. */
 const COMMUNITY_HUES = [
-  60, // warm yellow
-  130, // mossy green
-  200, // cyan-teal
-  270, // lavender
+  195, // cyan
+  145, // mint
   320, // magenta
-  100, // chartreuse
-  240, // slate-blue
-  170, // sea-green
+  50, // amber  (logo hub accent)
+  245, // violet
+  95, // lime
+  275, // indigo (theme primary)
+  175, // teal
 ];
 
 /** Build per-community hulls. Stable colour assignment: communities

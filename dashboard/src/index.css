@@ -3,12 +3,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Synara dashboard — robbyrussell on warm graphite.
+/* Synara dashboard — warm graphite with an amber signal.
    Warm-neutral dark base (not blue-tinted), layered panel surfaces.
-   Salmon-red is the signal — the oh-my-zsh prompt arrow — used for
-   primary actions, live state, and ring. Green = success / git-clean,
-   yellow = warning, teal = paths, slate-blue = info. All data in mono.
-   Light theme is a high-contrast inversion for accessibility. */
+   Indigo is the signal — matched to the logo's dominant ring + node
+   color — used for primary actions, live state, and ring. Green =
+   success, yellow = warning, teal = paths, slate-blue = info, red is
+   reserved for destructive. All data in mono. Light theme is a
+   high-contrast inversion for accessibility. */
 
 :root {
   --radius: 0.25rem;
@@ -20,31 +21,30 @@
   --popover: oklch(0.995 0 0);
   --popover-foreground: oklch(0.2 0.005 60);
 
-  /* Primary = salmon-red, the oh-my-zsh prompt arrow. Deepened on
+  /* Primary = indigo, matched to the logo ring/nodes. Deepened on
      light surfaces to keep WCAG contrast on white. */
-  --primary: oklch(0.55 0.18 25);
+  --primary: oklch(0.58 0.21 275);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.95 0.005 60);
   --secondary-foreground: oklch(0.24 0.006 60);
   --muted: oklch(0.95 0.005 60);
   --muted-foreground: oklch(0.48 0.006 60);
-  --accent: oklch(0.93 0.05 25);
-  --accent-foreground: oklch(0.32 0.12 25);
+  --accent: oklch(0.94 0.05 275);
+  --accent-foreground: oklch(0.36 0.13 275);
   --destructive: oklch(0.55 0.22 25);
   --destructive-foreground: oklch(0.985 0 0);
   --success: oklch(0.5 0.15 130);
   --warning: oklch(0.66 0.16 95);
   --border: oklch(0.88 0.005 60);
   --input: oklch(0.92 0.005 60);
-  --ring: oklch(0.55 0.18 25);
+  --ring: oklch(0.58 0.21 275);
 
   --surface-canvas: color-mix(in oklab, var(--card) 92%, transparent);
   --surface-overlay: color-mix(in oklab, var(--background) 80%, transparent);
   --surface-floating: color-mix(in oklab, var(--card) 96%, transparent);
 
-  /* Chart palette mirrors the robbyrussell prompt:
-     salmon, green, yellow, teal, slate-blue. */
-  --chart-1: oklch(0.6 0.17 25);
+  /* Chart palette: indigo, green, yellow, teal, slate-blue. */
+  --chart-1: oklch(0.62 0.18 275);
   --chart-2: oklch(0.55 0.15 130);
   --chart-3: oklch(0.7 0.15 95);
   --chart-4: oklch(0.6 0.09 195);
@@ -52,12 +52,12 @@
 
   --sidebar: oklch(0.97 0.003 60);
   --sidebar-foreground: oklch(0.22 0.006 60);
-  --sidebar-primary: oklch(0.55 0.18 25);
+  --sidebar-primary: oklch(0.58 0.21 275);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.93 0.05 25);
-  --sidebar-accent-foreground: oklch(0.32 0.12 25);
+  --sidebar-accent: oklch(0.94 0.05 275);
+  --sidebar-accent-foreground: oklch(0.36 0.13 275);
   --sidebar-border: oklch(0.88 0.005 60);
-  --sidebar-ring: oklch(0.55 0.18 25);
+  --sidebar-ring: oklch(0.58 0.21 275);
 
   --surface-highlight: oklch(1 0 0 / 0.7);
 }
@@ -72,31 +72,30 @@
   --popover: oklch(0.235 0 0);
   --popover-foreground: oklch(0.93 0 0);
 
-  /* Primary = salmon-red. The oh-my-zsh arrow → softer in dark mode
-     so it reads as a signal, not an alarm. */
-  --primary: oklch(0.72 0.17 25);
-  --primary-foreground: oklch(0.16 0.04 25);
+  /* Primary = indigo, matched to the logo ring/nodes. Lifted in dark
+     mode so it reads as a signal, not an alarm. */
+  --primary: oklch(0.72 0.17 277);
+  --primary-foreground: oklch(0.18 0.04 277);
   --secondary: oklch(0.255 0 0);
   --secondary-foreground: oklch(0.9 0 0);
   --muted: oklch(0.24 0 0);
   --muted-foreground: oklch(0.66 0 0);
-  --accent: oklch(0.28 0.05 25);
-  --accent-foreground: oklch(0.84 0.14 25);
+  --accent: oklch(0.29 0.05 277);
+  --accent-foreground: oklch(0.86 0.13 277);
   --destructive: oklch(0.7 0.21 25);
   --destructive-foreground: oklch(0.99 0 0);
   --success: oklch(0.78 0.14 130);
   --warning: oklch(0.84 0.13 95);
   --border: oklch(0.3 0 0);
   --input: oklch(0.255 0 0);
-  --ring: oklch(0.72 0.17 25);
+  --ring: oklch(0.72 0.17 277);
 
   --surface-canvas: oklch(0.195 0 0);
   --surface-overlay: oklch(0.18 0 0 / 0.78);
   --surface-floating: oklch(0.235 0 0);
 
-  /* Chart palette in robbyrussell order: salmon, green, yellow,
-     teal, slate-blue. */
-  --chart-1: oklch(0.72 0.17 25);
+  /* Chart palette: indigo, green, yellow, teal, slate-blue. */
+  --chart-1: oklch(0.72 0.17 277);
   --chart-2: oklch(0.78 0.14 130);
   --chart-3: oklch(0.84 0.13 95);
   --chart-4: oklch(0.74 0.08 195);
@@ -104,12 +103,12 @@
 
   --sidebar: oklch(0.155 0 0);
   --sidebar-foreground: oklch(0.84 0 0);
-  --sidebar-primary: oklch(0.72 0.17 25);
-  --sidebar-primary-foreground: oklch(0.16 0.04 25);
-  --sidebar-accent: oklch(0.255 0.05 25);
-  --sidebar-accent-foreground: oklch(0.84 0.14 25);
+  --sidebar-primary: oklch(0.72 0.17 277);
+  --sidebar-primary-foreground: oklch(0.18 0.04 277);
+  --sidebar-accent: oklch(0.255 0.05 277);
+  --sidebar-accent-foreground: oklch(0.86 0.13 277);
   --sidebar-border: oklch(0.28 0 0);
-  --sidebar-ring: oklch(0.72 0.17 25);
+  --sidebar-ring: oklch(0.72 0.17 277);
 
   --surface-highlight: oklch(1 0 0 / 0.03);
 }
@@ -295,27 +294,33 @@
     letter-spacing: -0.01em;
   }
 
-  /* Status dot — re-used by status pills, live tags, recent feeds. */
+  /* Status dot — re-used by status pills, live tags, recent feeds.
+     `--pulse-color` is themable per-instance so the OK-state pill can
+     swap to --success without affecting the live indigo dots. */
   .pulse-dot {
+    --pulse-color: var(--primary);
     position: relative;
     display: inline-block;
     width: 0.4rem;
     height: 0.4rem;
     border-radius: 9999px;
-    background-color: var(--primary);
-    box-shadow: 0 0 0 0 oklch(0.72 0.17 25 / 0.6);
+    background-color: var(--pulse-color);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--pulse-color) 60%, transparent);
     animation: synara-pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   }
+  .pulse-dot[data-state="ok"] {
+    --pulse-color: var(--success);
+  }
   .pulse-dot[data-state="off"] {
-    background-color: var(--destructive);
+    --pulse-color: var(--destructive);
     animation: none;
   }
   @keyframes synara-pulse {
     0%, 100% {
-      box-shadow: 0 0 0 0 oklch(0.72 0.17 25 / 0.6);
+      box-shadow: 0 0 0 0 color-mix(in oklab, var(--pulse-color) 60%, transparent);
     }
     50% {
-      box-shadow: 0 0 0 5px oklch(0.72 0.17 25 / 0);
+      box-shadow: 0 0 0 5px transparent;
     }
   }
 
