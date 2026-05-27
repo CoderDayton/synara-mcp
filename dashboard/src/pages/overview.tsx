@@ -242,7 +242,7 @@ export default function Overview() {
 
 function HippocampusPressure({ ep, sem }: { ep: number; sem: number }) {
   const m = useConsolidate();
-  const ratio = sem > 0 ? Math.max(1, Math.round(ep / sem)) : null;
+  const ratio = sem > 0 ? ep / sem : null;
   const hasQueue = ep > 0;
 
   function run() {
@@ -285,7 +285,10 @@ function HippocampusPressure({ ep, sem }: { ep: number; sem: number }) {
               {sem.toLocaleString()}
             </span>{" "}
             schema{sem === 1 ? "" : "s"} ·{" "}
-            <span className="text-primary tabular-nums">{ratio}×</span> ratio
+            <span className="text-primary tabular-nums">
+              {ratio !== null ? `${ratio.toFixed(ratio >= 10 ? 0 : 1)}×` : "—"}
+            </span>{" "}
+            ratio
           </>
         ) : hasQueue ? (
           <span className="text-primary">no schemas yet</span>

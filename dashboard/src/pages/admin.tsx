@@ -63,6 +63,17 @@ function fmtTime(ts: number): string {
   return new Date(ts).toTimeString().slice(0, 8);
 }
 
+/** Coerce a user-typed positive integer field to `number | null`.
+ *  Empty / whitespace / non-numeric / non-positive → `null` (server
+ *  picks the auto default). Avoids sending `0` or `NaN` because the
+ *  textbox happened to be truthy. */
+function parsePositiveInt(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 && Number.isInteger(n) ? n : null;
+}
+
 /* ------------------------------------------------------------- primitives */
 
 /** Severity gutter — a 2px tinted strip pinned to the panel top. The
@@ -226,6 +237,10 @@ function ForgetCard({
   const floorNum = Number(floor);
   const scanNum = Number(maxScan);
   const tauNum = decayTau.trim() ? Number(decayTau) : null;
+  // Same coalescing used by `buildBody` — keep the transcript/toast in
+  // sync with what the server actually receives, even if the input is
+  // mid-edit or non-numeric.
+  const safeFloor = Number.isFinite(floorNum) ? floorNum : 0.05;
   // Parameter signature gates the preview: when any input changes, the
   // derived preview goes to null without a setState-in-effect. Keeps the
   // "Forget 23" button honest — never maps to a stale floor.
@@ -249,7 +264,7 @@ function ForgetCard({
         append({
           op: "forget",
           severity: r.candidate_ids.length > 0 ? "info" : "ok",
-          summary: `dry-run · ${r.candidate_ids.length}/${r.scanned} ≤ ${floorNum.toFixed(2)}`,
+          summary: `dry-run · ${r.candidate_ids.length}/${r.scanned} ≤ ${safeFloor.toFixed(2)}`,
         });
       },
       onError: (e) => {
@@ -267,7 +282,7 @@ function ForgetCard({
         append({
           op: "forget",
           severity: "warn",
-          summary: `removed ${r.removed} episode${r.removed === 1 ? "" : "s"} · floor ${floorNum.toFixed(2)}`,
+          summary: `removed ${r.removed} episode${r.removed === 1 ? "" : "s"} · floor ${safeFloor.toFixed(2)}`,
         });
         toast.success(`Forgot ${r.removed} episode(s).`);
         setPreview(null);
@@ -418,8 +433,8 @@ function ConsolidateCard({
     m.mutate(
       {
         session_id: session.trim() || null,
-        n_clusters: nClusters ? Number(nClusters) : null,
-        min_cluster_size: minSize ? Number(minSize) : null,
+        n_clusters: parsePositiveInt(nClusters),
+        min_cluster_size: parsePositiveInt(minSize),
       },
       {
         onSuccess: (r) => {
@@ -450,7 +465,7 @@ function ConsolidateCard({
   const scope = session.trim()
     ? `session ${session.trim()}`
     : `all ${epCount.toLocaleString()} episodes`;
-  const k = nClusters ? Number(nClusters) : null;
+  const k = parsePositiveInt(nClusters);
 
   return (
     <Panel
