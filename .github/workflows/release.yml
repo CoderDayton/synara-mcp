@@ -1,0 +1,150 @@
+name: Release & Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      is_prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Verify tag matches package version
+        run: |
+          TAG="${{ github.ref_name }}"
+          PKG_VERSION="$(uv run python -c 'from importlib.metadata import version; print(version("synara-mcp"))')"
+          EXPECTED="v${PKG_VERSION}"
+          if [ "$TAG" != "$EXPECTED" ]; then
+            echo "::error::Tag '$TAG' does not match package version '$EXPECTED'"
+            exit 1
+          fi
+          echo "Version check passed: $TAG"
+
+      - name: Verify committed dashboard bundle is fresh
+        run: uv run python scripts/check_dashboard_build.py
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Build package
+        run: uv build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract changelog for release
+        id: changelog
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          if [ -f CHANGELOG.md ]; then
+            # Escape dots so "0.1.0" matches literally, not as regex wildcards
+            ESCAPED="$(echo "$VERSION" | sed 's/\./\\./g')"
+
+            awk -v ver="$ESCAPED" '
+              /^## \[/ {
+                if (found) exit
+                if ($0 ~ "\\[" ver "\\]") found=1
+              }
+              found { print }
+            ' CHANGELOG.md > release_notes.md
+
+            if [ -s release_notes.md ]; then
+              echo "Changelog section found for $VERSION"
+            else
+              echo "::warning::No changelog section found for $VERSION"
+              echo "## Release ${{ github.ref_name }}" > release_notes.md
+            fi
+          else
+            echo "::warning::No CHANGELOG.md found"
+            echo "## Release ${{ github.ref_name }}" > release_notes.md
+          fi
+
+      - name: Determine prerelease
+        id: prerelease
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == *"-"* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          body_path: release_notes.md
+          files: dist/*
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: release
+    if: needs.release.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/synara-mcp
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: release
+    if: needs.release.outputs.is_prerelease == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/synara-mcp
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          verbose: true

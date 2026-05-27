@@ -10,18 +10,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, but let main-branch runs finish so we
+  # always have a complete signal on the protected branch.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
-    name: lint · type · security · test
+  python-check:
+    name: Python · lint + types + security
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    timeout-minutes: 6
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8
@@ -31,14 +33,23 @@ jobs:
             uv.lock
             pyproject.toml
 
-      - name: Install dependencies
-        run: uv sync --frozen
+      - name: Install (locked)
+        run: uv sync --locked
 
-      - name: ruff (lint)
-        run: uv run --frozen ruff check src tests
+      - name: Cache mypy
+        uses: actions/cache@v4
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}-${{ hashFiles('src/**/*.py') }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}-
+            mypy-${{ runner.os }}-
 
-      - name: ruff (format check)
+      - name: ruff format --check
         run: uv run --frozen ruff format --check src tests
+
+      - name: ruff check
+        run: uv run --frozen ruff check src tests
 
       - name: mypy
         run: uv run --frozen mypy
@@ -46,8 +57,100 @@ jobs:
       - name: bandit
         run: uv run --frozen bandit -q -r src
 
-      - name: dashboard build freshness
-        run: uv run --frozen python scripts/check_dashboard_build.py
+  python-test:
+    name: Python · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+          python-version: "3.13"
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Install (locked)
+        run: uv sync --locked
 
       - name: pytest
-        run: uv run --frozen pytest
+        run: uv run --frozen pytest -q --junit-xml=pytest.xml
+
+      - name: Upload junit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest
+          path: pytest.xml
+          if-no-files-found: warn
+
+  dashboard:
+    name: Dashboard · typecheck + lint + test + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun install cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('dashboard/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Set up uv (build-freshness check is a Python script)
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Install Python deps
+        run: uv sync --locked
+
+      - name: Install JS deps
+        working-directory: dashboard
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: dashboard
+        run: bun run typecheck
+
+      - name: Lint
+        working-directory: dashboard
+        run: bun run lint
+
+      - name: Test
+        working-directory: dashboard
+        run: bun run test
+
+      - name: Verify committed static bundle is fresh
+        run: uv run --frozen python scripts/check_dashboard_build.py
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
