@@ -37,6 +37,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict, deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -91,6 +93,18 @@ class SuccessorRepresentation:
         # __post_init__). Avoids the lazy-create-then-acquire pattern
         # which is brittle to future refactors that insert ``await``
         # between the None-check and the assignment.
+        #
+        # ``_state_lock`` guards every mutation of ``_T_counts``,
+        # ``_T_row_sum``, ``_M``, ``_window``, ``_pending``, and
+        # ``_total_edges``. Observe/evict acquire it for their full
+        # mutation; ``load()``'s rebuild and ``flush()``'s snapshot also
+        # acquire it so a concurrent observe cannot tear in. Pure
+        # asyncio gives sync code non-preemption, but several callers
+        # (``forget``, ``flush``) interleave awaits between mutate and
+        # IO — without the lock those interleavings reintroduce evicted
+        # nodes or write stale counts. Coarse single lock is fine: the
+        # contended sections are tiny and the leader is single-process.
+        self._state_lock: asyncio.Lock = asyncio.Lock()
         self._load_lock: asyncio.Lock = asyncio.Lock()
         self._pending: set[tuple[int, int]] = set()
 
@@ -119,25 +133,33 @@ class SuccessorRepresentation:
                 self._loaded = True
                 return
             edges = await self._coll.get_edges(kind=self.kind)
-            for e in edges:
-                i, j = int(e.src_id), int(e.dst_id)
-                count = float(e.hits)
-                if count <= 0.0:
-                    continue
-                self._T_counts[i][j] = count
-                self._T_row_sum[i] += count
-                self._total_edges += count
-            # Rebuild M from T via two TD passes per stored edge. Order
-            # is whatever the collection returned; M converges with
-            # repeated exposures, so a second sweep meaningfully tightens
-            # the approximation of the discounted closure without the
-            # cost of a full Bellman solve. Two passes is the empirical
-            # knee where successive sweeps stop materially moving rows.
-            pass_items = [(i, j) for i, row in self._T_counts.items() for j in row]
-            for _ in range(2):
-                for i, j in pass_items:
-                    self._td_update(i, j)
-            self._loaded = True
+            # Hold ``_state_lock`` for the rebuild so a concurrent
+            # ``observe()`` (which also takes the lock) cannot mutate
+            # ``_T_counts`` / ``_M`` under the TD passes' feet. The
+            # whole rebuild is sync once we are inside the lock, so the
+            # event loop cannot dispatch another coroutine into the
+            # mutating critical section.
+            async with self._state_lock:
+                for e in edges:
+                    i, j = int(e.src_id), int(e.dst_id)
+                    count = float(e.hits)
+                    if count <= 0.0:
+                        continue
+                    self._T_counts[i][j] = count
+                    self._T_row_sum[i] += count
+                    self._total_edges += count
+                # Rebuild M from T via two TD passes per stored edge.
+                # Order is whatever the collection returned; M
+                # converges with repeated exposures, so a second sweep
+                # meaningfully tightens the approximation of the
+                # discounted closure without the cost of a full Bellman
+                # solve. Two passes is the empirical knee where
+                # successive sweeps stop materially moving rows.
+                pass_items = [(i, j) for i, row in self._T_counts.items() for j in row]
+                for _ in range(2):
+                    for i, j in pass_items:
+                        self._td_update(i, j)
+                self._loaded = True
 
     async def flush(self) -> None:
         """Persist any pending edge updates to ``coll.edges``.
@@ -151,16 +173,29 @@ class SuccessorRepresentation:
         """
         if self._coll is None or not self._pending:
             return
-        # Detach the pending set in one rebinding (no await between the
-        # read and the reassignment, so it is atomic under asyncio).
-        # Edges recorded during the awaits below land in the fresh set
-        # and are picked up by the next flush instead of being dropped.
-        pending = self._pending
-        self._pending = set()
+        # Snapshot pending pairs + their current counts under the state
+        # lock so observe() cannot interleave between the read and the
+        # upsert. Without the snapshot, a concurrent observe could
+        # bump _T_counts[i][j] after we read it, and the upsert would
+        # persist a stale count for an edge that's already in the next
+        # flush's pending set — fine for eventual consistency, but the
+        # snapshot is cheap and removes the timing dependency entirely.
+        async with self._state_lock:
+            pending = self._pending
+            self._pending = set()
+            snapshot: list[tuple[int, int, int]] = [
+                (i, j, int(self._T_counts[i][j])) for (i, j) in pending
+            ]
         coll = self._coll
         failed: list[tuple[int, int]] = []
-        for i, j in pending:
-            count = int(self._T_counts[i][j])
+        for i, j, count in snapshot:
+            # Re-validate endpoints: a state_freeze evict + delete may
+            # have run between our snapshot capture and this iteration
+            # (the snapshot escaped the _pending purge in _evict_inner).
+            # Upserting an edge whose endpoint is no longer in
+            # _T_counts would persist an FK-violating row.
+            if i not in self._T_counts or j not in self._T_counts.get(i, {}):
+                continue
             try:
                 await asyncio.to_thread(
                     coll._collection.edges.upsert,
@@ -176,28 +211,32 @@ class SuccessorRepresentation:
                 _log.exception("SR edge upsert failed: src=%d dst=%d kind=%s", i, j, self.kind)
                 failed.append((i, j))
         if failed:
-            self._pending.update(failed)
+            async with self._state_lock:
+                self._pending.update(failed)
 
     # ------------------------------------------------------------- observation
 
-    def observe(self, session_id: str, ep_id: int, t: float) -> None:
+    async def observe(self, session_id: str, ep_id: int, t: float) -> None:
         """Record episode access at time ``t`` in ``session_id``.
 
         Co-occurrences with in-window prior accesses (excluding self)
         fold into T and propagate through M via TD(0). Edge changes are
-        queued for the next :meth:`flush` call.
+        queued for the next :meth:`flush` call. Async because it
+        acquires ``_state_lock`` to gate concurrent observe / load /
+        evict / flush callers under the leader's event loop.
         """
-        win = self._window
-        cutoff = t - self.window_seconds
-        while win.queue and win.queue[0][1] < cutoff:
-            win.queue.popleft()
-        for prior_id, _t in win.queue:
-            if prior_id == ep_id:
-                continue
-            self._record_edge(prior_id, ep_id)
-        win.queue.append((ep_id, t))
+        async with self._state_lock:
+            win = self._window
+            cutoff = t - self.window_seconds
+            while win.queue and win.queue[0][1] < cutoff:
+                win.queue.popleft()
+            for prior_id, _t in win.queue:
+                if prior_id == ep_id:
+                    continue
+                self._record_edge(prior_id, ep_id)
+            win.queue.append((ep_id, t))
 
-    def observe_recall_set(
+    async def observe_recall_set(
         self,
         session_id: str,
         anchor_id: int,
@@ -209,19 +248,20 @@ class SuccessorRepresentation:
         Anchor enters the in-session window for future chain edges.
         Avoids the n*(n-1)/2 inflation a naive pairwise loop produces.
         """
-        win = self._window
-        cutoff = t - self.window_seconds
-        while win.queue and win.queue[0][1] < cutoff:
-            win.queue.popleft()
-        for prior_id, _t in win.queue:
-            if prior_id == anchor_id:
-                continue
-            self._record_edge(prior_id, anchor_id)
-        for j in other_ids:
-            if j == anchor_id:
-                continue
-            self._record_edge(anchor_id, j)
-        win.queue.append((anchor_id, t))
+        async with self._state_lock:
+            win = self._window
+            cutoff = t - self.window_seconds
+            while win.queue and win.queue[0][1] < cutoff:
+                win.queue.popleft()
+            for prior_id, _t in win.queue:
+                if prior_id == anchor_id:
+                    continue
+                self._record_edge(prior_id, anchor_id)
+            for j in other_ids:
+                if j == anchor_id:
+                    continue
+                self._record_edge(anchor_id, j)
+            win.queue.append((anchor_id, t))
 
     def _record_edge(self, i: int, j: int) -> None:
         self._T_counts[i][j] += 1.0
@@ -279,7 +319,7 @@ class SuccessorRepresentation:
 
     # ------------------------------------------------------------------ removal
 
-    def evict_nodes(self, ids: set[int]) -> None:
+    async def evict_nodes(self, ids: set[int]) -> None:
         """Drop episode ids from in-memory SR state.
 
         Required when the underlying episode documents are deleted while
@@ -290,10 +330,41 @@ class SuccessorRepresentation:
         :meth:`flush` upsert a FK-violating edge. Removes outgoing rows,
         incoming columns, the ``M`` row/column, queued pending pairs, and
         window entries; ``_total_edges`` is decremented by the removed
-        tally (clamped at 0).
+        tally (clamped at 0). Async + ``_state_lock``-guarded so that a
+        concurrent observe cannot reintroduce an edge for a node we are
+        in the middle of evicting.
         """
         if not ids:
             return
+        async with self._state_lock:
+            self.evict_nodes_locked(ids)
+
+    @asynccontextmanager
+    async def state_freeze(self) -> AsyncIterator[None]:
+        """Acquire ``_state_lock`` for a multi-step critical section.
+
+        Callers wrap an evict + durable-delete pair in this context so
+        no concurrent :meth:`observe` interleaves between the in-memory
+        eviction and the row delete (which would re-introduce edges for
+        ids the caller is about to delete). Inside the ``async with``
+        call :meth:`evict_nodes_locked` rather than :meth:`evict_nodes`
+        — re-entering :meth:`evict_nodes` would deadlock on the
+        non-reentrant lock.
+        """
+        async with self._state_lock:
+            yield
+
+    def evict_nodes_locked(self, ids: set[int]) -> None:
+        """Sync body of :meth:`evict_nodes` for callers already holding
+        ``_state_lock`` via :meth:`state_freeze`. Public so cross-module
+        callers (``forget``, :meth:`MemoryService.delete_episode`) can
+        coordinate an evict + delete inside one frozen section.
+        """
+        if not ids:
+            return
+        self._evict_inner(ids)
+
+    def _evict_inner(self, ids: set[int]) -> None:
         for x in ids:
             row = self._T_counts.pop(x, None)
             if row is not None:
@@ -314,6 +385,18 @@ class SuccessorRepresentation:
         kept = [(e, t) for (e, t) in win.queue if e not in ids]
         win.queue.clear()
         win.queue.extend(kept)
+
+    async def snapshot_boost(self, anchor_id: int, ep_ids: list[int]) -> dict[int, float]:
+        """Atomic ``boost`` under ``_state_lock``.
+
+        Equivalent to :meth:`boost` but guaranteed not to see a
+        half-mutated ``_M`` row — recall pipelines call this to lock in
+        a deterministic rank prior before later awaits that can
+        interleave with concurrent observe/load/evict.
+        """
+        async with self._state_lock:
+            Mi = self._M.get(anchor_id, {})
+            return {j: float(Mi.get(j, 0.0)) for j in ep_ids}
 
     def _reset_for_tests(self, **kwargs: Any) -> None:  # pragma: no cover
         """Reset in-memory state (test helper, not used in production)."""

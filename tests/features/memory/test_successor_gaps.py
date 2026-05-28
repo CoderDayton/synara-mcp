@@ -91,8 +91,8 @@ async def test_flush_retries_failed_edge_upsert_on_next_call() -> None:
     sr.attach(coll)
     await sr.load()
     # Seed a co-occurrence so the (1, 2) edge is pending.
-    sr.observe("s", 1, t=0.0)
-    sr.observe("s", 2, t=1.0)
+    await sr.observe("s", 1, t=0.0)
+    await sr.observe("s", 2, t=1.0)
     assert (1, 2) in sr._pending
 
     await sr.flush()
@@ -121,29 +121,29 @@ def test_td_update_pops_zero_valued_entries() -> None:
 
 
 # ------------------------------------------------------------- evict_nodes
-def test_evict_nodes_empty_set_short_circuits() -> None:
-    """Hitting the early-return guard at line 280."""
+async def test_evict_nodes_empty_set_short_circuits() -> None:
+    """Hitting the early-return guard."""
     sr = SuccessorRepresentation()
-    sr.observe("s", 1, t=0.0)
-    sr.observe("s", 2, t=1.0)
+    await sr.observe("s", 1, t=0.0)
+    await sr.observe("s", 2, t=1.0)
     pending_before = set(sr._pending)
     edges_before = sr._total_edges
-    sr.evict_nodes(set())  # no-op
+    await sr.evict_nodes(set())  # no-op
     assert sr._pending == pending_before
     assert sr._total_edges == edges_before
 
 
-def test_evict_nodes_strips_incoming_columns_and_M_columns() -> None:
-    """Lines 288-291 (incoming column removal) and 294 (M column removal)."""
+async def test_evict_nodes_strips_incoming_columns_and_M_columns() -> None:
+    """Incoming column removal and M column removal."""
     sr = SuccessorRepresentation()
     # Build a triangle: 1->2, 2->3, 1->3.
-    sr.observe("s", 1, t=0.0)
-    sr.observe("s", 2, t=1.0)
-    sr.observe("s", 3, t=2.0)
+    await sr.observe("s", 1, t=0.0)
+    await sr.observe("s", 2, t=1.0)
+    await sr.observe("s", 3, t=2.0)
 
     assert 3 in sr._T_counts.get(1, {}) or 3 in sr._T_counts.get(2, {})
 
-    sr.evict_nodes({3})
+    await sr.evict_nodes({3})
     for src, row in sr._T_counts.items():
         assert 3 not in row, f"T[{src}] still references evicted column 3"
     for src, mrow in sr._M.items():
@@ -151,31 +151,31 @@ def test_evict_nodes_strips_incoming_columns_and_M_columns() -> None:
     assert sr._total_edges >= 0.0
 
 
-def test_evict_nodes_decrements_total_edges_when_outgoing_row_exists() -> None:
-    """Line 284: evicting a node with outgoing edges must subtract the
-    row sum from the global edge counter."""
+async def test_evict_nodes_decrements_total_edges_when_outgoing_row_exists() -> None:
+    """Evicting a node with outgoing edges must subtract the row sum
+    from the global edge counter."""
     sr = SuccessorRepresentation()
     # Node 1 fans out to 2 and 3 (outgoing row populated).
-    sr.observe("s", 1, t=0.0)
-    sr.observe("s", 2, t=1.0)
-    sr.observe("s", 3, t=2.0)
+    await sr.observe("s", 1, t=0.0)
+    await sr.observe("s", 2, t=1.0)
+    await sr.observe("s", 3, t=2.0)
     assert sr._total_edges > 0
-    sr.evict_nodes({1})
+    await sr.evict_nodes({1})
     # Node 1 had two outgoing edges (1->2, 1->3); decrement should leave
     # only 2->3 in the tally.
     assert sr._total_edges == pytest.approx(1.0)
 
 
 # ------------------------------------------------------------- observe_recall_set
-def test_observe_recall_set_skips_self_anchor_in_prior_window() -> None:
-    """Line 212: when the anchor appears as a prior entry in the in-session
+async def test_observe_recall_set_skips_self_anchor_in_prior_window() -> None:
+    """When the anchor appears as a prior entry in the in-session
     window, the loop continues past the self-edge."""
     sr = SuccessorRepresentation()
     # Seed the global window with anchor=1 as a prior entry.
-    sr.observe("s", 1, t=0.0)
+    await sr.observe("s", 1, t=0.0)
     # Recall-set with anchor=1 and one other id — the anchor's prior
-    # entry is encountered and skipped via the `continue` at line 212.
-    sr.observe_recall_set("s", anchor_id=1, other_ids=[2], t=1.0)
+    # entry is encountered and skipped via the `continue`.
+    await sr.observe_recall_set("s", anchor_id=1, other_ids=[2], t=1.0)
     # No self-edge 1->1 may exist.
     assert 1 not in sr._T_counts.get(1, {})
     # Forward 1->2 edge must exist.

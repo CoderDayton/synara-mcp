@@ -143,7 +143,7 @@ async def run(
         anchor_id = observed_episodic[0][1]
         window_sid = session_id or observed_episodic[0][0]
         others = [j for _, j in observed_episodic[1:]]
-        service._sr.observe_recall_set(window_sid, anchor_id, others, t)
+        await service._sr.observe_recall_set(window_sid, anchor_id, others, t)
         await service._sr.flush()
         # Plasticity layer: reinforce anchor->each-other edge with the
         # cosine-similarity score (1 - distance, clipped). Co-recall is
@@ -193,29 +193,49 @@ async def _accrue_drift(
     """
     cfg = service.config
     md = row.get("metadata") or {}
+    # Fast-path snapshot check: skip the lock + re-read entirely when
+    # the cached metadata already shows we have nothing to do. Worst
+    # case the snapshot is stale and we acquire the lock unnecessarily
+    # — re-checked inside.
     if md.get("drift_locked"):
         return
     score = _cosine_score_from_distance(row.get("distance"))
     if score < cfg.reconsolidation_min_score:
         return
-    last = float(md.get("last_reconsolidated_at", 0.0))
-    if last > 0.0 and (t - last) > cfg.reconsolidation_window_seconds:
-        # Outside the window for this episode; reset the recall clock.
-        await service.episodic.update_metadata([(int(row["id"]), {"last_reconsolidated_at": t})])
-        return
-    step = cfg.reconsolidation_alpha * score
-    projected = float(md.get("drift_total", 0.0)) + step
-    locked = projected >= cfg.reconsolidation_max_total_drift
-    # Atomic counter delta — concurrent recalls cannot lose drift.
-    # Lock flag is sticky-true so racing on it is safe (worst case the
-    # cap is briefly exceeded by one alpha-step, ~0.02).
-    await service.episodic.increment_metadata(int(row["id"]), {"drift_total": step})
-    md_update: dict[str, Any] = {"last_reconsolidated_at": t}
-    if locked:
-        md_update["drift_locked"] = True
-    await service.episodic.update_metadata([(int(row["id"]), md_update)])
+    doc_id = int(row["id"])
+    # Per-doc lock so the read of ``drift_total`` and the cap check
+    # see the same value the write commits — without this, two
+    # concurrent recalls both compute ``projected < cap``, neither
+    # marks the row locked, and the atomic increment lets the actual
+    # drift_total exceed the configured cap unboundedly (§3b).
+    async with service._doc_lock(doc_id):
+        rows = await service.episodic.get_documents({"id": doc_id})
+        if not rows:
+            return
+        _, _, fresh_md = rows[0]
+        if fresh_md.get("drift_locked"):
+            return
+        last = float(fresh_md.get("last_reconsolidated_at", 0.0))
+        if last > 0.0 and (t - last) > cfg.reconsolidation_window_seconds:
+            # Outside the window for this episode; reset the recall clock.
+            await service.episodic.update_metadata([(doc_id, {"last_reconsolidated_at": t})])
+            return
+        step = cfg.reconsolidation_alpha * score
+        current_drift = float(fresh_md.get("drift_total", 0.0))
+        new_drift = current_drift + step
+        locked = new_drift >= cfg.reconsolidation_max_total_drift
+        md_update: dict[str, Any] = {
+            "last_reconsolidated_at": t,
+            "drift_total": new_drift,
+        }
+        if locked:
+            md_update["drift_locked"] = True
+        await service.episodic.update_metadata([(doc_id, md_update)])
+    # Vector pull is outside the lock — it touches the HNSW pending
+    # buffer, not metadata, and the per-doc lock semantics only need
+    # to cover the read-compute-write of drift_total above.
     if cue is not None:
-        await _apply_drift_to_vector(service, int(row["id"]), cue=cue, blend=step)
+        await _apply_drift_to_vector(service, doc_id, cue=cue, blend=step)
 
 
 async def _apply_drift_to_vector(
@@ -333,7 +353,11 @@ async def _sr_rank_keys(
     omega = service._sr.omega(ep_count) if service._sr is not None else 0.0
     sr_boost: dict[int, float] = {}
     if service._sr is not None and omega > 0.0:
-        sr_boost = service._sr.boost(anchor_id, [r[0] for r in episodic_hits])
+        # Lock-guarded snapshot so a concurrent ``observe`` running on
+        # the same SR cannot mutate ``_M[anchor]`` between this read
+        # and the rank computation below (which has further awaits
+        # interleaved through the spreading-activation call).
+        sr_boost = await service._sr.snapshot_boost(anchor_id, [r[0] for r in episodic_hits])
     spread: dict[int, float] = {}
     if cfg.spreading_activation_hops > 0 and cfg.spreading_activation_weight > 0.0:
         spread = await service._plasticity.spreading(

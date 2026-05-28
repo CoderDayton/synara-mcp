@@ -17,6 +17,7 @@ Kept deliberately narrow: only the methods that ops/ call on
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -105,6 +106,11 @@ class MemoryServicePort(Protocol):
     async def query_arg(self, query: str) -> str | list[float]: ...
     async def bump_retrieval(self, doc_id: int, current: dict[str, Any]) -> None: ...
     async def embedding_dimension(self) -> int | None: ...
+    # Package-private (single underscore): only callers inside
+    # ``features/memory`` hold per-doc locks for read-modify-write
+    # metadata sequences. Kept on the Protocol so the in-package
+    # callers type-check against the abstract port.
+    def _doc_lock(self, doc_id: int) -> asyncio.Lock: ...
 
 
 __all__ = ["MemoryServicePort"]

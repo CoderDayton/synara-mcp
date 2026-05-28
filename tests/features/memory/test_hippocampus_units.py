@@ -113,38 +113,38 @@ def test_completion_result_is_frozen() -> None:
 # ---- SuccessorRepresentation (in-memory, no collection) --------------
 
 
-def test_sr_observe_skips_self_and_records_prior_edges() -> None:
+async def test_sr_observe_skips_self_and_records_prior_edges() -> None:
     sr = SuccessorRepresentation(window_seconds=100.0)
-    sr.observe("s", 1, t=0.0)
-    sr.observe("s", 1, t=1.0)  # self in window -> skipped (line 151)
-    sr.observe("s", 2, t=2.0)  # both in-window id=1 priors -> two 1->2 edges
+    await sr.observe("s", 1, t=0.0)
+    await sr.observe("s", 1, t=1.0)  # self in window -> skipped
+    await sr.observe("s", 2, t=2.0)  # both in-window id=1 priors -> two 1->2 edges
     assert sr.total_edges == 2.0
     assert sr.boost(1, [2])[2] > 0.0
 
 
-def test_sr_observe_evicts_out_of_window_priors() -> None:
+async def test_sr_observe_evicts_out_of_window_priors() -> None:
     sr = SuccessorRepresentation(window_seconds=10.0)
-    sr.observe("s", 1, t=0.0)
+    await sr.observe("s", 1, t=0.0)
     # 100s later: prior id=1 is outside the window and is popped before
     # any edge can form.
-    sr.observe("s", 2, t=100.0)
+    await sr.observe("s", 2, t=100.0)
     assert sr.total_edges == 0.0
 
 
-def test_sr_observe_recall_set_skips_anchor_in_others() -> None:
+async def test_sr_observe_recall_set_skips_anchor_in_others() -> None:
     sr = SuccessorRepresentation(window_seconds=100.0)
-    sr.observe_recall_set("s", anchor_id=7, other_ids=[7, 8], t=1.0)
+    await sr.observe_recall_set("s", anchor_id=7, other_ids=[7, 8], t=1.0)
     # 7->7 skipped, 7->8 recorded.
     assert sr.total_edges == 1.0
     assert sr.boost(7, [8])[8] > 0.0
 
 
-def test_sr_recall_set_window_eviction_then_chain() -> None:
+async def test_sr_recall_set_window_eviction_then_chain() -> None:
     sr = SuccessorRepresentation(window_seconds=10.0)
-    sr.observe_recall_set("s", anchor_id=1, other_ids=[2], t=0.0)
-    # New recall far in the future: prior anchor 1 evicted (line 170),
-    # only the 3->4 edge forms.
-    sr.observe_recall_set("s", anchor_id=3, other_ids=[4], t=1000.0)
+    await sr.observe_recall_set("s", anchor_id=1, other_ids=[2], t=0.0)
+    # New recall far in the future: prior anchor 1 evicted, only the
+    # 3->4 edge forms.
+    await sr.observe_recall_set("s", anchor_id=3, other_ids=[4], t=1000.0)
     assert sr.boost(1, [3]) == {3: 0.0}
 
 
@@ -166,6 +166,6 @@ async def test_sr_load_without_collection_is_idempotent() -> None:
 
 async def test_sr_flush_without_collection_is_noop() -> None:
     sr = SuccessorRepresentation()
-    sr.observe_recall_set("s", 1, [2], t=0.0)
+    await sr.observe_recall_set("s", 1, [2], t=0.0)
     await sr.flush()  # no collection bound -> early return, no error
     assert sr.total_edges == 1.0

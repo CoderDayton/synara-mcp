@@ -12,6 +12,7 @@ Pipeline:
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -295,7 +296,20 @@ async def _insert_single(
         meta.update(safe)
     ids = await service.episodic.add_texts([content], metadatas=[meta], embeddings=new_embs)
     new_id = int(ids[0])
-    await service.episodic.update_metadata([(new_id, {"id": new_id})])
+    # Roll back the row if the id-patch fails so an orphan record (one
+    # without ``id`` in its metadata, which downstream id-keyed filters
+    # silently skip) cannot persist. The crash window is still open —
+    # a process kill between ``add_texts`` and ``update_metadata`` will
+    # leave an orphan — but that is bounded to true process death and
+    # the ``synara doctor`` reaper (follow-up) cleans it up.
+    try:
+        await service.episodic.update_metadata([(new_id, {"id": new_id})])
+    except Exception:
+        # Suppress so the original id-patch error is what propagates;
+        # a failing cleanup would otherwise mask the root cause.
+        with contextlib.suppress(Exception):
+            await service.episodic.delete_by_ids([new_id])
+        raise
     return {
         "id": new_id,
         "deduped": False,
@@ -323,10 +337,17 @@ async def _insert_segmented(
     segment_embs = await service.vectorise(segments)
     tags_list = list(tags) if tags else []
     seg_count = len(segments)
-    seg_ids: list[int] = []
-    group_id: int | None = None
-    for pos, seg in enumerate(segments):
-        seg_meta: dict[str, Any] = {
+    safe = _safe_signals(signals)
+    # One bulk ``add_texts`` for the whole episode so a crash mid-loop
+    # cannot leave an incomplete ``episode_group_id`` chain. The group
+    # id (the first row's auto-assigned id) is patched into every
+    # segment's metadata in one bulk ``update_metadata`` — still two
+    # writes, but each one is atomic across all segments, so any
+    # interruption either lands the whole group or none of it. Failure
+    # rolls back the entire group rather than leaving partial segments.
+    seg_metas: list[dict[str, Any]] = []
+    for pos, _seg in enumerate(segments):
+        m: dict[str, Any] = {
             "session_id": session_id,
             "tags": tags_list,
             "salience": float(salience),
@@ -338,23 +359,25 @@ async def _insert_segmented(
             "position_in_episode": pos,
             "segment_count": seg_count,
         }
-        if group_id is not None:
-            seg_meta["episode_group_id"] = group_id
-        safe = _safe_signals(signals)
         if safe:
-            seg_meta.update(safe)
-        seg_emb_arg = [segment_embs[pos]] if segment_embs is not None else None
-        ids = await service.episodic.add_texts([seg], metadatas=[seg_meta], embeddings=seg_emb_arg)
-        seg_id = int(ids[0])
-        if group_id is None:
-            group_id = seg_id
-            await service.episodic.update_metadata(
-                [(seg_id, {"id": seg_id, "episode_group_id": group_id})]
-            )
-        else:
-            await service.episodic.update_metadata([(seg_id, {"id": seg_id})])
-        seg_ids.append(seg_id)
-    resolved_group_id = group_id if group_id is not None else seg_ids[0]
+            m.update(safe)
+        seg_metas.append(m)
+    seg_ids_raw = await service.episodic.add_texts(
+        list(segments),
+        metadatas=seg_metas,
+        embeddings=segment_embs,
+    )
+    seg_ids = [int(s) for s in seg_ids_raw]
+    group_id = seg_ids[0]
+    try:
+        await service.episodic.update_metadata(
+            [(sid, {"id": sid, "episode_group_id": group_id}) for sid in seg_ids]
+        )
+    except Exception:
+        with contextlib.suppress(Exception):
+            await service.episodic.delete_by_ids(seg_ids)
+        raise
+    resolved_group_id = group_id
     return {
         "id": seg_ids[0],
         "deduped": False,

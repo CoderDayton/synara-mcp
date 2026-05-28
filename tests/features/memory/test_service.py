@@ -733,10 +733,10 @@ async def test_encode_short_content_keeps_legacy_shape() -> None:
 
 
 # ----------------------------------------------------------- successor SR (#5)
-def test_successor_observe_within_window_creates_edge() -> None:
+async def test_successor_observe_within_window_creates_edge() -> None:
     sr = SuccessorRepresentation(window_seconds=10.0)
-    sr.observe("s1", 1, t=0.0)
-    sr.observe("s1", 2, t=1.0)
+    await sr.observe("s1", 1, t=0.0)
+    await sr.observe("s1", 2, t=1.0)
     assert sr.total_edges == 1.0
     boost = sr.boost(1, [2])
     # First TD step on (1->2) sets M[1][2] = alpha * (1 + gamma * M[2][2])
@@ -744,31 +744,31 @@ def test_successor_observe_within_window_creates_edge() -> None:
     assert boost[2] > 0.0
 
 
-def test_successor_observe_outside_window_skips_edge() -> None:
+async def test_successor_observe_outside_window_skips_edge() -> None:
     sr = SuccessorRepresentation(window_seconds=5.0)
-    sr.observe("s1", 1, t=0.0)
-    sr.observe("s1", 2, t=100.0)
+    await sr.observe("s1", 1, t=0.0)
+    await sr.observe("s1", 2, t=100.0)
     assert sr.total_edges == 0.0
     assert sr.boost(1, [2]) == {2: 0.0}
 
 
-def test_successor_observe_is_global_across_sessions() -> None:
+async def test_successor_observe_is_global_across_sessions() -> None:
     # The observation window is GLOBAL, not partitioned by session_id:
     # episodes co-occurring within window_seconds fold into T by the same
     # rule even when seen under different session ids (one interconnected
     # graph, not per-session islands).
     sr = SuccessorRepresentation(window_seconds=10.0)
-    sr.observe("s1", 1, t=0.0)
-    sr.observe("s2", 2, t=1.0)
+    await sr.observe("s1", 1, t=0.0)
+    await sr.observe("s2", 2, t=1.0)
     assert sr.total_edges == 1.0
     assert sr.boost(1, [2])[2] > 0.0
     # Temporal gating itself is unchanged: outside the window no edge
     # forms, regardless of session.
-    sr.observe("s3", 3, t=100.0)
+    await sr.observe("s3", 3, t=100.0)
     assert sr.total_edges == 1.0
 
 
-def test_successor_omega_cold_start_ramp() -> None:
+async def test_successor_omega_cold_start_ramp() -> None:
     sr = SuccessorRepresentation(
         omega_max=0.3,
         cold_start_ratio=1.0,
@@ -779,7 +779,7 @@ def test_successor_omega_cold_start_ramp() -> None:
     # Window of 1.5s and t-spacing of 1s: each new event keeps exactly
     # one prior in the window, so we get exactly 4 edges across 5 events.
     for i in range(5):
-        sr.observe("s1", i, t=float(i))
+        await sr.observe("s1", i, t=float(i))
     assert sr.total_edges == 4.0
     # 4 edges across 10 episodes -> ratio 0.4, partial ramp.
     omega = sr.omega(episode_count=10)
@@ -789,15 +789,15 @@ def test_successor_omega_cold_start_ramp() -> None:
     assert omega_full == pytest.approx(0.3)
 
 
-def test_successor_td_propagates_through_chain() -> None:
+async def test_successor_td_propagates_through_chain() -> None:
     """A->B->C should give M[A][C] > 0 once chain edges exist (gamma>0)."""
     sr = SuccessorRepresentation(window_seconds=10.0, gamma=0.7, alpha=0.5)
     # Train the chain a few times so TD has converged enough to propagate.
     for trial in range(20):
         base = trial * 100.0
-        sr.observe("s1", 1, t=base)
-        sr.observe("s1", 2, t=base + 1.0)
-        sr.observe("s1", 3, t=base + 2.0)
+        await sr.observe("s1", 1, t=base)
+        await sr.observe("s1", 2, t=base + 1.0)
+        await sr.observe("s1", 3, t=base + 2.0)
     boost = sr.boost(1, [3])
     assert boost[3] > 0.0
 
@@ -833,9 +833,9 @@ async def test_recall_anchor_model_does_not_inflate_edges() -> None:
         await db.close()
 
 
-def test_successor_observe_recall_set_anchor_only_edges() -> None:
+async def test_successor_observe_recall_set_anchor_only_edges() -> None:
     sr = SuccessorRepresentation(window_seconds=10.0)
-    sr.observe_recall_set("s1", anchor_id=1, other_ids=[2, 3, 4], t=0.0)
+    await sr.observe_recall_set("s1", anchor_id=1, other_ids=[2, 3, 4], t=0.0)
     # Anchor -> each other = 3 edges (no pairwise between 2,3,4).
     assert sr.total_edges == 3.0
     boost = sr.boost(1, [2, 3, 4])
@@ -844,13 +844,13 @@ def test_successor_observe_recall_set_anchor_only_edges() -> None:
     assert sr.boost(2, [3, 4]) == {3: 0.0, 4: 0.0}
 
 
-def test_successor_recall_set_chains_across_recalls() -> None:
+async def test_successor_recall_set_chains_across_recalls() -> None:
     """A second recall in the same session should chain off the prior
     anchor by adding one cross-recall edge into the new anchor."""
     sr = SuccessorRepresentation(window_seconds=10.0)
-    sr.observe_recall_set("s1", anchor_id=1, other_ids=[2], t=0.0)
+    await sr.observe_recall_set("s1", anchor_id=1, other_ids=[2], t=0.0)
     edges_after_first = sr.total_edges
-    sr.observe_recall_set("s1", anchor_id=3, other_ids=[4], t=1.0)
+    await sr.observe_recall_set("s1", anchor_id=3, other_ids=[4], t=1.0)
     # Second recall adds 1 within-recall edge (3 -> 4) + 1 cross-recall
     # edge (1 -> 3) since prior anchor 1 was still in the window.
     assert sr.total_edges == edges_after_first + 2.0

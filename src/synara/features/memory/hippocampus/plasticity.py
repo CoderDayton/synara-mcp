@@ -198,43 +198,57 @@ class PlasticityGraph:
         rate = self.ltd_decay_per_idle_day
         if rate <= 0.0:
             return 0
+        # Snapshot the edge keys only; the per-edge state is re-read
+        # inside the lock below so a concurrent ``reinforce`` cannot
+        # interleave its read-modify-write with ours. Holding only the
+        # key list keeps memory bounded and avoids stale-snapshot
+        # decisions (prune vs. update) that would otherwise resurrect
+        # an edge ``reinforce`` just bumped.
         edges = await self._coll.get_edges(kind=self.kind, limit=max_scan)
+        edge_keys = [(int(e.src_id), int(e.dst_id)) for e in edges]
         pruned = 0
-        for e in edges:
-            md = dict(e.metadata or {})
-            last_touch = float(md.get("last_touch_virt", float(e.last_touch)))
-            if not math.isfinite(last_touch):
-                continue
-            idle_real = max(0.0, now - last_touch)
-            idle_days = idle_real * self.time_compression / 86400.0
-            ever_habit = int(e.hits) >= self.habit_threshold_hits
-            mu = self.habit_ltd_multiplier if ever_habit else 1.0
-            decay_per_day = rate * mu
-            if decay_per_day >= 1.0:
-                new_w = 0.0
-            else:
-                new_w = float(e.weight) * max(0.0, 1.0 - decay_per_day) ** idle_days
-            bonus_set_at = float(md.get("bonus_set_at", float("-inf")))
-            new_b = float(e.bonus)
-            if math.isfinite(bonus_set_at):
-                new_b *= math.exp(-max(0.0, now - bonus_set_at) / self.e_ltp_decay_seconds)
-            # Prune on combined durable + still-decaying transient
-            # potentiation: a bonus-only E-LTP edge (weight 0) is not
-            # dead — it is mid-consolidation, and culling it resets the
-            # in-window hit counter so off-policy dream replay could
-            # never reach the L-LTP fold across cadenced dreams.
-            if new_w + new_b < self.prune_floor and not ever_habit:
-                await self._coll.delete_edge(int(e.src_id), int(e.dst_id), kind=self.kind)
-                pruned += 1
-            else:
-                await self._coll.update_edge(
-                    int(e.src_id),
-                    int(e.dst_id),
-                    kind=self.kind,
-                    weight=new_w,
-                    bonus=new_b,
-                    metadata={**md, "last_touch_virt": last_touch},
-                )
+        for i, j in edge_keys:
+            lock = self._edge_locks.setdefault((i, j), asyncio.Lock())
+            async with lock:
+                cur = await self._read_one(i, j)
+                if cur is None:
+                    # ``reinforce`` deleted or never wrote it; skip.
+                    continue
+                md = dict(cur.metadata or {})
+                last_touch = float(md.get("last_touch_virt", float(cur.last_touch)))
+                if not math.isfinite(last_touch):
+                    continue
+                idle_real = max(0.0, now - last_touch)
+                idle_days = idle_real * self.time_compression / 86400.0
+                ever_habit = int(cur.hits) >= self.habit_threshold_hits
+                mu = self.habit_ltd_multiplier if ever_habit else 1.0
+                decay_per_day = rate * mu
+                if decay_per_day >= 1.0:
+                    new_w = 0.0
+                else:
+                    new_w = float(cur.weight) * max(0.0, 1.0 - decay_per_day) ** idle_days
+                bonus_set_at = float(md.get("bonus_set_at", float("-inf")))
+                new_b = float(cur.bonus)
+                if math.isfinite(bonus_set_at):
+                    new_b *= math.exp(-max(0.0, now - bonus_set_at) / self.e_ltp_decay_seconds)
+                # Prune on combined durable + still-decaying transient
+                # potentiation: a bonus-only E-LTP edge (weight 0) is
+                # not dead — it is mid-consolidation, and culling it
+                # resets the in-window hit counter so off-policy dream
+                # replay could never reach the L-LTP fold across
+                # cadenced dreams.
+                if new_w + new_b < self.prune_floor and not ever_habit:
+                    await self._coll.delete_edge(i, j, kind=self.kind)
+                    pruned += 1
+                else:
+                    await self._coll.update_edge(
+                        i,
+                        j,
+                        kind=self.kind,
+                        weight=new_w,
+                        bonus=new_b,
+                        metadata={**md, "last_touch_virt": last_touch},
+                    )
         return pruned
 
     async def edge_weight(self, i: int, j: int) -> float:

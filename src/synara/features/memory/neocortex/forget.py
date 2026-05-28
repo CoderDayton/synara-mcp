@@ -134,8 +134,16 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
         # MemoryService.delete_episode relies on (SuccessorRepresentation
         # .evict_nodes). Plasticity holds no in-memory state.
         if service._sr is not None:
-            service._sr.evict_nodes(set(weak))
-        await service.episodic.delete_by_ids(weak)
+            # Freeze SR state for the full evict→delete pair so a
+            # concurrent observe cannot fold an in-flight recall's
+            # co-occurrence back into ``_T``/``_pending`` for an id we
+            # are about to drop from the durable store (the next flush
+            # would then upsert a FK-violating edge).
+            async with service._sr.state_freeze():
+                service._sr.evict_nodes_locked(set(weak))
+                await service.episodic.delete_by_ids(weak)
+        else:
+            await service.episodic.delete_by_ids(weak)
         removed = len(weak)
 
     # Cold-schema eviction: optional ontology garbage-collector. Off by

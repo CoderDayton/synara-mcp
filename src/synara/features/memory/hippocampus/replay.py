@@ -124,7 +124,7 @@ async def run(service: MemoryService, *, now: float) -> int:
         for j in others:
             await service._plasticity.reinforce(anchor_id, j, score=gain, now=now)
         if service._sr is not None:
-            service._sr.observe_recall_set(sid, anchor_id, others, now)
+            await service._sr.observe_recall_set(sid, anchor_id, others, now)
             await service._sr.flush()
         reinforced += len(others)
     return reinforced

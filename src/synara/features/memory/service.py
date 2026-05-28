@@ -29,9 +29,11 @@ Operation surface
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 import time
+import weakref
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
@@ -203,6 +205,15 @@ class MemoryService:
         # Hygiene counters: lifetime per-process tallies of how the
         # promotion gate behaves. Surfaced via ``stats()`` /
         # ``memory_stats`` so simulators can observe which gate fires.
+        # Per-doc lock map for read-modify-write metadata sequences
+        # (``bump_retrieval`` access_history append, ``_accrue_drift``
+        # drift_total update). ``WeakValueDictionary`` so locks for
+        # rarely-touched docs don't accumulate for the process lifetime;
+        # the ``async with`` caller holds a strong ref for the duration
+        # of the critical section, so GC cannot evict a live lock.
+        self._doc_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         self._hygiene_counters: dict[str, int] = {
             "schemas_promoted": 0,
             "candidates_parked": 0,
@@ -425,35 +436,59 @@ class MemoryService:
         return self._dg
 
     # ----------------------------------------------------------------- access
+    def _doc_lock(self, doc_id: int) -> asyncio.Lock:
+        """Per-doc ``asyncio.Lock`` for read-modify-write metadata.
+
+        Package-private — callers within ``features/memory`` use it for
+        the ``read access_history / append / write`` and
+        ``read drift_total / check cap / write`` sequences. Callers
+        MUST hold a strong reference for the entire ``async with``
+        block; the ``WeakValueDictionary`` would otherwise let GC drop
+        the entry between siblings and break mutual exclusion.
+        """
+        return self._doc_locks.setdefault(doc_id, asyncio.Lock())
+
     async def bump_retrieval(self, doc_id: int, current: dict[str, Any]) -> None:
-        now = now_seconds()
-        history = list(current.get("access_history") or [])
-        history.append(now)
-        cap = self.config.access_history_cap
-        if cap > 0 and len(history) > cap:
-            history = history[-cap:]
-        # Atomic delta on the counter so concurrent recalls cannot lose
-        # increments; the timestamp + history list are last-write-wins
-        # which is fine — losing a stale timestamp is bounded loss.
-        #
-        # The two writes target disjoint keys so their order is
-        # irrelevant; ``asyncio.gather`` lets them run concurrently
-        # rather than serializing two ``to_thread`` round-trips per
-        # recall hit (k hits per recall, so the savings compound).
-        await asyncio.gather(
-            self.episodic.increment_metadata(doc_id, {"retrieval_count": 1}),
-            self.episodic.update_metadata(
-                [
-                    (
-                        doc_id,
-                        {
-                            "last_accessed": now,
-                            "access_history": history,
-                        },
-                    )
-                ]
-            ),
-        )
+        # Re-read ``access_history`` inside the lock so concurrent
+        # ``bump_retrieval`` calls on the same doc cannot lose an
+        # appended timestamp. ``current`` (the snapshot returned by
+        # similarity_search) is only used as a fast-path fallback when
+        # the live row has gone missing (caller deleted it between the
+        # search and the bump — unlikely but defensive).
+        lock = self._doc_lock(doc_id)
+        async with lock:
+            now = now_seconds()
+            rows = await self.episodic.get_documents({"id": doc_id})
+            if rows:
+                _, _, fresh = rows[0]
+                history = list(fresh.get("access_history") or [])
+            else:
+                history = list(current.get("access_history") or [])
+            history.append(now)
+            cap = self.config.access_history_cap
+            if cap > 0 and len(history) > cap:
+                history = history[-cap:]
+            # Two writes, two semantics: ``increment_metadata`` is an
+            # atomic delta on a disjoint key (``retrieval_count``);
+            # ``update_metadata`` for the history list + timestamp is
+            # last-write-wins, but the per-doc lock above keeps the
+            # read-append-write atomic for this single doc. The writes
+            # target disjoint keys, so ``gather`` is safe and halves
+            # the ``to_thread`` round-trips per recall hit.
+            await asyncio.gather(
+                self.episodic.update_metadata(
+                    [
+                        (
+                            doc_id,
+                            {
+                                "last_accessed": now,
+                                "access_history": history,
+                            },
+                        )
+                    ]
+                ),
+                self.episodic.increment_metadata(doc_id, {"retrieval_count": 1}),
+            )
 
     async def fetch_episode_group(
         self,
@@ -514,8 +549,13 @@ class MemoryService:
         member_ids.add(int(episode_id))
         ordered = sorted(member_ids)
         if self._sr is not None:
-            self._sr.evict_nodes(set(ordered))
-        await self.episodic.delete_by_ids(ordered)
+            # See ``forget.run`` for the freeze rationale: hold SR state
+            # locked across evict + delete so no observe interleaves.
+            async with self._sr.state_freeze():
+                self._sr.evict_nodes_locked(set(ordered))
+                await self.episodic.delete_by_ids(ordered)
+        else:
+            await self.episodic.delete_by_ids(ordered)
         return {"deleted_ids": ordered, "count": len(ordered)}
 
     # ------------------------------------------------------------------ stats
@@ -751,8 +791,15 @@ class MemoryService:
         )
         sem_id = int(sem_ids[0])
         # Patch id back into metadata so downstream recall can read it
-        # uniformly (mirrors how consolidate does it).
-        await self.semantic.update_metadata([(sem_id, {"id": sem_id})])
+        # uniformly (mirrors how consolidate does it). Roll back on
+        # failure so an orphan (no ``id`` field) cannot persist — see
+        # ``encode._insert_single`` for the matching pattern.
+        try:
+            await self.semantic.update_metadata([(sem_id, {"id": sem_id})])
+        except Exception:
+            with contextlib.suppress(Exception):
+                await self.semantic.delete_by_ids([sem_id])
+            raise
         return {
             "id": sem_id,
             "kind": kind,
