@@ -127,3 +127,74 @@ def test_excessive_batch_size_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SYNARA_EMBEDDING_BATCH_SIZE", "100000")
     with pytest.raises(ValueError, match="SYNARA_EMBEDDING_BATCH_SIZE"):
         Settings.from_env()
+
+
+# --- embedding env validation -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["nan", "abc", "0", "-5", "inf", "1e9"],
+)
+def test_embedding_timeout_invalid_rejected(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    """Non-numeric, non-finite, non-positive, or over-ceiling timeouts
+    all raise at startup rather than failing on the first request."""
+    monkeypatch.setenv("SYNARA_EMBEDDING_TIMEOUT", raw)
+    with pytest.raises(ValueError, match="SYNARA_EMBEDDING_TIMEOUT"):
+        Settings.from_env()
+
+
+def test_embedding_timeout_valid_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SYNARA_EMBEDDING_TIMEOUT", "12.5")
+    assert Settings.from_env().embedding.timeout_seconds == 12.5
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "notanint", "200000"])
+def test_embedding_dim_invalid_rejected(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("SYNARA_EMBEDDING_DIM", raw)
+    with pytest.raises(ValueError, match="SYNARA_EMBEDDING_DIM"):
+        Settings.from_env()
+
+
+def test_embedding_dim_valid_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SYNARA_EMBEDDING_DIM", "512")
+    assert Settings.from_env().embedding.dim == 512
+
+
+@pytest.mark.parametrize("raw", ["0", "-3", "x", "40000"])
+def test_embedding_max_seq_length_invalid_rejected(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setenv("SYNARA_EMBEDDING_MAX_SEQ_LENGTH", raw)
+    with pytest.raises(ValueError, match="SYNARA_EMBEDDING_MAX_SEQ_LENGTH"):
+        Settings.from_env()
+
+
+def test_embedding_max_seq_length_valid_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SYNARA_EMBEDDING_MAX_SEQ_LENGTH", "2048")
+    assert Settings.from_env().embedding.max_seq_length == 2048
+
+
+def test_trust_remote_code_defaults_true() -> None:
+    assert Settings.from_env().embedding.trust_remote_code is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("true", True), ("1", True), ("yes", True), ("false", False), ("0", False)],
+)
+def test_trust_remote_code_env_parsed(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    monkeypatch.setenv("SYNARA_EMBEDDING_TRUST_REMOTE_CODE", raw)
+    assert Settings.from_env().embedding.trust_remote_code is expected
+
+
+def test_trust_remote_code_bad_value_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SYNARA_EMBEDDING_TRUST_REMOTE_CODE", "maybe")
+    with pytest.raises(ValueError, match="SYNARA_EMBEDDING_TRUST_REMOTE_CODE"):
+        Settings.from_env()

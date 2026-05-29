@@ -57,6 +57,7 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_PROMOTION_WAIT_SECONDS = 5.0
 _DEFAULT_BIND_WAIT_SECONDS = 5.0
 _POLL_INTERVAL_SECONDS = 0.05
+_PORT_PICK_ATTEMPTS = 3
 
 
 class NoLeaderError(RuntimeError):
@@ -120,6 +121,12 @@ class LeaderRouter:
         Callers (e.g., a retry middleware) use this when a tool call to
         the cached URL fails — the next call then re-probes the lock
         and, if needed, promotes this process.
+
+        Deliberate no-op while *this* process holds leadership: a failed
+        call to our own local endpoint is not a stale-discovery problem,
+        and dropping ``_current_url`` here would not change re-resolution
+        (we'd just return the same local URL). Demotion of a dead leader
+        is handled in :meth:`_resolve_locked` via the HTTP-task check.
         """
         if self._leadership is None:
             self._current_url = None
@@ -173,6 +180,7 @@ class LeaderRouter:
         if (
             self._http_task is not None
             and self._http_task.done()
+            and not self._http_task.cancelled()
             and self._http_task.exception() is not None
         ):
             _logger.warning(
@@ -184,6 +192,12 @@ class LeaderRouter:
         if self._leadership is not None and self._current_url is not None:
             return self._current_url
 
+        # TOCTOU note: the leader can die between ``read_leader_info``
+        # and ``probe_leader_dead`` (or just after the probe), so a cached
+        # URL may already be stale on return. This is inherent to the
+        # flock protocol; it is contained by RetryMiddleware calling
+        # ``invalidate()`` on a failed call, which forces a fresh probe +
+        # promotion on the next ``resolve_url``.
         info = discovery.read_leader_info()
         if info is not None and not election.probe_leader_dead():
             self._current_url = info.mcp_url
@@ -215,15 +229,33 @@ class LeaderRouter:
         return url
 
     async def _promote(self, leadership: election.Leadership) -> str:
-        port = self._port_picker()
-        url = f"http://127.0.0.1:{port}/mcp/"
+        # ``pick_free_port`` is racy (TOCTOU): the kernel-chosen port can
+        # be grabbed by another process before our HTTP server binds it.
+        # Retry a few times with a fresh port instead of failing the whole
+        # election attempt on a single unlucky collision.
         mcp = self._build_server()
+        last_exc: Exception | None = None
+        for _ in range(_PORT_PICK_ATTEMPTS):
+            port = self._port_picker()
+            url = f"http://127.0.0.1:{port}/mcp/"
 
-        async def _runner_wrapper() -> None:
-            await self._server_runner(mcp, "127.0.0.1", port, stateless_http=True)
+            async def _runner_wrapper(port: int = port) -> None:
+                await self._server_runner(mcp, "127.0.0.1", port, stateless_http=True)
 
-        self._http_task = asyncio.create_task(_runner_wrapper(), name="synara-leader-http")
-        await self._wait_for_bind(port, self._http_task)
+            self._http_task = asyncio.create_task(_runner_wrapper(), name="synara-leader-http")
+            try:
+                await self._wait_for_bind(port, self._http_task)
+                break
+            except (NoLeaderError, OSError) as exc:
+                last_exc = exc
+                self._http_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._http_task
+                self._http_task = None
+        else:
+            raise NoLeaderError(
+                f"HTTP server failed to bind after {_PORT_PICK_ATTEMPTS} port attempts"
+            ) from last_exc
 
         dashboard = getattr(self._settings, "dashboard", None)
         if getattr(dashboard, "enabled", False):
@@ -252,6 +284,10 @@ class LeaderRouter:
         while time.monotonic() < deadline:
             if task.done():
                 # Server crashed before binding — surface that exception.
+                # A cancelled task has no ``.exception()`` (it would raise
+                # CancelledError); treat cancellation as a clean stop.
+                if task.cancelled():
+                    return
                 exc = task.exception()
                 if exc is not None:
                     raise exc

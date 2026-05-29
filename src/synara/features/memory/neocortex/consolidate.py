@@ -73,6 +73,7 @@ Ontology hygiene knobs (all optional, all default off / back-compat):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
@@ -85,6 +86,10 @@ from .forget import _DEFAULT_SALIENCE, memory_strength
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..config import MemoryConfig
     from ..port import MemoryServicePort as MemoryService
+
+# Cap on concurrent embed+search round-trips during the absorption stage
+# so a large candidate batch cannot swamp the embedding backend / DB pool.
+_ABSORB_MAX_CONCURRENCY = 16
 
 
 async def _age_schema_candidates(service: MemoryService) -> None:
@@ -194,7 +199,15 @@ async def _v2_promote_or_park(  # noqa: PLR0912, PLR0915 -- branch-per-gate aids
         )
         if new_ids:
             new_id = int(new_ids[0])
-            await service.schema_candidates.update_metadata([(new_id, {"id": new_id})])
+            # Roll back the parked candidate if its id-patch fails, so the
+            # ``candidates_parked`` counter only ever counts a fully-formed,
+            # addressable candidate row (no orphan).
+            try:
+                await service.schema_candidates.update_metadata([(new_id, {"id": new_id})])
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await service.schema_candidates.delete_by_ids([new_id])
+                raise
         counters["candidates_parked"] = counters.get("candidates_parked", 0) + 1
         return False
     # Existing candidate matched: bump hits and either promote or wait.
@@ -398,8 +411,17 @@ async def _absorb(
 
     # Each _nearest_schema call (embed + vector search) is independent,
     # so fan them out concurrently instead of blocking the event loop on
-    # up to ``max_scan`` sequential round-trips inside the reactor.
-    nearests = await asyncio.gather(*(_nearest_schema(service, text) for _, text, _ in candidates))
+    # up to ``max_scan`` sequential round-trips inside the reactor. Bound
+    # the in-flight count with a semaphore: an unbounded gather over
+    # ``max_scan`` (~5000) candidates would launch thousands of embed +
+    # search tasks at once and can swamp the embedding backend / DB pool.
+    sem = asyncio.Semaphore(_ABSORB_MAX_CONCURRENCY)
+
+    async def _bounded_nearest(text: str) -> tuple[int, float, float] | None:
+        async with sem:
+            return await _nearest_schema(service, text)
+
+    nearests = await asyncio.gather(*(_bounded_nearest(text) for _, text, _ in candidates))
     scored: list[tuple[float, int, str, int, float]] = []
     for (ep_id, text, md), nearest in zip(candidates, nearests, strict=True):
         if nearest is None:
@@ -735,7 +757,15 @@ async def _process_stage2_cluster(  # noqa: PLR0911 -- explicit branch-per-gate 
         embeddings=[summary_emb] if summary_emb is not None else None,
     )
     sem_id = int(sem_ids[0])
-    await service.semantic.update_metadata([(sem_id, {"id": sem_id})])
+    # The row exists but its metadata has no ``id`` yet. If the id-patch
+    # fails, roll the insert back so we don't leave an un-addressable
+    # orphan schema (callers and recall key on metadata ``id``).
+    try:
+        await service.semantic.update_metadata([(sem_id, {"id": sem_id})])
+    except Exception:
+        with contextlib.suppress(Exception):
+            await service.semantic.delete_by_ids([sem_id])
+        raise
     counters["schemas_promoted"] = counters.get("schemas_promoted", 0) + 1
     await service.episodic.update_metadata(
         [(int(eid), {"consolidated_into": sem_id}) for eid in ep_ids]

@@ -48,6 +48,11 @@ async def run(
 
     sem_results: list[dict[str, Any]] = []
     if seed and await service.semantic.count() > 0:
+        # Reconcile the HNSW index before searching: between an encode and
+        # the first consolidate the index can be empty even though
+        # ``count() > 0``, so a direct ``similarity_search`` would return
+        # nothing. Mirrors the guard ``recall`` runs at its top.
+        await service._ensure_index_ready()
         seed_q = await service.query_arg(seed)
         for doc, dist in await service.semantic.similarity_search(seed_q, k=k):
             sem_results.append(

@@ -64,8 +64,13 @@ async def run(service: MemoryService, *, now: float) -> int:
     """Replay top-priority unconsolidated episodes off-policy.
 
     Returns the number of reinforced (anchor -> j) associations. A
-    no-op (returns 0) when replay is disabled, the SR/plasticity layer
-    is absent, or no session has >= 2 eligible co-encoded episodes.
+    no-op (returns 0) when replay is disabled (``dream_replay_top_k`` or
+    ``dream_replay_gain`` non-positive), there are no eligible
+    candidates, or no session has >= 2 eligible co-encoded episodes.
+
+    Plasticity is always reinforced (``_plasticity`` is non-optional).
+    The SR update is skipped when ``_sr`` is absent, but that alone does
+    not make the pass a no-op.
     """
     cfg = service.config
     top_k = cfg.dream_replay_top_k

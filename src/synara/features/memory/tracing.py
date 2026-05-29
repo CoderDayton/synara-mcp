@@ -23,7 +23,13 @@ from typing import Any
 
 @dataclass(slots=True)
 class Span:
-    """A single timed step within a request."""
+    """A single timed step within a request.
+
+    ``started_at`` is a :func:`time.perf_counter` reading (monotonic,
+    arbitrary epoch) — meaningful only for *relative* timing against
+    other spans / the request start, not as a wall-clock timestamp.
+    Wall time appears only in ``RequestContext.request_id``.
+    """
 
     name: str
     started_at: float

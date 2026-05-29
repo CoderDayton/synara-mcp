@@ -375,6 +375,50 @@ async def test_re_elects_after_leader_http_task_crashes() -> None:
         await r.aclose()
 
 
+async def test_resolve_url_handles_cancelled_http_task() -> None:
+    """A *cancelled* leader HTTP task must not crash resolve_url().
+
+    ``Task.exception()`` raises ``CancelledError`` on a cancelled task, so
+    the done-task check must skip it via ``Task.cancelled()`` rather than
+    treating cancellation as a real crash. Regression for the unguarded
+    ``.exception()`` call in ``_resolve_locked``.
+    """
+    runner_fake = _FakeRunner()
+    ports = iter([_free_loopback_port(), _free_loopback_port()])
+    r = router.LeaderRouter(
+        settings=_fake_settings(),
+        build_server=object,
+        port_picker=lambda: next(ports),
+        server_runner=runner_fake,
+    )
+    try:
+        await r.resolve_url()
+        assert r.is_leader
+
+        # Replace the live HTTP task with a cancelled one.
+        async def _never() -> None:
+            await asyncio.sleep(3600)
+
+        cancelled_task = asyncio.create_task(_never(), name="synara-leader-http")
+        assert r._http_task is not None
+        r._http_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await r._http_task
+        cancelled_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cancelled_task
+        assert cancelled_task.cancelled()
+        r._http_task = cancelled_task
+
+        # Must not raise CancelledError. A cancelled task is not a crash,
+        # so leadership is retained and the cached URL is returned.
+        url2 = await r.resolve_url()
+        assert url2
+        assert r.is_leader
+    finally:
+        await r.aclose()
+
+
 async def test_resolve_blocks_until_leader_appears_or_times_out() -> None:
     """Lock held but no leader.json and never written → timeout, not hang."""
     holder = election.try_acquire_leadership()

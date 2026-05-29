@@ -24,9 +24,12 @@ from fastmcp.server.middleware.middleware import CallNext, Middleware, Middlewar
 
 _logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT_SECONDS = 30.0
-_DEFAULT_MAX_RETRIES = 3
-_DEFAULT_BACKOFF_SECONDS = 0.2
+# Public retry-policy defaults. ``run_unified_async`` re-uses them as the
+# default arguments for the middleware it constructs, so they are part of
+# this module's public surface rather than private implementation detail.
+DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BACKOFF_SECONDS = 0.2
 
 # Errors that mean "couldn't reach the leader" — safe to retry.
 _RETRYABLE_EXCEPTIONS: tuple[type[BaseException], ...] = (
@@ -36,6 +39,8 @@ _RETRYABLE_EXCEPTIONS: tuple[type[BaseException], ...] = (
     httpx.ReadTimeout,
     httpx.RemoteProtocolError,
     httpx.WriteError,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
     ConnectionError,
     ConnectionRefusedError,
     ConnectionResetError,
@@ -55,8 +60,8 @@ class RetryMiddleware(Middleware):
     def __init__(
         self,
         *,
-        max_retries: int = _DEFAULT_MAX_RETRIES,
-        backoff: float = _DEFAULT_BACKOFF_SECONDS,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff: float = DEFAULT_BACKOFF_SECONDS,
         on_retry: Callable[[], None] | None = None,
     ) -> None:
         if max_retries < 1:

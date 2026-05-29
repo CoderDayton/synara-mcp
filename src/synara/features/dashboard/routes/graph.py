@@ -121,6 +121,10 @@ async def _focus_neighborhood(
         if len(nodes) >= max_nodes:
             break
         ordered = sorted(frontier)
+        # Per-node fan-out cap is ``max_nodes``, so a dense layer issues up
+        # to O(max_nodes^2) edge queries. Acceptable here: this is a
+        # loopback admin endpoint and ``max_nodes`` is capped at
+        # ``_MAX_NODES_CAP``. Tighten the per-node cap if that ceiling grows.
         results = await asyncio.gather(
             *(_adjacent(coll, n, max_nodes) for n in ordered),
         )
@@ -319,6 +323,12 @@ async def _semantic_overlay(
                 "embedding": _embedding_payload(sembeds.get(sid)),
             }
         )
+    # Mixed addressing is intentional: ``src`` is an episodic node's bare
+    # integer id (episodic nodes are keyed by ``id``), while ``dst`` is a
+    # semantic node's ``"sem:<id>"`` key (semantic nodes carry both an
+    # ``id`` and that prefixed ``key`` to avoid colliding with episodic
+    # ids in the shared node namespace). The consumer resolves episodic
+    # endpoints by id and semantic endpoints by the prefixed key.
     edges = [
         {"src": nid, "dst": f"sem:{c}"}
         for nid, (_t, md) in docs.items()
@@ -358,18 +368,18 @@ async def sr_graph(
     # — mirrors the hippocampal cognitive-map literature where memories
     # live as positions in an abstract space.
     sorted_nodes = sorted(nodes)
-    docs, ep_embeds = await asyncio.gather(
+    # _all_semantic_ids depends only on service.semantic, so overlap it with
+    # the episodic doc/embedding fetch instead of serialising a third round-trip.
+    docs, ep_embeds, (standalone_ids, semantics_truncated) = await asyncio.gather(
         _docs_by_id(coll, sorted_nodes),
         coll.get_embeddings_by_ids(sorted_nodes),
+        _all_semantic_ids(service.semantic, _SEMANTIC_NODES_CAP),
     )
     node_objs = []
     for nid in sorted_nodes:
         text, md = docs.get(nid, ("", {}))
         node_objs.append(_episodic_node(nid, text, md, focus, ep_embeds.get(nid)))
     schema_ids = {c for _t, md in docs.values() if (c := int(md.get("consolidated_into", 0))) > 0}
-    standalone_ids, semantics_truncated = await _all_semantic_ids(
-        service.semantic, _SEMANTIC_NODES_CAP
-    )
     semantic_ids = schema_ids | standalone_ids
     schema_nodes, consolidation_edges = await _semantic_overlay(service, docs, semantic_ids)
     node_objs.extend(schema_nodes)

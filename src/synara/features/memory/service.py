@@ -548,15 +548,25 @@ class MemoryService:
         member_ids = {int(r["id"]) for r in members}
         member_ids.add(int(episode_id))
         ordered = sorted(member_ids)
-        if self._sr is not None:
-            # See ``forget.run`` for the freeze rationale: hold SR state
-            # locked across evict + delete so no observe interleaves.
-            async with self._sr.state_freeze():
-                self._sr.evict_nodes_locked(set(ordered))
-                await self.episodic.delete_by_ids(ordered)
-        else:
-            await self.episodic.delete_by_ids(ordered)
+        await self._evict_and_delete(ordered)
         return {"deleted_ids": ordered, "count": len(ordered)}
+
+    async def _evict_and_delete(self, ids: list[int]) -> None:
+        """Delete episodic docs, evicting their SR in-memory state first.
+
+        ``coll.edges`` has ``ON DELETE CASCADE`` to documents, so durable
+        SR/plasticity edges vanish with the docs. But a lingering in-memory
+        ``_T``/``_pending``/window entry would make the next SR flush upsert
+        a FK-violating edge for a now-deleted id. When SR is active, hold its
+        state lock across the evict→delete pair so no concurrent observe
+        folds an in-flight recall's co-occurrence back in mid-delete.
+        Plasticity holds no in-memory state.
+        """
+        cm = self._sr.state_freeze() if self._sr is not None else contextlib.nullcontext()
+        async with cm:
+            if self._sr is not None:
+                self._sr.evict_nodes_locked(set(ids))
+            await self.episodic.delete_by_ids(ids)
 
     # ------------------------------------------------------------------ stats
     async def stats(self) -> dict[str, int]:
@@ -708,13 +718,19 @@ class MemoryService:
         dry_run: bool = True,
         max_scan: int = 1000,
     ) -> dict[str, Any]:
-        result = await _forget_mod.run(
-            self,
-            strength_floor=strength_floor,
-            decay_tau_seconds=decay_tau_seconds,
-            dry_run=dry_run,
-            max_scan=max_scan,
-        )
+        # Serialise under the consolidation lock: forget deletes episodes
+        # and cold schemas while consolidate is forming/patching schemas
+        # over the same rows, and two concurrent forget() passes would
+        # compute the same ``weak`` id list and double-delete it. Consolidate
+        # never calls forget, so this is not re-entrant.
+        async with self._consolidate_lock:
+            result = await _forget_mod.run(
+                self,
+                strength_floor=strength_floor,
+                decay_tau_seconds=decay_tau_seconds,
+                dry_run=dry_run,
+                max_scan=max_scan,
+            )
         await self._emit(
             "forget",
             session_id=None,

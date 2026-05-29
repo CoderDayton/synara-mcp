@@ -51,6 +51,7 @@ class _Collection(Protocol):
         filter_dict: dict[str, Any] | None = ...,
         *,
         limit: int | None = ...,
+        offset: int | None = ...,
     ) -> Sequence[tuple[int, str, dict[str, Any]]]: ...
     async def similarity_search(
         self,
@@ -90,12 +91,16 @@ class MemoryServicePort(Protocol):
     config: MemoryConfig
     episodic: Any
     semantic: Any
+    memory_types: MemoryTypeRegistry
+    schema_candidates: Any
+    # Package-private state that ops/ read or mutate directly on ``self``.
+    # They are single-underscore implementation detail of ``MemoryService``
+    # but appear here so in-package ops type-check against the abstract
+    # port; external callers should not depend on them.
     _sr: SuccessorRepresentation | None
     _plasticity: PlasticityGraph
     _dg: DGProjector | None
-    memory_types: MemoryTypeRegistry
     _replay_cursor: int
-    schema_candidates: Any
     _consolidate_epoch: int
     _hygiene_counters: dict[str, int]
 
@@ -111,6 +116,8 @@ class MemoryServicePort(Protocol):
     # metadata sequences. Kept on the Protocol so the in-package
     # callers type-check against the abstract port.
     def _doc_lock(self, doc_id: int) -> asyncio.Lock: ...
+    async def _evict_and_delete(self, ids: list[int]) -> None: ...
+    async def _ensure_index_ready(self) -> None: ...
 
 
 __all__ = ["MemoryServicePort"]

@@ -180,38 +180,44 @@ class SuccessorRepresentation:
         # persist a stale count for an edge that's already in the next
         # flush's pending set — fine for eventual consistency, but the
         # snapshot is cheap and removes the timing dependency entirely.
+        coll = self._coll
+        failed: list[tuple[int, int]] = []
+        # Hold ``_state_lock`` across the whole drain — including the
+        # ``to_thread`` upserts. The endpoint re-validation and the
+        # upsert must be atomic w.r.t. a concurrent ``evict_nodes_locked``
+        # / ``_evict_and_delete`` (which holds the same lock via
+        # ``state_freeze``): otherwise an endpoint can be evicted +
+        # deleted between an unlocked re-validation and the upsert,
+        # persisting an FK-violating edge for a now-deleted id. The
+        # contended section stays small (the leader is single-process and
+        # pending sets are tiny), so the coarse lock is acceptable.
         async with self._state_lock:
             pending = self._pending
             self._pending = set()
             snapshot: list[tuple[int, int, int]] = [
                 (i, j, int(self._T_counts[i][j])) for (i, j) in pending
             ]
-        coll = self._coll
-        failed: list[tuple[int, int]] = []
-        for i, j, count in snapshot:
-            # Re-validate endpoints: a state_freeze evict + delete may
-            # have run between our snapshot capture and this iteration
-            # (the snapshot escaped the _pending purge in _evict_inner).
-            # Upserting an edge whose endpoint is no longer in
-            # _T_counts would persist an FK-violating row.
-            if i not in self._T_counts or j not in self._T_counts.get(i, {}):
-                continue
-            try:
-                await asyncio.to_thread(
-                    coll._collection.edges.upsert,
-                    i,
-                    j,
-                    kind=self.kind,
-                    weight=0.0,
-                    bonus=0.0,
-                    hits=count,
-                    metadata={},
-                )
-            except Exception:
-                _log.exception("SR edge upsert failed: src=%d dst=%d kind=%s", i, j, self.kind)
-                failed.append((i, j))
-        if failed:
-            async with self._state_lock:
+            for i, j, count in snapshot:
+                # Re-validate endpoints: even under the lock, the snapshot
+                # may contain a pair whose endpoint was purged from
+                # ``_T_counts`` in this same pass; skip those.
+                if i not in self._T_counts or j not in self._T_counts.get(i, {}):
+                    continue
+                try:
+                    await asyncio.to_thread(
+                        coll._collection.edges.upsert,
+                        i,
+                        j,
+                        kind=self.kind,
+                        weight=0.0,
+                        bonus=0.0,
+                        hits=count,
+                        metadata={},
+                    )
+                except Exception:
+                    _log.exception("SR edge upsert failed: src=%d dst=%d kind=%s", i, j, self.kind)
+                    failed.append((i, j))
+            if failed:
                 self._pending.update(failed)
 
     # ------------------------------------------------------------- observation
@@ -224,6 +230,10 @@ class SuccessorRepresentation:
         queued for the next :meth:`flush` call. Async because it
         acquires ``_state_lock`` to gate concurrent observe / load /
         evict / flush callers under the leader's event loop.
+
+        ``session_id`` is currently unused: the co-occurrence window is
+        process-global. It is kept on the signature for API symmetry and
+        a future per-session window without churning every caller.
         """
         async with self._state_lock:
             win = self._window
@@ -247,6 +257,9 @@ class SuccessorRepresentation:
 
         Anchor enters the in-session window for future chain edges.
         Avoids the n*(n-1)/2 inflation a naive pairwise loop produces.
+
+        ``session_id`` is currently unused (process-global window); see
+        :meth:`observe` for the rationale on keeping it.
         """
         async with self._state_lock:
             win = self._window
@@ -273,12 +286,19 @@ class SuccessorRepresentation:
 
     def _td_update(self, i: int, j: int) -> None:
         Mi = self._M[i]
-        Mj = self._M[j]
+        # ``Mj`` is only *read* (the bootstrap target). Fetch it with
+        # ``.get`` rather than ``self._M[j]`` so a destination-only node
+        # ``j`` does not get an empty ghost row materialised in ``_M``
+        # (which would later surface as a zero-weight successor row and
+        # leak into ``boost``/eviction bookkeeping).
+        Mj = self._M.get(j)
+        empty: dict[int, float] = {}
+        Mj_view = Mj if Mj is not None else empty
         # dict.keys() is already set-like and supports `|` directly,
         # so we skip the two extra `set(...)` allocations and union
         # the views once. ``{j}`` ensures the e_j basis entry lands in
         # the key set even when neither row references j yet.
-        keys: set[int] = Mi.keys() | Mj.keys() | {j}
+        keys: set[int] = Mi.keys() | Mj_view.keys() | {j}
         a = self.alpha
         g = self.gamma
         one_minus_a = 1.0 - a
@@ -286,7 +306,7 @@ class SuccessorRepresentation:
         # lookup, which dominates this Python-bound inner loop when
         # rows are dense (hundreds of entries).
         Mi_get = Mi.get
-        Mj_get = Mj.get
+        Mj_get = Mj_view.get
         for k in keys:
             target = (1.0 if k == j else 0.0) + g * Mj_get(k, 0.0)
             new_val = one_minus_a * Mi_get(k, 0.0) + a * target
@@ -362,23 +382,34 @@ class SuccessorRepresentation:
         """
         if not ids:
             return
-        self._evict_inner(ids)
-
-    def _evict_inner(self, ids: set[int]) -> None:
         for x in ids:
             row = self._T_counts.pop(x, None)
             if row is not None:
                 self._total_edges -= sum(row.values())
             self._T_row_sum.pop(x, None)
             self._M.pop(x, None)
+        emptied_t: list[int] = []
         for i, row in self._T_counts.items():
             for x in ids & row.keys():
                 removed = row.pop(x)
                 self._T_row_sum[i] -= removed
                 self._total_edges -= removed
-        for mrow in self._M.values():
+            if not row:
+                # Removing the evicted columns emptied this source row;
+                # drop it (and its row-sum) instead of leaving an empty
+                # ghost row behind.
+                emptied_t.append(i)
+        for i in emptied_t:
+            self._T_counts.pop(i, None)
+            self._T_row_sum.pop(i, None)
+        emptied_m: list[int] = []
+        for src, mrow in self._M.items():
             for x in ids & mrow.keys():
                 mrow.pop(x, None)
+            if not mrow:
+                emptied_m.append(src)
+        for src in emptied_m:
+            self._M.pop(src, None)
         self._total_edges = max(self._total_edges, 0.0)
         self._pending = {(i, j) for (i, j) in self._pending if i not in ids and j not in ids}
         win = self._window

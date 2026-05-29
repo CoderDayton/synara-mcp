@@ -97,7 +97,12 @@ async def run(
                 beta=service.config.recall_completion_beta,
                 eta0=service.config.recall_completion_anchor,
             )
-        q = result.query
+        # CA3 can collapse to an all-zero query (anchor/pattern
+        # cancellation). A zero vector is a degenerate search input
+        # (undefined cosine), so fall back to the pre-completion query.
+        completed = result.query
+        if isinstance(completed, list) and any(v != 0.0 for v in completed):
+            q = completed
 
     with _trace_span("merge_hits"):
         merged = await _merge_hits(service, q, mode=mode, k=k, ep_filter=ep_filter)

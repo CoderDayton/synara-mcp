@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol
@@ -98,6 +99,13 @@ class EmbeddingConfig:
     max_seq_length: token cap for the local model. Lower it to trade
         context for throughput. The remote backend ignores this; the
         server decides truncation.
+    trust_remote_code: pass ``trust_remote_code=True`` to the local
+        SentenceTransformer load. SECURITY: this executes arbitrary
+        Python bundled with the model repo at load time (custom modeling
+        code). It is ``True`` by default because the default Jina v5
+        model *requires* it; set it ``False`` to harden when running a
+        model that does not need custom code. Ignored by the remote
+        backend.
     """
 
     model: str | None = None
@@ -110,6 +118,7 @@ class EmbeddingConfig:
     dim: int | None = None
     batch_size: int = 64
     max_seq_length: int | None = None
+    trust_remote_code: bool = True
 
 
 class LocalBackend:
@@ -138,6 +147,12 @@ class LocalBackend:
     #    already-loaded instance bypasses the second AutoModel call
     #    entirely.
     _CACHE: ClassVar[dict[str, Any]] = {}
+    # Guards the check-then-set on ``_CACHE`` and the model load. ``warmup``
+    # runs on a worker thread (``to_thread``), so two concurrent
+    # ``embed_batch`` calls could otherwise both observe ``_model is None``
+    # and both pay the multi-GB load. A ``threading.Lock`` (not asyncio) is
+    # correct here because the contended region is the sync ``warmup`` body.
+    _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(
         self,
@@ -146,6 +161,7 @@ class LocalBackend:
         dim: int | None = None,
         batch_size: int | None = None,
         max_seq_length: int | None = None,
+        trust_remote_code: bool = True,
     ) -> None:
         if dim is not None and dim <= 0:
             raise ValueError("dim must be positive when set")
@@ -161,6 +177,7 @@ class LocalBackend:
         self._dim: int | None = dim
         self._batch_size = batch_size or self.DEFAULT_BATCH_SIZE
         self._max_seq_length = max_seq_length
+        self._trust_remote_code = trust_remote_code
 
     def is_ready(self) -> bool:
         return self._model is not None
@@ -189,36 +206,46 @@ class LocalBackend:
         """Load the SentenceTransformer. The first call downloads weights."""
         if self._model is not None:
             return
-        cached = self._CACHE.get(self._model_id)
-        if cached is not None:
-            self._model = cached
-            return
-        # Lazy imports keep the module importable on machines without torch
-        # (e.g. lint-only CI); the ImportError surfaces here instead.
-        import torch  # noqa: PLC0415
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        # Serialise the cache check-then-set + load so concurrent
+        # ``embed_batch`` calls don't double-load the model.
+        with self._CACHE_LOCK:
+            if self._model is not None:
+                return
+            cached = self._CACHE.get(self._model_id)
+            if cached is not None:
+                self._model = cached
+                return
+            # Lazy imports keep the module importable on machines without torch
+            # (e.g. lint-only CI); the ImportError surfaces here instead.
+            import torch  # noqa: PLC0415
+            from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # ``default_task='retrieval'`` is required by Jina v5 — the model has
-        # multiple task heads (retrieval / separation / classification /
-        # similarity) and refuses to encode without one. Memory store →
-        # retrieval is the natural fit.
-        model_kwargs: dict[str, object] = {"default_task": "retrieval"}
-        if device.type == "cuda":
-            model_kwargs["dtype"] = torch.bfloat16
-        load_kwargs: dict[str, object] = {
-            "trust_remote_code": True,
-            "device": device,
-            "model_kwargs": model_kwargs,
-        }
-        if device.type == "cuda":
-            load_kwargs["config_kwargs"] = {"_attn_implementation": "sdpa"}
-        self._model = SentenceTransformer(self._model_id, **load_kwargs)
-        if self._max_seq_length is not None:
-            # Direct attribute write is the public knob (see
-            # SentenceTransformer.max_seq_length).
-            self._model.max_seq_length = self._max_seq_length
-        self._CACHE[self._model_id] = self._model
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # ``default_task='retrieval'`` is required by Jina v5 — the model has
+            # multiple task heads (retrieval / separation / classification /
+            # similarity) and refuses to encode without one. Memory store →
+            # retrieval is the natural fit.
+            model_kwargs: dict[str, object] = {"default_task": "retrieval"}
+            if device.type == "cuda":
+                model_kwargs["dtype"] = torch.bfloat16
+            # SECURITY: ``trust_remote_code`` runs arbitrary Python bundled
+            # with the model repo at load time. On by default because the
+            # default Jina v5 model requires it; set
+            # ``SYNARA_EMBEDDING_TRUST_REMOTE_CODE=false`` to harden when
+            # running a model that does not need custom code.
+            load_kwargs: dict[str, object] = {
+                "trust_remote_code": self._trust_remote_code,
+                "device": device,
+                "model_kwargs": model_kwargs,
+            }
+            if device.type == "cuda":
+                load_kwargs["config_kwargs"] = {"_attn_implementation": "sdpa"}
+            self._model = SentenceTransformer(self._model_id, **load_kwargs)
+            if self._max_seq_length is not None:
+                # Direct attribute write is the public knob (see
+                # SentenceTransformer.max_seq_length).
+                self._model.max_seq_length = self._max_seq_length
+            self._CACHE[self._model_id] = self._model
 
     async def aclose(self) -> None:
         """Nothing to release; the model stays loaded for the process."""
@@ -339,6 +366,10 @@ class RemoteBackend:
                 "POST", self._endpoint, json=payload, headers=self._headers
             ) as response:
                 raw = await self._read_capped(response)
+                # Capture status while the response is still open, rather
+                # than reading the attribute after the stream context has
+                # exited.
+                status_code = response.status_code
         except httpx.HTTPError as exc:
             # Connect/timeout/protocol failures must surface as the
             # documented EmbeddingError, not a raw httpx exception that
@@ -347,9 +378,9 @@ class RemoteBackend:
                 f"embedding endpoint {self._endpoint} request failed: {exc!r}"
             ) from exc
         snippet = raw[:200].decode("utf-8", "replace")
-        if response.status_code >= _HTTP_ERROR_FLOOR:
+        if status_code >= _HTTP_ERROR_FLOOR:
             raise EmbeddingError(
-                f"embedding endpoint {self._endpoint} returned {response.status_code}: {snippet}"
+                f"embedding endpoint {self._endpoint} returned {status_code}: {snippet}"
             )
         try:
             body = json.loads(raw)
@@ -497,5 +528,6 @@ def build_embedder(config: EmbeddingConfig) -> Embedder:
             dim=config.dim,
             batch_size=config.batch_size,
             max_seq_length=config.max_seq_length,
+            trust_remote_code=config.trust_remote_code,
         )
     return Embedder(backend)

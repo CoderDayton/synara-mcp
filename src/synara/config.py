@@ -53,7 +53,10 @@ class Settings:
 
     @classmethod
     def from_env(cls, argv: list[str] | None = None) -> Settings:
-        del argv  # reserved for future CLI flags
+        # ``argv`` is accepted so ``main()`` can forward CLI args once we
+        # add flag parsing; configuration is env-only today, so it is
+        # intentionally unused (kept to avoid churning the call site).
+        del argv
         raw_transport = os.environ.get("SYNARA_TRANSPORT", "stdio")
         if raw_transport not in _VALID_TRANSPORTS:
             raise ValueError(f"SYNARA_TRANSPORT={raw_transport!r} not in {_VALID_TRANSPORTS}")
@@ -84,6 +87,7 @@ class Settings:
         max_seq_length = _positive_int_env(
             "SYNARA_EMBEDDING_MAX_SEQ_LENGTH", max_value=_EMBEDDING_MAX_SEQ_LENGTH_MAX
         )
+        trust_remote_code = _bool_env("SYNARA_EMBEDDING_TRUST_REMOTE_CODE", default=True)
 
         return cls(
             log_level=raw_level,
@@ -97,9 +101,26 @@ class Settings:
                 dim=dim,
                 batch_size=batch_size if batch_size is not None else 64,
                 max_seq_length=max_seq_length,
+                trust_remote_code=trust_remote_code,
             ),
             dashboard=DashboardConfig.from_env(),
         )
+
+
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
+_FALSY_ENV = frozenset({"0", "false", "no", "off", ""})
+
+
+def _bool_env(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _TRUTHY_ENV:
+        return True
+    if value in _FALSY_ENV:
+        return default if value == "" else False
+    raise ValueError(f"{name}={raw!r} must be a boolean (true/false)")
 
 
 def _positive_int_env(name: str, *, max_value: int = 1_000_000) -> int | None:

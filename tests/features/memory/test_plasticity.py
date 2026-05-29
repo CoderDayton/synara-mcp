@@ -337,7 +337,12 @@ async def test_event_bus_react_skips_reactor_kinds() -> None:
         payload={"deduped": False},
     )
     await bus.record(e_user)
-    await bus.react(e_user)
+    triggered = await bus.react(e_user)
+    # The user event is due for *both* consolidate and dream; react must
+    # fire both (and report them) on the single user event.
+    assert "c" in fired
+    assert "d" in fired
+    assert triggered == ["consolidate", "dream"]
     e_reactor = InteractionEvent(
         kind="consolidate",
         timestamp=11.0,
@@ -345,8 +350,8 @@ async def test_event_bus_react_skips_reactor_kinds() -> None:
         payload={},
     )
     await bus.record(e_reactor)
-    await bus.react(e_reactor)
-    assert "c" in fired
+    # A reactor-kind event must not re-trigger.
+    assert await bus.react(e_reactor) == []
     assert fired.count("c") == 1
 
 

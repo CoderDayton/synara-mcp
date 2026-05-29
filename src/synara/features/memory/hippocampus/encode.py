@@ -127,9 +127,9 @@ async def run(
         new_support = service._ensure_projector(len(new_emb)).support(new_emb)
         if not skip_dedup:
             dedup_hit = await _dedup_jaccard(service, new_emb, new_support, session_id)
-    elif skip_dedup:
-        pass
-    else:
+    elif not skip_dedup:
+        # Non-DG path: cosine dedup, unless the episode is below the
+        # short-content floor (``skip_dedup``) where it is unreliable.
         q_arg: str | list[float] = (
             new_emb if new_emb is not None else await service.query_arg(content)
         )

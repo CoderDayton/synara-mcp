@@ -27,6 +27,7 @@ import pytest_asyncio
 from simplevecdb import AsyncVectorDB
 
 from synara.features.memory.hippocampus.recall import _accrue_drift
+from synara.features.memory.hippocampus.segment import split_into_segments
 from synara.features.memory.hippocampus.successor import SuccessorRepresentation
 from synara.features.memory.service import MemoryConfig, MemoryService
 
@@ -77,6 +78,37 @@ async def test_episode_insert_rolls_back_on_id_patch_failure(
     service.episodic.update_metadata = original
     rows = await service.episodic.get_documents({"session_id": "s1"})
     assert rows == [], f"orphan row left behind: {rows}"
+
+
+async def test_segmented_insert_rolls_back_all_segments_on_id_patch_failure(
+    service: MemoryService,
+) -> None:
+    """``_insert_segmented`` writes N sub-records then bulk-patches their
+    ids/group. If the patch fails, every segment row must be deleted so
+    no orphan group lingers."""
+    # Long, multi-sentence content forces theta segmentation (> the
+    # default 1024-char budget across several sentences).
+    sentence = "This is a reasonably long sentence about memory systems. "
+    content = sentence * 40
+    segments = split_into_segments(
+        content,
+        max_chars=service.config.theta_segment_max_chars,
+        max_items=service.config.theta_segment_max_items,
+    )
+    assert len(segments) > 1, "test content must actually segment"
+
+    original = service.episodic.update_metadata
+
+    async def boom(updates: object) -> object:
+        raise RuntimeError("seg-boom")
+
+    service.episodic.update_metadata = boom
+    with pytest.raises(RuntimeError, match="seg-boom"):
+        await service.encode_episode(content, "seg-sess", salience=0.5)
+
+    service.episodic.update_metadata = original
+    rows = await service.episodic.get_documents({"session_id": "seg-sess"})
+    assert rows == [], f"segment rows left behind after rollback: {rows}"
 
 
 async def test_episode_insert_preserves_original_error_when_cleanup_also_fails(
@@ -344,18 +376,28 @@ class _FakeColl:
         return []
 
 
-async def test_flush_skips_upsert_for_endpoint_evicted_after_snapshot() -> None:
-    """``flush`` takes its pending snapshot under ``_state_lock`` then
-    releases the lock for the durable upserts. A concurrent
-    ``state_freeze`` evict+delete that runs in that window scrubs
-    ``_T_counts`` / ``_pending`` — but the snapshot is already detached,
-    so without an endpoint re-check ``flush`` would still upsert the
-    (i, evicted_j) pair and persist an FK-violating edge.
+async def test_flush_holds_state_lock_across_upserts_blocking_concurrent_evict() -> None:
+    """``flush`` holds ``_state_lock`` across the durable upserts, so a
+    concurrent ``state_freeze`` evict+delete cannot interleave between
+    the endpoint re-check and the upsert and persist an FK-violating row.
 
-    We simulate the race by patching the underlying upsert to perform
-    the eviction in-flight just before the (1, 2) call lands.
+    We assert ordering: an evict task that contends for ``state_freeze``
+    while flush is mid-upsert is blocked until flush releases the lock.
     """
-    edges = _FakeEdgesAPI()
+    order: list[str] = []
+
+    class _OrderingEdges(_FakeEdgesAPI):
+        def __init__(self) -> None:
+            super().__init__()
+            self._evict_ready: asyncio.Event = asyncio.Event()
+
+        def upsert(self, src: int, dst: int, **_: object) -> None:
+            order.append(f"upsert:{src}->{dst}")
+            super().upsert(src, dst)
+            # Signal the evict task to try contending for the lock now.
+            self._evict_ready.set()
+
+    edges = _OrderingEdges()
     coll = _FakeColl(edges)
     sr = SuccessorRepresentation()
     sr.attach(coll)
@@ -364,51 +406,62 @@ async def test_flush_skips_upsert_for_endpoint_evicted_after_snapshot() -> None:
     await sr.observe("s", 2, t=1.0)
     assert (1, 2) in sr._pending
 
-    # Race window: ``flush`` snapshots ``_pending`` under ``_state_lock``
-    # and then releases the lock before the durable upserts. A
-    # concurrent ``state_freeze`` evict+delete that lands in that
-    # window scrubs ``_T_counts`` for the endpoint. We simulate the
-    # concurrent eviction by hooking ``_state_lock``'s release: the
-    # in-flight snapshot is preserved, but live ``_T_counts`` has lost
-    # node 2 before the upsert iteration runs its endpoint check.
-    inner_lock = sr._state_lock
+    async def _evict_when_flush_running() -> None:
+        # Wait until flush is inside its locked upsert section, then try
+        # to acquire ``state_freeze`` (the same ``_state_lock``).
+        await edges._evict_ready.wait()
+        async with sr.state_freeze():
+            order.append("evict")
+            sr.evict_nodes_locked({2})
 
-    class _EvictingOnRelease:
-        def __init__(self) -> None:
-            self._fired = False
-
-        async def __aenter__(self) -> object:
-            await inner_lock.acquire()
-            return self
-
-        async def __aexit__(self, *exc: object) -> None:
-            inner_lock.release()
-            if not self._fired:
-                self._fired = True
-                sr._evict_inner({2})
-
-    sr._state_lock = _EvictingOnRelease()  # type: ignore[assignment]
+    evict_task = asyncio.create_task(_evict_when_flush_running())
     await sr.flush()
+    await evict_task
 
-    assert (1, 2) not in edges.calls, (
-        "flush upserted an edge whose destination was evicted "
-        "between snapshot and upsert (FK-violating row)"
-    )
+    # The evict must run strictly after flush's upsert: flush held the
+    # lock across the durable write, so the eviction could not interleave.
+    assert order == ["upsert:1->2", "evict"], order
+    # The edge was upserted (then the post-flush evict's delete cascades
+    # it durably); no FK-violating interleave occurred.
+    assert (1, 2) in edges.calls
 
 
 async def test_observe_during_load_is_serialised_by_state_lock() -> None:
     """``load`` rebuild and concurrent ``observe`` must not tear ``_M``;
     after both complete, every row's values are finite floats."""
+
+    class _Edge:
+        def __init__(self, src: int, dst: int, hits: int) -> None:
+            self.src_id = src
+            self.dst_id = dst
+            self.hits = hits
+
+    class _LoadColl:
+        """Fake collection whose ``get_edges`` yields a non-trivial T so
+        ``load()`` runs the *real* rebuild + TD passes (not the
+        no-collection short-circuit) concurrently with ``observe``."""
+
+        def __init__(self) -> None:
+            self._collection = None
+            self._edges = [_Edge(i, (i + 1) % 5, hits=i + 1) for i in range(5)]
+
+        async def get_edges(self, *, kind: str) -> list[object]:
+            # Yield control so a concurrent observe can interleave around
+            # the await, then return edges for the rebuild to fold in.
+            await asyncio.sleep(0)
+            return list(self._edges)
+
     sr = SuccessorRepresentation()
-    # No collection attached: load() short-circuits but still acquires
-    # _state_lock for the rebuild block. Direct observes prove the
-    # lock contract on its own.
+    sr.attach(_LoadColl())
 
     async def hammer_observe() -> None:
         for i in range(50):
             await sr.observe("s", i % 5, t=float(i))
 
+    # load() now exercises the rebuild critical section (it acquires
+    # _state_lock around the TD passes) against concurrent observes.
     await asyncio.gather(sr.load(), hammer_observe(), hammer_observe())
+    assert sr._loaded
 
     # _M must contain only finite floats — no NaN/Inf from a torn TD
     # update.

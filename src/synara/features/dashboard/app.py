@@ -33,6 +33,11 @@ from .routes import tools as tools_route
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
+# Bind addresses that mean "all interfaces" rather than a real Host a
+# client would send. A literal allowlist of these would reject everything.
+# These are Host-header *match* sentinels, not a socket bind (hence nosec).
+_WILDCARD_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]"})  # nosec B104
+
 
 def _strip_port(host_header: str) -> str:
     """Extract the host portion from a ``Host`` header value.
@@ -67,6 +72,13 @@ def _allowed_hosts(dashboard: DashboardConfig) -> frozenset[str]:
     Entries are bare hosts only (no ``:port`` suffix) — the middleware
     strips the port before matching.
     """
+    # Wildcard bind (``0.0.0.0`` / ``::``) is not a real Host header any
+    # client would send, so a literal allowlist of it would 400 every
+    # request. Binding to all interfaces is an explicit "accept from
+    # anywhere" choice (already gated on a token for non-loopback), so
+    # disable Host matching with the allow-any sentinel.
+    if dashboard.host in _WILDCARD_BIND_HOSTS:
+        return frozenset({"*"})
     hosts: set[str] = {dashboard.host}
     if dashboard.is_loopback:
         # Cover every loopback alias a client could legitimately send,
@@ -107,6 +119,12 @@ class HostAllowlistMiddleware:
         await response(scope, receive, send)
 
 
+# NOTE: the non-greedy body match terminates at the first ``</script>``.
+# A script body that itself contains the literal string ``</script>``
+# (e.g. inside a JS string) would be truncated, yielding a CSP hash that
+# does not cover the full body and so blocks the script. The committed
+# shell contains only a small theme-bootstrap script with no such
+# literal; if that ever changes, switch to an HTML parser here.
 _INLINE_SCRIPT_RE = re.compile(
     rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,

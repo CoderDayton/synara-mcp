@@ -32,6 +32,7 @@ its behavior is fully covered by tests.
 
 from __future__ import annotations
 
+import inspect
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -79,8 +80,15 @@ _DECISION_RE = re.compile(
 )
 
 # JSON-shaped tool-call payload, or an explicit ``tool_call`` marker.
+# A ``"tool"``/``"function"`` key alone is specific enough. The bare
+# ``"name"`` key, however, appears in almost any JSON object, so we only
+# treat it as a tool call when it co-occurs with an ``arguments`` /
+# ``parameters`` / ``input`` key — the OpenAI/Anthropic tool-call shape
+# (Anthropic ``tool_use`` blocks key the args under ``input``) — to avoid
+# false positives on ordinary prose containing inline JSON.
 _TOOL_CALL_RE = re.compile(
-    r'"(?:name|tool|function)"\s*:\s*"[A-Za-z_][\w.-]*"'
+    r'"(?:tool|function)"\s*:\s*"[A-Za-z_][\w.-]*"'
+    r'|"name"\s*:\s*"[A-Za-z_][\w.-]*"(?=[^{}]*"(?:arguments|parameters|input)"\s*:)'
     r"|\btool[_ ]call\b",
     re.IGNORECASE,
 )
@@ -313,6 +321,16 @@ class SignalSpec:
     name: str
     weight: float
     compute: Callable[[str], Any]
+
+    def __post_init__(self) -> None:
+        # ``derive`` calls ``compute`` synchronously; an async function
+        # would return a never-awaited coroutine object that lands in
+        # episode metadata. Reject it at construction with a clear error.
+        if inspect.iscoroutinefunction(self.compute):
+            raise TypeError(
+                f"SignalSpec.compute for {self.name!r} must be a synchronous "
+                "function, not a coroutine function"
+            )
 
 
 @dataclass(frozen=True, slots=True)

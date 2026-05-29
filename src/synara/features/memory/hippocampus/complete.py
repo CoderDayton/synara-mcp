@@ -185,7 +185,16 @@ async def run(
         X = await _gather_candidates(service, q.tolist(), ep_filter=ep_filter, k=k_inner)
         if X.shape[0] == 0:
             break
-        q, score = attractor_step(q, X, beta=beta, q0=q0_arr, eta0=eta0)
+        q_next, score = attractor_step(q, X, beta=beta, q0=q0_arr, eta0=eta0)
+        # ``attractor_step`` normalises through ``_normalize``, which
+        # returns an all-zero vector if the update collapsed (anchor and
+        # retrieved pattern cancelled). A zero query is a degenerate
+        # search vector (undefined cosine); abandon the refinement and
+        # keep the last good query rather than propagating zeros into the
+        # downstream similarity search.
+        if float(np.linalg.norm(q_next)) < _NORM_FLOOR:
+            break
+        q = q_next
         scores.append(score)
         if len(scores) >= 2 and abs(scores[-1] - scores[-2]) < eps:  # noqa: PLR2004
             return CompletionResult(query=q.tolist(), scores=scores, converged=True)

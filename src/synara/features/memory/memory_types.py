@@ -103,7 +103,9 @@ def default_registry(
     *,
     episodic_collection: str,
     semantic_collection: str,
-    schema_candidate_collection: str = "schema_candidates",
+    # Matches ``MemoryConfig.schema_candidate_collection`` so a caller that
+    # omits this arg lands on the same collection the service uses.
+    schema_candidate_collection: str = "memory_schema_candidates",
 ) -> MemoryTypeRegistry:
     """Build the standard registry used by the existing code path.
 

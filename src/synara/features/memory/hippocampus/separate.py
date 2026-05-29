@@ -96,7 +96,7 @@ def jaccard(a: Iterable[int], b: Iterable[int]) -> float:
     sa, sb = set(a), set(b)
     if not sa and not sb:
         return 1.0
+    # At least one set is non-empty past the guard above, so the union is
+    # always >= 1 — no zero-division check needed.
     union = len(sa | sb)
-    if union == 0:
-        return 0.0
     return len(sa & sb) / union

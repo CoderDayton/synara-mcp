@@ -44,11 +44,10 @@ async def list_memories(
         return await _search(service, kind=kind, q=q, limit=limit)
 
     coll = service.semantic if kind == "semantic" else service.episodic
-    # simplevecdb's get_documents already returns a list; slicing it
-    # directly skips a redundant full-prefix copy (offset+limit can be
-    # up to _MAX_LIMIT + _MAX_OFFSET wide on cold paths).
-    rows = await coll.get_documents(filter_dict=None, limit=offset + limit)
-    window = rows[offset : offset + limit]
+    # Push the offset down into the store so it doesn't materialise the
+    # full ``offset + limit`` prefix (up to _MAX_LIMIT + _MAX_OFFSET wide
+    # on cold paths) just to slice the tail off in Python.
+    window = await coll.get_documents(filter_dict=None, limit=limit, offset=offset)
     items = [{"id": int(doc_id), "content": text, "metadata": md} for doc_id, text, md in window]
     return {"kind": kind, "items": items, "count": len(items), "offset": offset}
 
@@ -215,8 +214,12 @@ async def memory_detail(
     group_id = int(md.get("episode_group_id", episode_id))
     group = await service.fetch_episode_group(group_id)
 
+    # SR transitions are directed; show both directions so the detail
+    # panel isn't silently outgoing-only.
     sr = await service.episodic.get_edges(src=episode_id, kind="sr")
     sr_out = [{"dst": int(e.dst_id), "count": int(e.hits)} for e in sr]
+    sr_incoming = await service.episodic.get_edges(dst=episode_id, kind="sr")
+    sr_in = [{"src": int(e.src_id), "count": int(e.hits)} for e in sr_incoming]
 
     plastic = await service.episodic.get_edges(src=episode_id, kind="plasticity")
     plastic_edges = [
@@ -234,6 +237,7 @@ async def memory_detail(
         "group_id": group_id,
         "segments": group,
         "sr_transitions": sr_out,
+        "sr_transitions_in": sr_in,
         "plasticity_edges": plastic_edges,
     }
 

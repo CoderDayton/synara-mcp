@@ -83,6 +83,10 @@ class TriggerPolicy:
         return (now - state.last_consolidate_at) >= self.consolidate_cooldown_seconds
 
     def dream_due(self, state: ReactorState, now: float) -> bool:
+        # Disable convention: a config threshold of ``<= 0`` disables that
+        # gate (mirrors ``consolidate_after_novel_encodes <= 0`` above).
+        # The leading ``events_since_dream <= 0`` test is a *state* guard
+        # (nothing happened since the last dream), not a config disable.
         if state.events_since_dream <= 0:
             return False
         if self.dream_after_events > 0 and state.events_since_dream >= self.dream_after_events:
@@ -137,7 +141,14 @@ class EventBus:
         """Snapshot of the most recent events (up to ``log_capacity``)."""
         if self._coll is None:
             return list(self._mem_log)
-        rows = await self._coll.read_events(limit=self.log_capacity)
+        # Pruning only fires every ``_prune_every`` records, so the table
+        # can transiently exceed ``log_capacity``. ``read_events`` is
+        # ``seq ASC LIMIT n``, which would then return the *oldest* window
+        # and drop the newest events. Anchor the read at
+        # ``last_seq - log_capacity`` so we always get the newest slice.
+        last_seq = await self._coll.last_event_seq()
+        since = max(0, last_seq - self.log_capacity)
+        rows = await self._coll.read_events(since=since, limit=self.log_capacity)
         kept: list[InteractionEvent] = []
         for r in rows:
             if not r.kind.startswith(EVENT_KIND_PREFIX):
@@ -160,6 +171,12 @@ class EventBus:
             payload = dict(event.payload)
             if event.session_id is not None:
                 payload["__session_id"] = event.session_id
+            # Coupling note: the async collection exposes ``read_events`` /
+            # ``last_event_seq`` but no async ``append`` / ``prune``, so we
+            # reach through ``_collection.events`` (the sync engine) under
+            # ``to_thread``. If simplevecdb adds async append/prune, switch
+            # to those and drop this private access (here and in
+            # ``_maybe_prune``).
             await asyncio.to_thread(
                 self._coll._collection.events.append,
                 _event_kind(event.kind),
@@ -190,7 +207,14 @@ class EventBus:
         if self._coll is None:
             return
         last_seq = await self._coll.last_event_seq()
-        cutoff = last_seq - self.log_capacity
+        # ``prune_events`` deletes ``seq < before_seq``; to retain exactly
+        # the newest ``log_capacity`` entries (seqs in
+        # ``last_seq - log_capacity + 1 .. last_seq``) the cutoff must be
+        # ``last_seq - log_capacity + 1``. The previous ``last_seq -
+        # log_capacity`` kept one extra row, and since ``read_events`` is
+        # ``seq ASC LIMIT n`` that surplus row pushed the newest event out
+        # of the ``log()`` window.
+        cutoff = last_seq - self.log_capacity + 1
         if cutoff <= 0:
             self._records_since_prune = 0
             return

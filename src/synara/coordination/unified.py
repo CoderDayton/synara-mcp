@@ -31,9 +31,9 @@ from fastmcp.client.client import Client
 from fastmcp.server.providers.proxy import FastMCPProxy
 
 from synara.coordination.follower import (
-    _DEFAULT_BACKOFF_SECONDS,
-    _DEFAULT_MAX_RETRIES,
-    _DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_BACKOFF_SECONDS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_TIMEOUT_SECONDS,
     RetryMiddleware,
 )
 from synara.coordination.router import LeaderRouter
@@ -57,9 +57,9 @@ async def run_unified_async(
     *,
     settings: Any,
     build_server: Callable[[], Any],
-    timeout: float = _DEFAULT_TIMEOUT_SECONDS,
-    max_retries: int = _DEFAULT_MAX_RETRIES,
-    backoff: float = _DEFAULT_BACKOFF_SECONDS,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    backoff: float = DEFAULT_BACKOFF_SECONDS,
     stdio_runner: Callable[[Any], Awaitable[None]] | None = None,
 ) -> None:
     """Run the stdio MCP server with automatic leadership routing.

@@ -100,6 +100,19 @@ def test_tool_call_json_payload_is_detected() -> None:
     assert s["has_tool_call"] is True
 
 
+def test_anthropic_tool_use_input_payload_is_detected() -> None:
+    # Anthropic ``tool_use`` blocks key the args under ``input``, not
+    # ``arguments``; the ``"name"`` co-occurrence lookahead must accept it.
+    payload = '{"type": "tool_use", "name": "store_episode", "input": {"content": "x"}}'
+    assert derive_signals(payload)["has_tool_call"] is True
+
+
+def test_bare_name_json_is_not_a_tool_call() -> None:
+    # A ``"name"`` key in ordinary prose JSON, with no tool-call shape,
+    # must not be flagged (the false-positive case the lookahead guards).
+    assert derive_signals('{"name": "Alice", "age": 30}')["has_tool_call"] is False
+
+
 def test_explicit_tool_call_marker_is_detected() -> None:
     assert derive_signals("tool_call: store_episode")["has_tool_call"] is True
     assert derive_signals("Tool Call -> X")["has_tool_call"] is True

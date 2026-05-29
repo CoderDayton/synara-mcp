@@ -108,8 +108,12 @@ class PlasticityGraph:
         hits: int,
         metadata: dict[str, Any],
     ) -> None:
-        # AsyncVectorCollection doesn't expose upsert; reach the sync
-        # namespace via to_thread. Catalog serialises on its RLock.
+        # Coupling note: AsyncVectorCollection exposes ``get_edges`` but no
+        # async edge ``upsert``, so we reach through ``_collection.edges``
+        # (the sync engine) under ``to_thread``; the catalog serialises on
+        # its RLock. If simplevecdb adds an async upsert, switch to it and
+        # drop this private access. (SR's flush does the same — see
+        # ``hippocampus/successor.py``.)
         await asyncio.to_thread(
             self._coll._collection.edges.upsert,
             src,

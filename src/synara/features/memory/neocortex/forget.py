@@ -126,24 +126,10 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
 
     removed = 0
     if weak and not dry_run:
-        # coll.edges has ON DELETE CASCADE to documents: deleting these
-        # docs vaporises their durable SR edges, but a lingering
-        # in-memory _T/_pending/window entry would make the next SR
-        # flush upsert a FK-violating edge for a now-deleted id. Evict
-        # before the delete — the same invariant
-        # MemoryService.delete_episode relies on (SuccessorRepresentation
-        # .evict_nodes). Plasticity holds no in-memory state.
-        if service._sr is not None:
-            # Freeze SR state for the full evict→delete pair so a
-            # concurrent observe cannot fold an in-flight recall's
-            # co-occurrence back into ``_T``/``_pending`` for an id we
-            # are about to drop from the durable store (the next flush
-            # would then upsert a FK-violating edge).
-            async with service._sr.state_freeze():
-                service._sr.evict_nodes_locked(set(weak))
-                await service.episodic.delete_by_ids(weak)
-        else:
-            await service.episodic.delete_by_ids(weak)
+        # Evict SR in-memory state before the durable delete (see
+        # MemoryService._evict_and_delete for the FK-cascade / freeze
+        # rationale).
+        await service._evict_and_delete(weak)
         removed = len(weak)
 
     # Cold-schema eviction: optional ontology garbage-collector. Off by
@@ -154,9 +140,11 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
     # not mass-delete existing ontology.
     cold_threshold = float(service.config.forget_schema_unused_seconds)
     schemas_removed = 0
+    schemas_scanned = 0
     cold_schema_ids: list[int] = []
     if cold_threshold > 0.0:
         sem_rows = await service.semantic.get_documents(filter_dict=None, limit=max_scan)
+        schemas_scanned = len(sem_rows)
         for sch_id, _text, smd in sem_rows:
             last_hit = smd.get("last_hit_at")
             if last_hit is None:
@@ -180,6 +168,7 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
         "removed": removed,
         "dry_run": dry_run,
         "scanned": len(rows),
+        "schemas_scanned": schemas_scanned,
         "cold_schema_candidate_ids": cold_schema_ids,
         "schemas_removed": schemas_removed,
     }

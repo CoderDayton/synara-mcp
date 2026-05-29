@@ -79,8 +79,12 @@ def build_server(settings: Settings) -> FastMCP:
                     await stack.enter_async_context(run_dashboard(dash_app, settings.dashboard))
                 yield {"db": db, "embedder": embedder, "settings": settings}
         finally:
-            await embedder.aclose()
-            await db.close()
+            # Close the DB even if the embedder teardown raises, so a
+            # failing ``aclose`` can't leak the SQLite handle.
+            try:
+                await embedder.aclose()
+            finally:
+                await db.close()
 
     mcp = FastMCP(
         name="synara-mcp",

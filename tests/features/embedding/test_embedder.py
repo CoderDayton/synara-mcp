@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -30,7 +31,9 @@ from synara.features.embedding import (
 # ---------------------------------------------------------------- local backend
 @pytest.mark.slow
 async def test_local_backend_returns_vectors() -> None:
-    vec = await Embedder(LocalBackend()).embed("hello world")
+    # Default model (Jina v5) requires trust_remote_code; opt in for the
+    # real-model smoke test.
+    vec = await Embedder(LocalBackend(trust_remote_code=True)).embed("hello world")
     assert isinstance(vec, list)
     assert len(vec) > 0
     assert all(isinstance(x, float) for x in vec)
@@ -38,7 +41,9 @@ async def test_local_backend_returns_vectors() -> None:
 
 @pytest.mark.slow
 async def test_local_backend_batch_preserves_order_and_dim() -> None:
-    vecs = await Embedder(LocalBackend()).embed_batch(["alpha", "beta", "gamma"])
+    vecs = await Embedder(LocalBackend(trust_remote_code=True)).embed_batch(
+        ["alpha", "beta", "gamma"]
+    )
     assert len(vecs) == 3
     dims = {len(v) for v in vecs}
     assert len(dims) == 1, "all vectors must share dimensionality"
@@ -163,7 +168,7 @@ def test_local_backend_warmup_constructs_sentence_transformer(
 
     monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
     monkeypatch.setattr(LocalBackend, "_CACHE", {})
-    LocalBackend(model="some/repo").warmup()
+    LocalBackend(model="some/repo", trust_remote_code=True).warmup()
     assert captured["model_id"] == "some/repo"
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
@@ -229,6 +234,64 @@ def test_local_backend_reuses_cached_model_across_instances(
     LocalBackend(model="repo/x").warmup()
     LocalBackend(model="repo/x").warmup()
     assert len(calls) == 1, "second instance must reuse cached model"
+
+
+def test_local_backend_trust_remote_code_defaults_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag defaults on (opt-out); the default Jina v5 model requires it."""
+    captured: dict[str, object] = {}
+
+    class _FakeST:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            captured["kwargs"] = kwargs
+
+        def encode(self, *args: object, **kwargs: object) -> object:
+            raise NotImplementedError
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+    LocalBackend(model="repo/x").warmup()
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["trust_remote_code"] is True
+
+
+async def test_local_backend_concurrent_embed_loads_model_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent ``embed_batch`` calls on a cold backend must not
+    double-load the model: the cache check-then-set is lock-guarded."""
+    calls: list[str] = []
+    dim = 4
+
+    class _FakeST:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            calls.append(model_id)
+            # Simulate a slow multi-second load so the two concurrent
+            # warmups overlap in the worker-thread pool.
+            time.sleep(0.05)
+
+        def get_sentence_embedding_dimension(self) -> int:
+            return dim
+
+        def encode(self, texts: object, **kwargs: object) -> object:
+            seq = list(texts) if isinstance(texts, list) else [texts]
+            return [[0.0] * dim for _ in seq]
+
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", _FakeST)
+    monkeypatch.setattr(LocalBackend, "_CACHE", {})
+    backend = LocalBackend(model="repo/concurrent")
+    out = await asyncio.gather(
+        backend.embed_batch(["x"]),
+        backend.embed_batch(["y"]),
+        backend.dim(),
+    )
+    assert len(calls) == 1, "model must be constructed exactly once under concurrency"
+    vecs_x, vecs_y, reported_dim = out
+    assert reported_dim == dim
+    assert len(vecs_x[0]) == dim
+    assert len(vecs_y[0]) == dim
 
 
 def test_remote_backend_warmup_is_noop() -> None:
