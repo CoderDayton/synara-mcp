@@ -266,3 +266,28 @@ async def test_embedding_failure_surfaces_to_caller() -> None:
                 )
     finally:
         await db.close()
+
+
+async def test_validation_error_reaches_client_under_masking() -> None:
+    """Bad input must surface to the agent as an actionable ToolError
+    message even with ``mask_error_details=True`` (production hardening).
+
+    Without the explicit ValidationError->ToolError mapping, the service's
+    rejection is an ordinary Exception, which FastMCP masks to a generic
+    "Error calling tool" string under masking — hiding the reason from the
+    caller (and logging it as an internal error with a traceback).
+    """
+    import pytest  # noqa: PLC0415
+    from fastmcp.exceptions import ToolError  # noqa: PLC0415
+
+    db = AsyncVectorDB(":memory:")
+    try:
+        service = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        mcp: FastMCP = FastMCP("synara-test-validation", mask_error_details=True)
+        register_tools(mcp, service)
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError) as excinfo:
+                await client.call_tool("recall_semantic_memory", {"query": "   "})
+            assert "non-empty" in str(excinfo.value)
+    finally:
+        await db.close()

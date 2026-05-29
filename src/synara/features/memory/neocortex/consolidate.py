@@ -349,7 +349,7 @@ def _replay_score(
         rc = int(md.get("retrieval_count", 0))
         access_times = [enc] + [last] * max(rc, 0)
     strength = memory_strength(
-        salience=float(md.get("salience", 0.0)),
+        salience=float(md.get("salience", _DEFAULT_SALIENCE)),
         access_times=access_times,
         now=now,
         d=d,
@@ -680,7 +680,7 @@ async def _process_stage2_cluster(  # noqa: PLR0911 -- explicit branch-per-gate 
     if len(members) < floor:
         return None
 
-    head_text, _head_md = max(members, key=lambda m: float(m[1].get("salience", 0.0)))
+    head_text, _head_md = max(members, key=lambda m: float(m[1].get("salience", _DEFAULT_SALIENCE)))
     tag_union = sorted(
         {t for _, md in members for t in (md.get("tags") or []) if isinstance(t, str)}
     )

@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-from ..neocortex.forget import access_times_from_meta, memory_strength
+from ..neocortex.forget import _DEFAULT_SALIENCE, access_times_from_meta, memory_strength
 from ..service import UNCONSOLIDATED
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -85,7 +85,7 @@ async def run(service: MemoryService, *, now: float) -> int:
     # replay budget flows to salient, recent, oft-retrieved traces.
     scored: list[tuple[float, int, str, float]] = []
     for ep_id, _text, md in candidates:
-        sal = float(md.get("salience", 0.0))
+        sal = float(md.get("salience", _DEFAULT_SALIENCE))
         if sal < cfg.dream_replay_min_salience:
             continue
         sid = md.get("session_id")

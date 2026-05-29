@@ -28,7 +28,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 
+from synara.core.errors import ValidationError
 from synara.features.embedding import Embedder
 
 from .metrics import ToolMetrics
@@ -67,6 +69,28 @@ def _instrument(
         return wrapped
 
     return decorator
+
+
+def _translate_errors[R](
+    fn: Callable[..., Awaitable[R]],
+) -> Callable[..., Awaitable[R]]:
+    """Map the service's ``ValidationError`` to FastMCP's ``ToolError``.
+
+    Bad input is an expected, actionable rejection. Raising ``ToolError``
+    routes it through FastMCP's ``FastMCPError`` passthrough so the reason
+    reaches the agent verbatim — unprefixed, traceback-free, and still
+    visible when ``mask_error_details`` is enabled. Any other exception is
+    left untouched for FastMCP's default internal-error handling.
+    """
+
+    @functools.wraps(fn)
+    async def wrapped(*args: Any, **kwargs: Any) -> R:
+        try:
+            return await fn(*args, **kwargs)
+        except ValidationError as exc:
+            raise ToolError(str(exc)) from exc
+
+    return wrapped
 
 
 # Single source of truth for the dashboard's per-tool headline. The
@@ -131,6 +155,7 @@ def register_tools(
         ),
     )
     @_instrument(metrics, "store_episode")
+    @_translate_errors
     async def store_episode(
         content: str,
         session_id: str,
@@ -171,6 +196,7 @@ def register_tools(
         ),
     )
     @_instrument(metrics, "recall_episodes")
+    @_translate_errors
     async def recall_episodes(
         query: str,
         ctx: Context,
@@ -199,6 +225,7 @@ def register_tools(
         ),
     )
     @_instrument(metrics, "consolidate_episodes")
+    @_translate_errors
     async def consolidate_episodes(
         ctx: Context,
         session_id: str | None = None,
@@ -235,6 +262,7 @@ def register_tools(
         ),
     )
     @_instrument(metrics, "forget_episodes")
+    @_translate_errors
     async def forget_episodes(
         ctx: Context,
         strength_floor: float = 0.05,
@@ -273,6 +301,7 @@ def register_tools(
         ),
     )
     @_instrument(metrics, "reflect_session")
+    @_translate_errors
     async def reflect_session(
         session_id: str,
         ctx: Context,
@@ -304,6 +333,7 @@ def register_tools(
         ),
     )
     @_instrument(metrics, "store_semantic_memory")
+    @_translate_errors
     async def store_semantic_memory(
         content: str,
         ctx: Context,
@@ -338,6 +368,7 @@ def register_tools(
         ),
     )
     @_instrument(metrics, "recall_semantic_memory")
+    @_translate_errors
     async def recall_semantic_memory(
         query: str,
         ctx: Context,
@@ -361,6 +392,7 @@ def register_tools(
         ),
     )
     @_instrument(metrics, "memory_stats")
+    @_translate_errors
     async def memory_stats(ctx: Context) -> dict[str, int]:
         result = await service.stats()
         await ctx.debug(f"stats: {result}")

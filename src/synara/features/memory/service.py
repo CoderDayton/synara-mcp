@@ -35,7 +35,7 @@ import logging
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 from simplevecdb import AsyncVectorDB
 
@@ -54,6 +54,7 @@ from .memory_types import (
     MemoryTypeRegistry,
     default_registry,
 )
+from .port import HygieneCounters
 from .tracing import start_request as _start_request
 
 _LOG = logging.getLogger(__name__)
@@ -214,7 +215,7 @@ class MemoryService:
         self._doc_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
             weakref.WeakValueDictionary()
         )
-        self._hygiene_counters: dict[str, int] = {
+        self._hygiene_counters: HygieneCounters = {
             "schemas_promoted": 0,
             "candidates_parked": 0,
             "candidates_rejected_size": 0,
@@ -576,7 +577,7 @@ class MemoryService:
             "schema_candidate_count": await self.schema_candidates.count(),
             "consolidate_epoch": int(self._consolidate_epoch),
         }
-        out.update(self._hygiene_counters)
+        out.update(cast("dict[str, int]", self._hygiene_counters))
         return out
 
     # --------------------------------------------------- operation delegates

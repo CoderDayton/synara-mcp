@@ -156,10 +156,26 @@ class SuccessorRepresentation:
                 # solve. Two passes is the empirical knee where
                 # successive sweeps stop materially moving rows.
                 pass_items = [(i, j) for i, row in self._T_counts.items() for j in row]
-                for _ in range(2):
-                    for i, j in pass_items:
-                        self._td_update(i, j)
+                for i, j in pass_items:
+                    self._td_update(i, j)
+                # Convergence signal: how much the second TD sweep still
+                # moves M. A large fraction means two passes under-resolve
+                # the discounted closure for this graph (see the two-pass
+                # rationale above) — emitted at DEBUG so the approximation
+                # degrading at scale is observable without a Bellman solve.
+                mass_first = sum(abs(v) for row in self._M.values() for v in row.values())
+                for i, j in pass_items:
+                    self._td_update(i, j)
+                mass_second = sum(abs(v) for row in self._M.values() for v in row.values())
                 self._loaded = True
+                delta = abs(mass_second - mass_first)
+                _log.debug(
+                    "SR rebuild: %d edges, %d M-rows; pass-2 L1 mass delta=%.4g (%.2f%% of total)",
+                    len(pass_items),
+                    len(self._M),
+                    delta,
+                    100.0 * delta / (mass_second or 1.0),
+                )
 
     async def flush(self) -> None:
         """Persist any pending edge updates to ``coll.edges``.

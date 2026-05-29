@@ -84,6 +84,51 @@ async def test_replay_zero_gain_when_mean_salience_zero() -> None:
         await db.close()
 
 
+async def test_replay_treats_missing_salience_as_neutral_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An episode whose metadata lacks ``salience`` must be treated as the
+    neutral base (``_DEFAULT_SALIENCE`` = 0.3), so it clears the default
+    replay floor (``dream_replay_min_salience`` = 0.3) — mirroring the
+    consolidation eligibility gate (``_apply_eligibility_gates``).
+
+    Regression: the replay scorer defaulted missing salience to 0.0, so a
+    legacy/externally-inserted episode with no salience field was silently
+    dropped from every replay pass at the default config.
+    """
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        # Two real co-session episodes (so reinforcement's edge writes
+        # satisfy the FK to documents), but presented to the scorer with
+        # metadata that OMITS ``salience`` — the legacy/external-row case.
+        r1 = await svc.encode_episode("alpha trace", "s1")
+        r2 = await svc.encode_episode("beta trace", "s1")
+        candidates = [
+            (
+                int(r1["id"]),
+                "alpha trace",
+                {"session_id": "s1", "consolidated_into": UNCONSOLIDATED},
+            ),
+            (
+                int(r2["id"]),
+                "beta trace",
+                {"session_id": "s1", "consolidated_into": UNCONSOLIDATED},
+            ),
+        ]
+
+        async def _fake_fetch(
+            service: MemoryService, *, scan_cap: int
+        ) -> list[tuple[int, str, dict[str, object]]]:
+            return candidates
+
+        monkeypatch.setattr(replay_mod, "_fetch_candidates", _fake_fetch)
+        reinforced = await replay_mod.run(svc, now=10.0)
+        assert reinforced > 0, "missing-salience episodes were dropped from replay"
+    finally:
+        await db.close()
+
+
 # ---- forget units ----------------------------------------------------
 
 

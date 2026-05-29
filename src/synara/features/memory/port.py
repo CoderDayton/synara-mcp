@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .config import MemoryConfig
@@ -52,7 +52,7 @@ class _Collection(Protocol):
         *,
         limit: int | None = ...,
         offset: int | None = ...,
-    ) -> Sequence[tuple[int, str, dict[str, Any]]]: ...
+    ) -> list[tuple[int, str, dict[str, Any]]]: ...
     async def similarity_search(
         self,
         query: Any,
@@ -77,6 +77,41 @@ class _Collection(Protocol):
         *,
         source: str = ...,
     ) -> None: ...
+    async def flush_pending(self, *, max_batch: int | None = ...) -> int: ...
+    async def rebuild_if_needed(
+        self,
+        *,
+        max_pending: int | None = ...,
+        max_deleted: int | None = ...,
+    ) -> bool: ...
+    async def cluster(
+        self,
+        n_clusters: int | None = ...,
+        algorithm: str = ...,
+        *,
+        filter: dict[str, Any] | None = ...,
+        sample_size: int | None = ...,
+        min_cluster_size: int = ...,
+        random_state: int | None = ...,
+    ) -> Any: ...
+
+
+class HygieneCounters(TypedDict):
+    """Ontology-hygiene tallies surfaced via :meth:`MemoryService.stats`.
+
+    A ``TypedDict`` (not a bare ``dict[str, int]``) so the literal-key
+    increments in ``neocortex/consolidate`` and ``neocortex/forget`` are
+    checked against the known counter set — a mistyped key is a mypy
+    error rather than a silent zero in the stats output.
+    """
+
+    schemas_promoted: int
+    candidates_parked: int
+    candidates_rejected_size: int
+    candidates_rejected_confidence: int
+    candidates_rejected_session_diversity: int
+    candidates_rejected_epoch_diversity: int
+    schemas_evicted_unused: int
 
 
 @runtime_checkable
@@ -89,10 +124,10 @@ class MemoryServicePort(Protocol):
     """
 
     config: MemoryConfig
-    episodic: Any
-    semantic: Any
+    episodic: _Collection
+    semantic: _Collection
     memory_types: MemoryTypeRegistry
-    schema_candidates: Any
+    schema_candidates: _Collection
     # Package-private state that ops/ read or mutate directly on ``self``.
     # They are single-underscore implementation detail of ``MemoryService``
     # but appear here so in-package ops type-check against the abstract
@@ -102,9 +137,9 @@ class MemoryServicePort(Protocol):
     _dg: DGProjector | None
     _replay_cursor: int
     _consolidate_epoch: int
-    _hygiene_counters: dict[str, int]
+    _hygiene_counters: HygieneCounters
 
-    def collection_for(self, kind: MemoryType) -> Any: ...
+    def collection_for(self, kind: MemoryType) -> _Collection: ...
     def _ensure_projector(self, dim: int) -> DGProjector: ...
 
     async def vectorise(self, texts: Sequence[str]) -> list[list[float]] | None: ...
