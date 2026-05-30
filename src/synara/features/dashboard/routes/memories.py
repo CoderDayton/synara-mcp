@@ -17,6 +17,13 @@ from synara.core.errors import ValidationError
 from synara.features.memory import MemoryService
 
 from ..deps import get_service
+from .schemas import (
+    DeleteResult,
+    MemoryBrowse,
+    MemoryDetailResponse,
+    MemorySearch,
+    SemanticDetailResponse,
+)
 
 router = APIRouter(tags=["memories"])
 
@@ -32,7 +39,7 @@ _MAX_OFFSET = 100_000
 _MAX_Q_CHARS = 8_000
 
 
-@router.get("/memories")
+@router.get("/memories", response_model=MemoryBrowse | MemorySearch)
 async def list_memories(
     service: _Service,
     kind: Literal["episodic", "semantic"] = "episodic",
@@ -199,7 +206,7 @@ def _merge_search_hits(
     return merged, mode
 
 
-@router.get("/memories/{episode_id}")
+@router.get("/memories/{episode_id}", response_model=MemoryDetailResponse)
 async def memory_detail(
     service: _Service,
     episode_id: Annotated[int, Path(ge=0)],
@@ -242,7 +249,7 @@ async def memory_detail(
     }
 
 
-@router.get("/semantic/{semantic_id}")
+@router.get("/semantic/{semantic_id}", response_model=SemanticDetailResponse)
 async def semantic_detail(
     service: _Service,
     semantic_id: Annotated[int, Path(ge=0)],
@@ -268,7 +275,7 @@ async def semantic_detail(
     }
 
 
-@router.delete("/memories/{episode_id}")
+@router.delete("/memories/{episode_id}", response_model=DeleteResult)
 async def delete_memory(
     service: _Service,
     episode_id: Annotated[int, Path(ge=0)],

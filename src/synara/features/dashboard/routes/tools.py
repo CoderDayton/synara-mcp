@@ -9,13 +9,14 @@ from fastapi import APIRouter, Depends
 from synara.features.memory import ToolMetrics
 
 from ..deps import get_tool_metrics
+from .schemas import ToolMetricsResponse
 
 router = APIRouter(tags=["tools"])
 
 _Metrics = Annotated[ToolMetrics, Depends(get_tool_metrics)]
 
 
-@router.get("/tool-metrics")
+@router.get("/tool-metrics", response_model=ToolMetricsResponse)
 async def tool_metrics(metrics: _Metrics) -> dict[str, Any]:
     """Snapshot the per-tool call count, last-called time, and p50/p95 latency.
 

@@ -16,7 +16,7 @@ import hashlib
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -32,6 +32,25 @@ from .routes import admin, graph, health, memories, stats
 from .routes import tools as tools_route
 
 _STATIC_DIR = Path(__file__).parent / "static"
+
+# The API routers mounted under /api, in include order. Shared with the
+# offline OpenAPI exporter (openapi_export.py) so the served app and the
+# schema used for TypeScript client codegen can never disagree on which
+# routes/prefixes exist.
+_API_ROUTE_MODULES = (health, stats, memories, graph, admin, tools_route)
+
+
+def include_api_routers(app: FastAPI, *, dependencies: list[Any] | None = None) -> None:
+    """Mount every dashboard API router under ``/api`` on ``app``.
+
+    ``dependencies`` (e.g. the bearer-token guard) is applied to every
+    router; the schema exporter passes none since auth is irrelevant to
+    the response shapes.
+    """
+    deps = dependencies if dependencies is not None else []
+    for module in _API_ROUTE_MODULES:
+        app.include_router(module.router, prefix="/api", dependencies=deps)
+
 
 # Bind addresses that mean "all interfaces" rather than a real Host a
 # client would send. A literal allowlist of these would reject everything.
@@ -316,9 +335,7 @@ def build_dashboard_app(
     )
 
     auth = make_auth_dependency(settings.dashboard)
-    guarded = [Depends(auth)]
-    for module in (health, stats, memories, graph, admin, tools_route):
-        app.include_router(module.router, prefix="/api", dependencies=guarded)
+    include_api_routers(app, dependencies=[Depends(auth)])
 
     # Serve the bundled SPA when it has been built/committed. A source
     # checkout without a build still runs the API; the shell 404s until

@@ -10,6 +10,8 @@ from fastapi import APIRouter, Request
 
 from synara import __version__
 
+from .schemas import HealthResponse
+
 router = APIRouter(tags=["health"])
 
 
@@ -27,7 +29,7 @@ def _redact_db_path(db_path: str) -> str:
     return PurePath(db_path).name or db_path
 
 
-@router.get("/health")
+@router.get("/health", response_model=HealthResponse)
 async def health(request: Request) -> dict[str, Any]:
     state = request.app.state
     settings = state.settings

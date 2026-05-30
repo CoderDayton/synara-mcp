@@ -23,6 +23,9 @@ pre-commit:
     - name: dashboard-build-fresh
       run: uv run --no-sync python scripts/check_dashboard_build.py
 
+    - name: dashboard-api-fresh
+      run: bun --cwd dashboard run gen:api:check
+
     - name: dashboard-typecheck
       glob: "dashboard/**/*.{ts,tsx}"
       run: bun --cwd dashboard run typecheck
@@ -55,6 +58,9 @@ pre-push:
 
     - name: dashboard-build-fresh
       run: uv run --no-sync python scripts/check_dashboard_build.py
+
+    - name: dashboard-api-fresh
+      run: bun --cwd dashboard run gen:api:check
 
     - name: dashboard-typecheck
       run: bun --cwd dashboard run typecheck

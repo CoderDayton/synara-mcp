@@ -12,6 +12,10 @@
  * UI can prompt for it.
  */
 
+import type { components } from "./api-types";
+
+type Schemas = components["schemas"];
+
 const TOKEN_KEY = "synara.dashboard.token";
 
 export function getToken(): string | null {
@@ -127,6 +131,8 @@ function validateStats(raw: unknown): Stats {
   return {
     episodic_count: asNum(raw.episodic_count, "episodic_count"),
     semantic_count: asNum(raw.semantic_count, "semantic_count"),
+    schema_candidate_count: asNum(raw.schema_candidate_count, "schema_candidate_count"),
+    consolidate_epoch: asNum(raw.consolidate_epoch, "consolidate_epoch"),
   };
 }
 
@@ -136,30 +142,38 @@ function validateMemoryList(raw: unknown): MemoryList {
   return raw as unknown as MemoryList;
 }
 
-/* ----------------------------------------------------------- response types */
-
-export interface Health {
-  status: string;
-  version: string;
-  transport: string;
-  db_path: string;
-  embedding_backend: "local" | "remote";
-  embedding_model: string;
-  uptime_seconds: number;
+function validateMemoryDetail(raw: unknown): MemoryDetail {
+  if (!isObj(raw)) fail("expected object");
+  for (const f of ["segments", "sr_transitions", "sr_transitions_in", "plasticity_edges"]) {
+    if (!Array.isArray(raw[f])) fail(`expected ${f}: array`);
+  }
+  return {
+    id: asNum(raw.id, "id"),
+    group_id: asNum(raw.group_id, "group_id"),
+    segments: raw.segments as MemoryDetail["segments"],
+    sr_transitions: raw.sr_transitions as MemoryDetail["sr_transitions"],
+    sr_transitions_in: raw.sr_transitions_in as MemoryDetail["sr_transitions_in"],
+    plasticity_edges: raw.plasticity_edges as MemoryDetail["plasticity_edges"],
+  };
 }
 
-export interface Stats {
-  episodic_count: number;
-  semantic_count: number;
-}
+/* ----------------------------------------------------------- response types
+ *
+ * Thin aliases over the generated `components["schemas"]` (see api-types.ts),
+ * which is produced from the FastAPI `response_model`s. This makes the routes
+ * the single source of truth — the server shape and its TS twin cannot drift.
+ * Regenerate with `bun run gen:api` after changing a route's response_model.
+ * The genuinely open-shaped payloads (`Params`, `ReflectResult`, recall-hit
+ * items) stay hand-typed because a strict schema would drop their open keys.
+ */
+
+export type Health = Schemas["HealthResponse"];
+
+export type Stats = Schemas["StatsResponse"];
 
 export type Params = Record<string, unknown>;
 
-export interface MemoryListItem {
-  id: number;
-  content: string;
-  metadata: Record<string, unknown>;
-}
+export type MemoryListItem = Schemas["MemoryListItem"];
 
 export interface RecallHit {
   id?: number;
@@ -168,138 +182,48 @@ export interface RecallHit {
   [k: string]: unknown;
 }
 
+type MemoryBrowse = Schemas["MemoryBrowse"];
+type MemorySearch = Schemas["MemorySearch"];
+
 /** Which leg of the dashboard search produced the result set.
  *
  *  - `semantic` — only the vector recall returned hits.
  *  - `substring` — recall was empty; the substring fallback found
  *    literal matches (cold-store or mode-mismatch case).
  *  - `hybrid` — both legs contributed; the UI may highlight the overlap.
- *  - `empty` — neither leg matched. */
-export type RecallMode = "semantic" | "substring" | "hybrid" | "empty";
+ *  - `empty` — neither leg matched. Mirrors the server `recall_mode` enum. */
+export type RecallMode = MemorySearch["recall_mode"];
 
+/** Browse arm (`items: MemoryListItem[]`) or search arm. The search arm's
+ *  open hit dicts are typed as `RecallHit` for consumer ergonomics; the
+ *  server keeps them open (`dict[str, Any]`) so no field is dropped. */
 export type MemoryList =
-  | { kind: string; items: MemoryListItem[]; count: number; offset: number }
-  | {
-      kind: string;
-      query: string;
-      items: RecallHit[];
-      count: number;
-      recall_mode: RecallMode;
-    };
+  | MemoryBrowse
+  | (Omit<MemorySearch, "items"> & { items: RecallHit[] });
 
-export interface MemoryDetail {
-  id: number;
-  group_id: number;
-  segments: Array<Record<string, unknown>>;
-  sr_transitions: Array<{ dst: number; count: number }>;
-  plasticity_edges: Array<{
-    src: number;
-    dst: number;
-    weight: number;
-    bonus: number;
-    hits: number;
-  }>;
-}
+export type MemoryDetail = Schemas["MemoryDetailResponse"];
 
-export interface SemanticDetail {
-  id: number;
-  content: string;
-  kind: string;
-  tags: string[];
-  confidence: number;
-  user_asserted: boolean;
-  source_episode_ids: number[];
-  created_at: number;
-  updated_at: number;
-}
+export type SemanticDetail = Schemas["SemanticDetailResponse"];
 
-export interface DeleteResult {
-  deleted_ids: number[];
-  count: number;
-}
+export type DeleteResult = Schemas["DeleteResult"];
 
-export interface EpisodicGraphNode {
-  id: number;
-  key: string;
-  kind: "episodic";
-  label: string;
-  salience: number;
-  retrieval_count: number;
-  session_id: string | null;
-  encoded_at: number;
-  last_accessed: number;
-  consolidated_into: number;
-  group_id: number;
-  segment_count: number;
-  preview: string;
-  is_focus: boolean;
-  /** Stored embedding vector for this episode. The dashboard projects
-   *  these into 2D (UMAP) for the memory map so positions reflect
-   *  semantic locality — the hippocampal cognitive-map analogue.
-   *  Null when the server is pre-enrichment, or when the episode was
-   *  stored without an embedder configured. */
-  embedding: number[] | null;
-}
+export type EpisodicGraphNode = Schemas["EpisodicGraphNode"];
 
-export interface SemanticGraphNode {
-  id: number;
-  key: string;
-  kind: "semantic";
-  label: string;
-  confidence: number;
-  source_count: number;
-  user_asserted: boolean;
-  preview: string;
-  embedding: number[] | null;
-}
+export type SemanticGraphNode = Schemas["SemanticGraphNode"];
 
 export type GraphNode = EpisodicGraphNode | SemanticGraphNode;
 
-export interface SrEdge {
-  src: number;
-  dst: number;
-  hits: number;
-  m: number;
-}
+export type SrEdge = Schemas["SrEdge"];
 
-export interface PlasticityEdge {
-  src: number;
-  dst: number;
-  hits: number;
-  weight: number;
-  bonus: number;
-  strength: number;
-  is_habit: boolean;
-}
+export type PlasticityEdge = Schemas["PlasticityEdge"];
 
-export interface GraphData {
-  nodes: GraphNode[];
-  sr_edges: SrEdge[];
-  plasticity_edges: PlasticityEdge[];
-  consolidation_edges: Array<{ src: number; dst: string }>;
-  omega: number;
-  episode_count: number;
-  focus: number | null;
-  truncated: boolean;
-  semantics_truncated: boolean;
-  /** True when the response came from a pre-enrichment server (the
-   *  process was not restarted after a deploy): nodes arrive as bare
-   *  ids with no salience/SR/plasticity metadata. The UI surfaces this
-   *  instead of silently showing an empty-looking map. */
-  legacy: boolean;
-}
+/** Server graph payload plus the client-derived `legacy` flag that
+ *  `normalizeGraph` sets when talking to a pre-enrichment server. */
+export type GraphData = Schemas["GraphResponse"] & { legacy: boolean };
 
-export interface ForgetResult {
-  candidate_ids: number[];
-  removed: number;
-  dry_run: boolean;
-  scanned: number;
-}
+export type ForgetResult = Schemas["ForgetResult"];
 
-export interface ConsolidateResult {
-  schemas_formed: number;
-  schemas: Array<Record<string, unknown>>;
-}
+export type ConsolidateResult = Schemas["ConsolidateResult"];
 
 export type ReflectResult = Record<string, unknown>;
 
@@ -498,7 +422,8 @@ export const api = {
       validate: validateMemoryList,
     });
   },
-  memoryDetail: (id: number) => request<MemoryDetail>(`/memories/${id}`),
+  memoryDetail: (id: number) =>
+    request<MemoryDetail>(`/memories/${id}`, { validate: validateMemoryDetail }),
   semanticDetail: (id: number) => request<SemanticDetail>(`/semantic/${id}`),
   deleteMemory: (id: number) =>
     request<DeleteResult>(`/memories/${id}`, { method: "DELETE" }),

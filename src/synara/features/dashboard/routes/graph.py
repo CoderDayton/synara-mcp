@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, Query
 from synara.features.memory import MemoryService
 
 from ..deps import get_service
+from .schemas import GraphResponse
 
 router = APIRouter(tags=["graph"])
 
@@ -337,7 +338,7 @@ async def _semantic_overlay(
     return nodes, edges
 
 
-@router.get("/graph")
+@router.get("/graph", response_model=GraphResponse)
 async def sr_graph(
     service: _Service,
     focus: Annotated[int | None, Query(ge=0)] = None,

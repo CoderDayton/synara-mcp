@@ -177,6 +177,22 @@ function EpisodicBody({
 
           <section>
             <h3 className="eyebrow mb-2">
+              Incoming transitions · {data.sr_transitions_in.length}
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {data.sr_transitions_in.length === 0 && (
+                <span className="text-xs text-muted-foreground">none</span>
+              )}
+              {data.sr_transitions_in.map((t) => (
+                <Badge key={t.src} variant="outline" className="font-mono">
+                  #{t.src} → ×{t.count}
+                </Badge>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <h3 className="eyebrow mb-2">
               Plasticity · {data.plasticity_edges.length}
             </h3>
             <div className="space-y-1 font-mono text-xs text-muted-foreground">

@@ -1,0 +1,1564 @@
+{
+  "components": {
+    "schemas": {
+      "ConsolidateBody": {
+        "properties": {
+          "min_cluster_size": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Cluster Size"
+          },
+          "n_clusters": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Clusters"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "title": "ConsolidateBody",
+        "type": "object"
+      },
+      "ConsolidateResult": {
+        "properties": {
+          "schemas": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Schemas",
+            "type": "array"
+          },
+          "schemas_formed": {
+            "title": "Schemas Formed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemas_formed",
+          "schemas"
+        ],
+        "title": "ConsolidateResult",
+        "type": "object"
+      },
+      "ConsolidationEdge": {
+        "properties": {
+          "dst": {
+            "title": "Dst",
+            "type": "string"
+          },
+          "src": {
+            "title": "Src",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "src",
+          "dst"
+        ],
+        "title": "ConsolidationEdge",
+        "type": "object"
+      },
+      "DeleteResult": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "deleted_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Deleted Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "deleted_ids",
+          "count"
+        ],
+        "title": "DeleteResult",
+        "type": "object"
+      },
+      "EpisodicGraphNode": {
+        "properties": {
+          "consolidated_into": {
+            "title": "Consolidated Into",
+            "type": "integer"
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding"
+          },
+          "encoded_at": {
+            "title": "Encoded At",
+            "type": "number"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "is_focus": {
+            "title": "Is Focus",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "const": "episodic",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "last_accessed": {
+            "title": "Last Accessed",
+            "type": "number"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "retrieval_count": {
+            "title": "Retrieval Count",
+            "type": "integer"
+          },
+          "salience": {
+            "title": "Salience",
+            "type": "number"
+          },
+          "segment_count": {
+            "title": "Segment Count",
+            "type": "integer"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "kind",
+          "label",
+          "salience",
+          "retrieval_count",
+          "session_id",
+          "encoded_at",
+          "last_accessed",
+          "consolidated_into",
+          "group_id",
+          "segment_count",
+          "preview",
+          "is_focus",
+          "embedding"
+        ],
+        "title": "EpisodicGraphNode",
+        "type": "object"
+      },
+      "ForgetBody": {
+        "properties": {
+          "decay_tau_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decay Tau Seconds"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "max_scan": {
+            "default": 1000,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Max Scan",
+            "type": "integer"
+          },
+          "strength_floor": {
+            "default": 0.05,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Strength Floor",
+            "type": "number"
+          }
+        },
+        "title": "ForgetBody",
+        "type": "object"
+      },
+      "ForgetResult": {
+        "properties": {
+          "candidate_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Candidate Ids",
+            "type": "array"
+          },
+          "cold_schema_candidate_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Cold Schema Candidate Ids",
+            "type": "array"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "removed": {
+            "title": "Removed",
+            "type": "integer"
+          },
+          "scanned": {
+            "title": "Scanned",
+            "type": "integer"
+          },
+          "schemas_removed": {
+            "title": "Schemas Removed",
+            "type": "integer"
+          },
+          "schemas_scanned": {
+            "title": "Schemas Scanned",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "candidate_ids",
+          "removed",
+          "dry_run",
+          "scanned",
+          "schemas_scanned",
+          "cold_schema_candidate_ids",
+          "schemas_removed"
+        ],
+        "title": "ForgetResult",
+        "type": "object"
+      },
+      "GraphResponse": {
+        "properties": {
+          "consolidation_edges": {
+            "items": {
+              "$ref": "#/components/schemas/ConsolidationEdge"
+            },
+            "title": "Consolidation Edges",
+            "type": "array"
+          },
+          "episode_count": {
+            "title": "Episode Count",
+            "type": "integer"
+          },
+          "focus": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focus"
+          },
+          "nodes": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "episodic": "#/components/schemas/EpisodicGraphNode",
+                  "semantic": "#/components/schemas/SemanticGraphNode"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/EpisodicGraphNode"
+                },
+                {
+                  "$ref": "#/components/schemas/SemanticGraphNode"
+                }
+              ]
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "omega": {
+            "title": "Omega",
+            "type": "number"
+          },
+          "plasticity_edges": {
+            "items": {
+              "$ref": "#/components/schemas/PlasticityEdge"
+            },
+            "title": "Plasticity Edges",
+            "type": "array"
+          },
+          "semantics_truncated": {
+            "title": "Semantics Truncated",
+            "type": "boolean"
+          },
+          "sr_edges": {
+            "items": {
+              "$ref": "#/components/schemas/SrEdge"
+            },
+            "title": "Sr Edges",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "nodes",
+          "sr_edges",
+          "plasticity_edges",
+          "consolidation_edges",
+          "omega",
+          "episode_count",
+          "focus",
+          "truncated",
+          "semantics_truncated"
+        ],
+        "title": "GraphResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "db_path": {
+            "title": "Db Path",
+            "type": "string"
+          },
+          "embedding_backend": {
+            "enum": [
+              "local",
+              "remote"
+            ],
+            "title": "Embedding Backend",
+            "type": "string"
+          },
+          "embedding_model": {
+            "title": "Embedding Model",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "transport": {
+            "title": "Transport",
+            "type": "string"
+          },
+          "uptime_seconds": {
+            "title": "Uptime Seconds",
+            "type": "number"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version",
+          "transport",
+          "db_path",
+          "embedding_backend",
+          "embedding_model",
+          "uptime_seconds"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "MemoryBrowse": {
+        "description": "``GET /memories`` without ``q`` \u2014 paginated raw listing.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "items",
+          "count",
+          "offset"
+        ],
+        "title": "MemoryBrowse",
+        "type": "object"
+      },
+      "MemoryDetailResponse": {
+        "properties": {
+          "group_id": {
+            "title": "Group Id",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "plasticity_edges": {
+            "items": {
+              "$ref": "#/components/schemas/PlasticityEdgeDetail"
+            },
+            "title": "Plasticity Edges",
+            "type": "array"
+          },
+          "segments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "sr_transitions": {
+            "items": {
+              "$ref": "#/components/schemas/SrTransition"
+            },
+            "title": "Sr Transitions",
+            "type": "array"
+          },
+          "sr_transitions_in": {
+            "items": {
+              "$ref": "#/components/schemas/SrTransitionIn"
+            },
+            "title": "Sr Transitions In",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "group_id",
+          "segments",
+          "sr_transitions",
+          "sr_transitions_in",
+          "plasticity_edges"
+        ],
+        "title": "MemoryDetailResponse",
+        "type": "object"
+      },
+      "MemoryListItem": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "content",
+          "metadata"
+        ],
+        "title": "MemoryListItem",
+        "type": "object"
+      },
+      "MemorySearch": {
+        "description": "``GET /memories?q=`` \u2014 hybrid recall + substring search.\n\nHit items carry open keys (distance, score, source, metadata,\nsubstring_offset) so they stay ``dict[str, Any]`` \u2014 modelling them\nstrictly would drop fields the UI relies on.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "recall_mode": {
+            "enum": [
+              "semantic",
+              "substring",
+              "hybrid",
+              "empty"
+            ],
+            "title": "Recall Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "query",
+          "items",
+          "count",
+          "recall_mode"
+        ],
+        "title": "MemorySearch",
+        "type": "object"
+      },
+      "PlasticityEdge": {
+        "properties": {
+          "bonus": {
+            "title": "Bonus",
+            "type": "number"
+          },
+          "dst": {
+            "title": "Dst",
+            "type": "integer"
+          },
+          "hits": {
+            "title": "Hits",
+            "type": "integer"
+          },
+          "is_habit": {
+            "title": "Is Habit",
+            "type": "boolean"
+          },
+          "src": {
+            "title": "Src",
+            "type": "integer"
+          },
+          "strength": {
+            "title": "Strength",
+            "type": "number"
+          },
+          "weight": {
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "src",
+          "dst",
+          "hits",
+          "weight",
+          "bonus",
+          "strength",
+          "is_habit"
+        ],
+        "title": "PlasticityEdge",
+        "type": "object"
+      },
+      "PlasticityEdgeDetail": {
+        "properties": {
+          "bonus": {
+            "title": "Bonus",
+            "type": "number"
+          },
+          "dst": {
+            "title": "Dst",
+            "type": "integer"
+          },
+          "hits": {
+            "title": "Hits",
+            "type": "integer"
+          },
+          "src": {
+            "title": "Src",
+            "type": "integer"
+          },
+          "weight": {
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "src",
+          "dst",
+          "weight",
+          "bonus",
+          "hits"
+        ],
+        "title": "PlasticityEdgeDetail",
+        "type": "object"
+      },
+      "ReflectBody": {
+        "properties": {
+          "k": {
+            "default": 5,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "K",
+            "type": "integer"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ReflectBody",
+        "type": "object"
+      },
+      "SemanticDetailResponse": {
+        "properties": {
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "source_episode_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Source Episode Ids",
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "number"
+          },
+          "user_asserted": {
+            "title": "User Asserted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "content",
+          "kind",
+          "tags",
+          "confidence",
+          "user_asserted",
+          "source_episode_ids",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SemanticDetailResponse",
+        "type": "object"
+      },
+      "SemanticGraphNode": {
+        "properties": {
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "const": "semantic",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "preview": {
+            "title": "Preview",
+            "type": "string"
+          },
+          "source_count": {
+            "title": "Source Count",
+            "type": "integer"
+          },
+          "user_asserted": {
+            "title": "User Asserted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "kind",
+          "label",
+          "confidence",
+          "source_count",
+          "user_asserted",
+          "preview",
+          "embedding"
+        ],
+        "title": "SemanticGraphNode",
+        "type": "object"
+      },
+      "SrEdge": {
+        "properties": {
+          "dst": {
+            "title": "Dst",
+            "type": "integer"
+          },
+          "hits": {
+            "title": "Hits",
+            "type": "integer"
+          },
+          "m": {
+            "title": "M",
+            "type": "number"
+          },
+          "src": {
+            "title": "Src",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "src",
+          "dst",
+          "hits",
+          "m"
+        ],
+        "title": "SrEdge",
+        "type": "object"
+      },
+      "SrTransition": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "dst": {
+            "title": "Dst",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dst",
+          "count"
+        ],
+        "title": "SrTransition",
+        "type": "object"
+      },
+      "SrTransitionIn": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "src": {
+            "title": "Src",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "src",
+          "count"
+        ],
+        "title": "SrTransitionIn",
+        "type": "object"
+      },
+      "StatsResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "consolidate_epoch": {
+            "title": "Consolidate Epoch",
+            "type": "integer"
+          },
+          "episodic_count": {
+            "title": "Episodic Count",
+            "type": "integer"
+          },
+          "schema_candidate_count": {
+            "title": "Schema Candidate Count",
+            "type": "integer"
+          },
+          "semantic_count": {
+            "title": "Semantic Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "episodic_count",
+          "semantic_count",
+          "schema_candidate_count",
+          "consolidate_epoch"
+        ],
+        "title": "StatsResponse",
+        "type": "object"
+      },
+      "ToolMetricRow": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "error_count": {
+            "title": "Error Count",
+            "type": "integer"
+          },
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "last_called_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Called At"
+          },
+          "last_duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Duration Seconds"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "p50_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50 Ms"
+          },
+          "p95_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Ms"
+          }
+        },
+        "required": [
+          "name",
+          "headline",
+          "count",
+          "error_count",
+          "last_called_at",
+          "last_duration_seconds",
+          "p50_ms",
+          "p95_ms"
+        ],
+        "title": "ToolMetricRow",
+        "type": "object"
+      },
+      "ToolMetricsResponse": {
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolMetricRow"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools"
+        ],
+        "title": "ToolMetricsResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Synara Dashboard",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/admin/consolidate": {
+      "post": {
+        "operationId": "admin_consolidate_api_admin_consolidate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsolidateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsolidateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Consolidate",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/forget": {
+      "post": {
+        "operationId": "admin_forget_api_admin_forget_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgetBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForgetResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Forget",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/reflect": {
+      "post": {
+        "operationId": "admin_reflect_api_admin_reflect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReflectBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Reflect Api Admin Reflect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Reflect",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/graph": {
+      "get": {
+        "operationId": "sr_graph_api_graph_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "focus",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Focus"
+            }
+          },
+          {
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 3,
+              "minimum": 1,
+              "title": "Depth",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_nodes",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Max Nodes",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sr Graph",
+        "tags": [
+          "graph"
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/memories": {
+      "get": {
+        "operationId": "list_memories_api_memories_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "default": "episodic",
+              "enum": [
+                "episodic",
+                "semantic"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 8000,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/MemoryBrowse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MemorySearch"
+                    }
+                  ],
+                  "title": "Response List Memories Api Memories Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Memories",
+        "tags": [
+          "memories"
+        ]
+      }
+    },
+    "/api/memories/{episode_id}": {
+      "delete": {
+        "operationId": "delete_memory_api_memories__episode_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "episode_id",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "title": "Episode Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Memory",
+        "tags": [
+          "memories"
+        ]
+      },
+      "get": {
+        "operationId": "memory_detail_api_memories__episode_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "episode_id",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "title": "Episode Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Memory Detail",
+        "tags": [
+          "memories"
+        ]
+      }
+    },
+    "/api/params": {
+      "get": {
+        "description": "Effective MemoryConfig snapshot.\n\nRead-only: ``MemoryConfig`` is frozen; live mutation would require\nrebuilding SR/plasticity and is deliberately out of scope here.",
+        "operationId": "params_api_params_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Params Api Params Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Params",
+        "tags": [
+          "stats"
+        ]
+      }
+    },
+    "/api/semantic/{semantic_id}": {
+      "get": {
+        "operationId": "semantic_detail_api_semantic__semantic_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "semantic_id",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "title": "Semantic Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SemanticDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Detail",
+        "tags": [
+          "memories"
+        ]
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "operationId": "stats_api_stats_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Stats",
+        "tags": [
+          "stats"
+        ]
+      }
+    },
+    "/api/tool-metrics": {
+      "get": {
+        "description": "Snapshot the per-tool call count, last-called time, and p50/p95 latency.\n\nTool list is server-authoritative: every tool declared on the\ncollector at server start appears here even if it hasn't been\ncalled yet (``count=0``, latency fields ``null``), so the dashboard\ncan render the full surface on the first poll.",
+        "operationId": "tool_metrics_api_tool_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolMetricsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Tool Metrics",
+        "tags": [
+          "tools"
+        ]
+      }
+    }
+  }
+}

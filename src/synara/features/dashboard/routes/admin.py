@@ -17,6 +17,7 @@ from synara.core.errors import ValidationError
 from synara.features.memory import MemoryService
 
 from ..deps import get_service
+from .schemas import ConsolidateResult, ForgetResult
 
 router = APIRouter(tags=["admin"], prefix="/admin")
 
@@ -42,7 +43,7 @@ class ReflectBody(BaseModel):
     k: int = Field(default=5, ge=1, le=100)
 
 
-@router.post("/consolidate")
+@router.post("/consolidate", response_model=ConsolidateResult)
 async def admin_consolidate(service: _Service, body: ConsolidateBody) -> dict[str, Any]:
     try:
         formed = await service.consolidate(
@@ -57,7 +58,7 @@ async def admin_consolidate(service: _Service, body: ConsolidateBody) -> dict[st
     return {"schemas_formed": len(formed), "schemas": formed}
 
 
-@router.post("/forget")
+@router.post("/forget", response_model=ForgetResult)
 async def admin_forget(service: _Service, body: ForgetBody) -> dict[str, Any]:
     try:
         return await service.forget(

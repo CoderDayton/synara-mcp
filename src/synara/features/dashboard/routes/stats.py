@@ -10,13 +10,14 @@ from fastapi import APIRouter, Depends
 from synara.features.memory import MemoryService
 
 from ..deps import get_service
+from .schemas import StatsResponse
 
 router = APIRouter(tags=["stats"])
 
 _Service = Annotated[MemoryService, Depends(get_service)]
 
 
-@router.get("/stats")
+@router.get("/stats", response_model=StatsResponse)
 async def stats(service: _Service) -> dict[str, int]:
     return await service.stats()
 

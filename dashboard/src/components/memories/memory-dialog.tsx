@@ -5,7 +5,7 @@
  *
  * View-only. Editing affordance is intentionally deferred.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMemoryDetail, useSemanticDetail } from "@/lib/queries";
 import type { GraphNode } from "@/lib/api";
 import { relativeTime, shortSession } from "@/lib/format";
@@ -167,13 +167,13 @@ export function MemoryDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  // Pin the node while the close animation plays — otherwise the title
-  // and body flash to empty when `selected` is cleared upstream.
-  const [pinned, setPinned] = useState<GraphNode | null>(node);
-  useEffect(() => {
-    if (node) setPinned(node);
-  }, [node]);
-  const view = pinned;
+  // Pin the node while the close animation plays — otherwise the title and
+  // body flash to empty when `selected` is cleared upstream. Sync the last
+  // non-null node during render (React's "information from previous renders"
+  // idiom) — guarded so it can't loop, and avoiding an effect that would
+  // cascade an extra render.
+  const [view, setView] = useState<GraphNode | null>(node);
+  if (node && node !== view) setView(node);
   const titleKind =
     view?.kind === "semantic"
       ? view.user_asserted
@@ -182,7 +182,7 @@ export function MemoryDialog({
       : "Episode";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-full sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="font-mono text-sm uppercase tracking-wider">
             {titleKind}
