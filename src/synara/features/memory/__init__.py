@@ -39,6 +39,7 @@ from .memory_types import (
 )
 from .metrics import ToolMetrics, ToolSnapshot
 from .port import MemoryServicePort
+from .resources import register_resources
 from .service import EmbedBatchFn, EmbedFn, MemoryConfig, MemoryService
 from .tools import register_tools
 from .tracing import RequestContext, start_request
@@ -92,4 +93,5 @@ def register(
         embed_batch_fn=embed_batch_fn,
     )
     register_tools(mcp, service, embedder=embedder, metrics=metrics)
+    register_resources(mcp, service, embedder=embedder, metrics=metrics)
     return service

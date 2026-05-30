@@ -63,6 +63,7 @@ async def run(
     session_id: str | None = None,
     k: int = 8,
     mode: str = "auto",
+    reinforce: bool,
 ) -> list[dict[str, Any]]:
     # Validate before the ``k <= 0`` short-circuit: an empty/oversized
     # query or unknown mode is always a programmer error, regardless of
@@ -124,7 +125,10 @@ async def run(
                 "metadata": md,
             }
         )
-        if source == "episodic" and doc_id >= 0:
+        # ``reinforce=False`` (ambient resource reads) makes recall a
+        # pure read: no retrieval_count bump and — since the SR block
+        # below guards on ``observed_episodic`` — no SR/plasticity update.
+        if reinforce and source == "episodic" and doc_id >= 0:
             await service.bump_retrieval(doc_id, md)
             sid = str(md.get("session_id", "")) if md else ""
             if sid:

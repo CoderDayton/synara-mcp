@@ -667,6 +667,39 @@ class MemoryService:
         k: int = 8,
         mode: str = "auto",
     ) -> list[dict[str, Any]]:
+        return await self._recall(
+            query=query, session_id=session_id, k=k, mode=mode, reinforce=True
+        )
+
+    async def recall_readonly(
+        self,
+        query: str,
+        *,
+        session_id: str | None = None,
+        k: int = 8,
+        mode: str = "auto",
+    ) -> list[dict[str, Any]]:
+        """Non-reinforcing recall for GET-like entry points (MCP resource reads).
+
+        Same ranked pipeline as :meth:`recall`, but it does not bump
+        ``retrieval_count``, update the SR/plasticity graph, or emit an
+        interaction event (so it never appends to the durable event log
+        or advances dream pressure). A host may prefetch, cache, or poll
+        a resource, so a read must not mutate durable memory state.
+        """
+        return await self._recall(
+            query=query, session_id=session_id, k=k, mode=mode, reinforce=False
+        )
+
+    async def _recall(
+        self,
+        *,
+        query: str,
+        session_id: str | None,
+        k: int,
+        mode: str,
+        reinforce: bool,
+    ) -> list[dict[str, Any]]:
         await self._ensure_sr_loaded()
         await self._ensure_index_ready()
         with _start_request("recall", enabled=self.config.tracing_enabled) as _trace_ctx:
@@ -680,14 +713,21 @@ class MemoryService:
                     session_id=session_id,
                     k=k,
                     mode=mode,
+                    reinforce=reinforce,
                 )
             if self.config.tracing_enabled:
                 self.last_trace = _trace_ctx.as_dict()
-        await self._emit(
-            "recall",
-            session_id=session_id,
-            payload={"hits": len(result), "mode": mode},
-        )
+        if reinforce:
+            # A read-only recall is GET-like: it must not append to the
+            # durable interaction log or advance dream pressure
+            # (events_since_dream), or a host that prefetches/polls the
+            # resource could trip background replay unbidden — making
+            # memory dynamics depend on host I/O, not agent cognition.
+            await self._emit(
+                "recall",
+                session_id=session_id,
+                payload={"hits": len(result), "mode": mode},
+            )
         return result
 
     async def consolidate(

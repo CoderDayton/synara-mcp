@@ -89,7 +89,7 @@ It binds `127.0.0.1:8765` by default — open <http://127.0.0.1:8765>. On loopba
 | `reflect_session` | Summarise a session's episodes |
 | `store_semantic_memory` | Store a durable semantic fact |
 | `recall_semantic_memory` | Retrieve semantic facts |
-| `memory_stats` | Episodic and semantic memory counts |
+| `memory_stats` | Memory counts, consolidation epoch, and ontology-hygiene tallies (schemas promoted/evicted, candidates parked/rejected) |
 
 ---
 
@@ -113,7 +113,7 @@ Most agents won't call memory tools on their own. Drop a few lines into your `CL
 
 **Storage is local.** Memory lives in a `simplevecdb` file under your cache directory and embeddings run on-device by default. If `SYNARA_EMBEDDING_URL` is set, that endpoint is the only external service that sees your text; the API key is read from the environment and never logged. Set `SYNARA_DB_PATH=:memory:` for an ephemeral store.
 
-**Defaults are safe.** Invalid configuration is rejected at startup rather than silently ignored. `forget_episodes` is dry-run by default, so deletions are previewed before they apply. Tool inputs (`content`, `tags`, `k`, `session_id`) and remote embedding responses are size-capped to prevent memory exhaustion.
+**Defaults are safe.** Invalid configuration is rejected at startup rather than silently ignored. `forget_episodes` is dry-run by default, so deletions are previewed before they apply. Tool inputs (`content`, `tags`, `k`, `session_id`) and remote embedding responses are size-capped to prevent memory exhaustion. Invalid tool input is rejected with an actionable message that reaches the agent verbatim — even when FastMCP error masking is enabled.
 
 ---
 
