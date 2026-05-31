@@ -520,6 +520,57 @@ class MemoryService:
         items.sort(key=lambda r: r["position"])
         return items
 
+    async def get_episode(
+        self,
+        episode_id: int,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one episode's full, untruncated content by id.
+
+        The companion to bounded :meth:`recall` snippets. A theta-segmented
+        episode is reassembled from its ordered sub-records, so the caller
+        gets the whole original text rather than a single 1024-char
+        segment. ``session_id`` (optional) restricts the group walk to a
+        namespace; omit it for a cross-session fetch. A segmented episode
+        whose group is not visible in the given ``session_id`` raises
+        rather than returning a single unreassembled segment.
+        """
+        target = await self.episodic.get_documents({"id": episode_id})
+        if not target:
+            raise ValidationError(f"episode {episode_id} not found")
+        _doc_id, text, md = target[0]
+        group_id = md.get("episode_group_id")
+        if group_id is not None:
+            members = await self.fetch_episode_group(int(group_id), session_id=session_id)
+            if not members:
+                # The episode is segmented (it carries ``episode_group_id``)
+                # but the scoped walk returned nothing — ``session_id``
+                # excluded the whole group. Falling through to return the
+                # single matched segment would pass a fragment off as the
+                # whole episode; fail honestly instead.
+                raise ValidationError(
+                    f"episode {episode_id} belongs to group {group_id} "
+                    f"not visible in session {session_id!r}"
+                )
+            content = "".join(m["content"] for m in members)
+            return {
+                "id": episode_id,
+                "content": content,
+                "content_chars": len(content),
+                "metadata": md,
+                "group_id": int(group_id),
+                "segment_ids": [int(m["id"]) for m in members],
+            }
+        return {
+            "id": episode_id,
+            "content": text,
+            "content_chars": len(text),
+            "metadata": md,
+            "group_id": None,
+            "segment_ids": None,
+        }
+
     async def delete_episode(
         self,
         episode_id: int,
@@ -666,9 +717,17 @@ class MemoryService:
         session_id: str | None = None,
         k: int = 8,
         mode: str = "auto",
+        scope_session: bool = False,
+        tags: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         return await self._recall(
-            query=query, session_id=session_id, k=k, mode=mode, reinforce=True
+            query=query,
+            session_id=session_id,
+            k=k,
+            mode=mode,
+            scope_session=scope_session,
+            tags=tags,
+            reinforce=True,
         )
 
     async def recall_readonly(
@@ -699,6 +758,8 @@ class MemoryService:
         k: int,
         mode: str,
         reinforce: bool,
+        scope_session: bool = False,
+        tags: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         await self._ensure_sr_loaded()
         await self._ensure_index_ready()
@@ -713,6 +774,8 @@ class MemoryService:
                     session_id=session_id,
                     k=k,
                     mode=mode,
+                    scope_session=scope_session,
+                    tags=tags,
                     reinforce=reinforce,
                 )
             if self.config.tracing_enabled:
@@ -803,6 +866,15 @@ class MemoryService:
     # direct lane that bypasses the episodic pipeline — for authored
     # facts, procedures, preferences, and conventions that should persist
     # without raw-trace baggage.
+    async def _validate_supersedes(self, supersedes: int | None) -> None:
+        """Reject a ``supersedes`` target that is malformed or absent."""
+        if supersedes is None:
+            return
+        if supersedes < 0:
+            raise ValidationError("supersedes must be a non-negative id")
+        if not await self.semantic.get_documents({"id": supersedes}):
+            raise ValidationError(f"supersedes id {supersedes} not found in semantic store")
+
     async def store_semantic_memory(
         self,
         content: str,
@@ -810,6 +882,7 @@ class MemoryService:
         kind: str = "fact",
         tags: Sequence[str] | None = None,
         confidence: float = 1.0,
+        supersedes: int | None = None,
     ) -> dict[str, Any]:
         if not content.strip():
             raise ValidationError("content must be non-empty")
@@ -829,6 +902,7 @@ class MemoryService:
                     raise ValidationError(
                         f"tag exceeds max_tag_chars ({self.config.max_tag_chars})"
                     )
+        await self._validate_supersedes(supersedes)
 
         now = now_seconds()
         tag_list = sorted({t for t in (tags or []) if isinstance(t, str) and t})
@@ -857,12 +931,27 @@ class MemoryService:
             with contextlib.suppress(Exception):
                 await self.semantic.delete_by_ids([sem_id])
             raise
+        if supersedes is not None:
+            # Retire the stale entry so the correction replaces it instead
+            # of layering: both would otherwise keep surfacing in recall.
+            # Existence was validated above, before the new insert. If the
+            # retire fails we'd be left with BOTH entries layered — the very
+            # state supersedes exists to prevent — so roll the new insert
+            # back and re-raise, restoring the pre-call state for a clean
+            # retry (mirrors the metadata-patch rollback above).
+            try:
+                await self.semantic.delete_by_ids([supersedes])
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await self.semantic.delete_by_ids([sem_id])
+                raise
         return {
             "id": sem_id,
             "kind": kind,
             "tags": tag_list,
             "confidence": float(confidence),
             "created_at": now,
+            "superseded": supersedes,
         }
 
     async def recall_semantic_memory(

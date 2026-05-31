@@ -12,6 +12,7 @@ The pipeline is:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _Hit = tuple[int, str, dict[str, Any], float, str]
 
 _VALID_MODES = frozenset({"auto", "episodic", "semantic", "hybrid"})
+
+_LOG = logging.getLogger(__name__)
+
+# Cosine distance ceiling (1 - cos for opposed unit vectors is 2.0). Used
+# as the published fallback for a non-finite distance so a hit never
+# surfaces with an unrankable ``null`` score.
+_MAX_COSINE_DISTANCE = 2.0
 
 
 def _validate_recall_inputs(
@@ -63,6 +71,8 @@ async def run(
     session_id: str | None = None,
     k: int = 8,
     mode: str = "auto",
+    scope_session: bool = False,
+    tags: list[str] | None = None,
     reinforce: bool,
 ) -> list[dict[str, Any]]:
     # Validate before the ``k <= 0`` short-circuit: an empty/oversized
@@ -80,6 +90,17 @@ async def run(
     # on the simplevecdb search. Callers that want strict per-session
     # results should post-filter the returned list themselves.
     ep_filter: dict[str, Any] | None = None
+    # Opt-in hard scoping (P1). ``session_id`` stays a ranking hint by
+    # default; ``scope_session`` promotes it to a filter, and ``tags``
+    # restricts episodic hits to traces carrying every requested tag.
+    # Tags are stored as a list, so this is a Python post-filter over an
+    # over-fetched candidate set (mirroring ``recall_semantic_memory``)
+    # rather than a simplevecdb metadata filter, keeping cosine order the
+    # final arbiter. Semantic (gist) hits are cross-session by design and
+    # are never scoped out.
+    tagset = frozenset(tags) if tags else None
+    filtering = scope_session or bool(tagset)
+    fetch_k = max(k * 4, 32) if filtering else k
     with _trace_span("query_arg"):
         q = await service.query_arg(query)
     # CA3 iterative pattern completion: refine the query by
@@ -106,7 +127,23 @@ async def run(
             q = completed
 
     with _trace_span("merge_hits"):
-        merged = await _merge_hits(service, q, mode=mode, k=k, ep_filter=ep_filter)
+        merged = await _merge_hits(service, q, mode=mode, k=fetch_k, ep_filter=ep_filter)
+    if filtering:
+        ep_before = sum(1 for row in merged if row[4] == "episodic")
+        merged = [
+            row
+            for row in merged
+            if row[4] != "episodic"
+            or _passes_scope(
+                row[2], session_id=session_id, scope_session=scope_session, tags=tagset
+            )
+        ]
+        _log_scope_cap(
+            fetch_k=fetch_k,
+            ep_before=ep_before,
+            ep_after=sum(1 for row in merged if row[4] == "episodic"),
+            k=k,
+        )
     with _trace_span("sr_rank"):
         rank_keys = await _sr_rank_keys(service, merged, caller_sid=session_id)
     # Key by (doc_id, source) instead of object identity: stable across
@@ -120,7 +157,12 @@ async def run(
             {
                 "id": doc_id,
                 "content": text,
-                "distance": dist,
+                # A non-finite cosine distance (NaN from a degenerate /
+                # zero-norm stored vector) would serialise to JSON ``null``
+                # and leave the hit unrankable against scored ones. Publish
+                # the cosine ceiling instead so it stays comparable (and
+                # sorts last, which the SR rank already enforces).
+                "distance": dist if math.isfinite(dist) else _MAX_COSINE_DISTANCE,
                 "source": source,
                 "metadata": md,
             }
@@ -170,6 +212,57 @@ async def run(
             cue = q if isinstance(q, list) else None
             await _accrue_drift(service, anchor_row, t=t, cue=cue)
     return out
+
+
+def _log_scope_cap(*, fetch_k: int, ep_before: int, ep_after: int, k: int) -> None:
+    """Make a scoped-recall under-return visible in logs.
+
+    Scoping post-filters a cosine-bounded candidate set (``fetch_k``), not
+    the DB query, so a matching trace ranked beyond ``fetch_k`` is silently
+    absent. A saturated raw fetch (``ep_before >= fetch_k``) leaving fewer
+    survivors than ``k`` is the tell that matches may lie beyond the cap;
+    log it at ``info`` so the under-return reads as "capped", not "nothing
+    else matched". Otherwise emit a ``debug`` breadcrumb of the counts.
+    """
+    if ep_before >= fetch_k and ep_after < k:
+        _LOG.info(
+            "scoped recall capped: fetch_k=%d saturated, kept %d/%d episodic "
+            "after filter; matches beyond the cap are not returned",
+            fetch_k,
+            ep_after,
+            ep_before,
+        )
+    else:
+        _LOG.debug(
+            "scoped recall: fetch_k=%d episodic_candidates=%d kept=%d k=%d",
+            fetch_k,
+            ep_before,
+            ep_after,
+            k,
+        )
+
+
+def _passes_scope(
+    md: dict[str, Any] | None,
+    *,
+    session_id: str | None,
+    scope_session: bool,
+    tags: frozenset[str] | None,
+) -> bool:
+    """True if an episodic hit satisfies the opt-in recall scope.
+
+    ``scope_session`` keeps only hits whose ``session_id`` matches the
+    caller's; ``tags`` keeps only hits whose stored tag list is a
+    superset of every requested tag.
+    """
+    md = md or {}
+    if scope_session and session_id is not None and str(md.get("session_id", "")) != session_id:
+        return False
+    if tags:
+        hit_tags = {str(t) for t in (md.get("tags") or [])}
+        if not tags.issubset(hit_tags):
+            return False
+    return True
 
 
 def _cosine_score_from_distance(dist: float | None) -> float:

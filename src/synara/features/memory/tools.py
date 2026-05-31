@@ -100,6 +100,7 @@ def _translate_errors[R](
 _TOOL_HEADLINES: dict[str, str] = {
     "store_episode": "encode an episodic trace",
     "recall_episodes": "cross-session episodic recall",
+    "get_episode": "fetch full episode by id",
     "consolidate_episodes": "cluster traces → schemas",
     "forget_episodes": "power-law decay prune",
     "reflect_session": "summarise a session",
@@ -117,6 +118,12 @@ _SID = (
     "scopes dedup, consolidate, and reflect. Semantic store ignores it."
 )
 
+# Namespace used when a caller omits ``session_id`` on store. Episodic
+# recall is always cross-session, so an un-namespaced store is still
+# fully recallable; the default just gives dedup/consolidate/reflect a
+# stable bucket instead of forcing the caller to invent one.
+_DEFAULT_SESSION_ID = "default"
+
 
 async def _ensure_warmed(embedder: Embedder | None, ctx: Context) -> None:
     """Warmup embedder with progress reporting on first call."""
@@ -125,7 +132,34 @@ async def _ensure_warmed(embedder: Embedder | None, ctx: Context) -> None:
     await embedder.warmup_async(ctx)
 
 
-def register_tools(
+def _apply_snippet(
+    hits: list[dict[str, Any]], *, max_chars: int, full: bool
+) -> list[dict[str, Any]]:
+    """Bound the per-hit ``content`` so a recall can't blow the caller's
+    tool-result token budget.
+
+    Each hit gains ``content_chars`` (the full untruncated length) and a
+    ``truncated`` flag. When truncated, ``content`` is cut to ``max_chars``
+    and the full text remains available by re-calling with ``full=True``.
+    ``full`` or ``max_chars <= 0`` returns content unchanged (but still
+    annotated) so callers always see ``content_chars``/``truncated``.
+    """
+    out: list[dict[str, Any]] = []
+    for hit in hits:
+        content = hit.get("content") or ""
+        n = len(content)
+        truncate = not full and max_chars > 0 and n > max_chars
+        annotated = {
+            **hit,
+            "content": content[:max_chars] if truncate else content,
+            "truncated": truncate,
+            "content_chars": n,
+        }
+        out.append(annotated)
+    return out
+
+
+def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per MCP tool
     mcp: FastMCP,
     service: MemoryService,
     *,
@@ -146,28 +180,31 @@ def register_tools(
             "inserting. Very short content (<8 chars stripped) always "
             "inserts.\n"
             "content: non-empty text to embed/store.\n"
-            f"{_SID}\n"
+            f"{_SID} Optional on store; omit to use the shared "
+            f"'{_DEFAULT_SESSION_ID}' namespace.\n"
             "tags: optional list[str]; used by reflect seeding and "
             "schema headline selection. Not a recall filter.\n"
             "salience: 0..1, default 0.5. Higher = slower power-law "
             "decay + preferred as schema headline. Use >0.7 for "
-            "critical traces."
+            "critical traces. After a run of stores, reflect_session "
+            "distils them into what to carry forward."
         ),
     )
     @_instrument(metrics, "store_episode")
     @_translate_errors
     async def store_episode(
         content: str,
-        session_id: str,
         ctx: Context,
+        session_id: str | None = None,
         tags: list[str] | None = None,
         salience: float = 0.5,
     ) -> dict[str, Any]:
         await _ensure_warmed(embedder, ctx)
-        await ctx.debug(f"store_episode: session_id={session_id!r} salience={salience}")
+        sid = session_id or _DEFAULT_SESSION_ID
+        await ctx.debug(f"store_episode: session_id={sid!r} salience={salience}")
         result = await service.encode_episode(
             content=content,
-            session_id=session_id,
+            session_id=sid,
             tags=tags,
             salience=salience,
         )
@@ -185,10 +222,23 @@ def register_tools(
             "Hits are ranked by cosine + successor-representation + "
             "spreading activation; each hit bumps retrieval_count.\n"
             "query: text, cosine-matched.\n"
-            f"{_SID} Optional. Ranking hint only — never a hard "
-            "filter. In-session episodes get a small bonus; "
-            "cross-session episodes are still returned.\n"
-            "k: max results, default 8 (ascending distance).\n"
+            f"{_SID} Optional. Ranking hint by default — in-session "
+            "episodes get a small bonus and cross-session episodes are "
+            "still returned. Set scope_session=true to promote it to a "
+            "hard filter (episodic hits restricted to this session_id).\n"
+            "scope_session: bool, default false. Hard-filter episodic "
+            "hits to session_id (needs session_id set).\n"
+            "tags: optional list[str]; when set, keep only episodic hits "
+            "whose stored tags include every listed tag. Semantic (gist) "
+            "hits are cross-session by design and are never scoped out.\n"
+            "k: max results, default 4 (ascending distance). Kept small "
+            "so the result fits a tool-result token budget.\n"
+            "max_chars: per-hit content is truncated to this many chars "
+            "(default from config). Truncated hits carry truncated=true "
+            "and content_chars=<full length>; re-call with full=true to "
+            "get the untruncated text. 0 disables truncation.\n"
+            "full: when true, return untruncated content — may be large, "
+            "so pair with a small k or a narrow query.\n"
             "mode: 'auto'/'hybrid' = episodic + semantic merged "
             "(default 'auto'); 'episodic' = raw traces only; "
             "'semantic' = schemas only — prefer recall_semantic_memory "
@@ -201,14 +251,65 @@ def register_tools(
         query: str,
         ctx: Context,
         session_id: str | None = None,
-        k: int = 8,
+        k: int = 4,
         mode: str = "auto",
+        scope_session: bool = False,
+        tags: list[str] | None = None,
+        max_chars: int | None = None,
+        full: bool = False,
     ) -> list[dict[str, Any]]:
         await _ensure_warmed(embedder, ctx)
-        await ctx.debug(f"recall_episodes: session_id={session_id!r} k={k} mode={mode!r}")
-        results = await service.recall(query=query, session_id=session_id, k=k, mode=mode)
-        await ctx.info(f"recall returned {len(results)} hit(s)")
+        await ctx.debug(
+            f"recall_episodes: session_id={session_id!r} k={k} mode={mode!r} "
+            f"scope_session={scope_session} tags={tags} max_chars={max_chars} full={full}"
+        )
+        if scope_session and session_id is None:
+            # The session filter needs a session_id to scope to; without one
+            # it is a silent no-op (recall stays cross-session). Surface that
+            # rather than letting the caller assume scoping took effect.
+            await ctx.warning(
+                "scope_session=true ignored: no session_id to scope to; recall stays cross-session"
+            )
+        results = await service.recall(
+            query=query,
+            session_id=session_id,
+            k=k,
+            mode=mode,
+            scope_session=scope_session,
+            tags=tags,
+        )
+        limit = service.config.recall_snippet_chars if max_chars is None else max_chars
+        results = _apply_snippet(results, max_chars=limit, full=full)
+        n_trunc = sum(1 for h in results if h.get("truncated"))
+        await ctx.info(f"recall returned {len(results)} hit(s); {n_trunc} truncated")
         return results
+
+    @mcp.tool(
+        name="get_episode",
+        description=(
+            "Fetch one episode's full, untruncated content by id — the "
+            "companion to recall_episodes, which returns bounded snippets. "
+            "Use when a recalled hit came back with truncated=true and you "
+            "need its complete text.\n"
+            "episode_id: the id from a recall hit.\n"
+            f"{_SID} Optional; restricts a theta-segmented walk to that "
+            "namespace. Omit for a cross-session fetch.\n"
+            "Returns id, full content, content_chars, metadata, and "
+            "group_id/segment_ids when the episode was theta-segmented "
+            "(content is the reassembled whole, not a single segment)."
+        ),
+    )
+    @_instrument(metrics, "get_episode")
+    @_translate_errors
+    async def get_episode(
+        episode_id: int,
+        ctx: Context,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        await ctx.debug(f"get_episode: id={episode_id} session_id={session_id!r}")
+        result = await service.get_episode(episode_id, session_id=session_id)
+        await ctx.info(f"fetched episode id={episode_id} ({result['content_chars']} chars)")
+        return result
 
     @mcp.tool(
         name="consolidate_episodes",
@@ -288,10 +389,11 @@ def register_tools(
     @mcp.tool(
         name="reflect_session",
         description=(
-            "Use at session start, on a context switch, or to orient "
-            "before a new task in a known namespace. Returns the most "
-            "relevant semantic schemas and the most recently accessed "
-            "episodes for that session_id.\n"
+            "Use at session start or END, on a context switch, or to "
+            "orient before a new task in a known namespace — the "
+            "end-of-session reflection pass. Returns the most relevant "
+            "semantic schemas and the most recently accessed episodes "
+            "for that session_id.\n"
             f"{_SID} Required.\n"
             "query: seed for schema search; if omitted, falls back to "
             "the first tag of the most-recent episode in the "
@@ -329,7 +431,12 @@ def register_tools(
             "'fact'. Common values: fact | procedure | preference | "
             "schema. Filterable via recall_semantic_memory.\n"
             "tags: optional list[str] for grouping.\n"
-            "confidence: 0..1, default 1.0 (author-asserted)."
+            "confidence: 0..1, default 1.0 (author-asserted).\n"
+            "supersedes: optional id of an existing semantic memory this "
+            "one corrects/replaces. When set, that entry is deleted after "
+            "the new one is stored, so a correction retires the stale fact "
+            "instead of layering (both surfacing in recall). Errors if the "
+            "id does not exist; the response echoes superseded=<id>."
         ),
     )
     @_instrument(metrics, "store_semantic_memory")
@@ -340,18 +447,25 @@ def register_tools(
         kind: str = "fact",
         tags: list[str] | None = None,
         confidence: float = 1.0,
+        supersedes: int | None = None,
     ) -> dict[str, Any]:
         await _ensure_warmed(embedder, ctx)
         await ctx.debug(
-            f"store_semantic_memory: kind={kind!r} confidence={confidence} tags={tags!r}"
+            f"store_semantic_memory: kind={kind!r} confidence={confidence} "
+            f"tags={tags!r} supersedes={supersedes}"
         )
         result = await service.store_semantic_memory(
             content=content,
             kind=kind,
             tags=tags,
             confidence=confidence,
+            supersedes=supersedes,
         )
-        await ctx.info(f"stored semantic memory id={result['id']} kind={kind!r}")
+        retired = result.get("superseded")
+        if retired is not None:
+            await ctx.info(f"stored semantic memory id={result['id']}; retired id={retired}")
+        else:
+            await ctx.info(f"stored semantic memory id={result['id']} kind={kind!r}")
         return result
 
     @mcp.tool(

@@ -291,3 +291,289 @@ async def test_validation_error_reaches_client_under_masking() -> None:
             assert "non-empty" in str(excinfo.value)
     finally:
         await db.close()
+
+
+async def test_recall_episodes_truncates_content_with_full_escape_hatch(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """recall_episodes must bound per-hit content so a recall can't blow
+    the caller's tool-result token budget; full=true restores the text."""
+    mcp, _ = wired
+    long_content = "alpha beta gamma " * 30  # ~510 chars, single segment (<1024)
+    async with Client(mcp) as client:
+        await client.call_tool("store_episode", {"content": long_content, "session_id": "s1"})
+        # Default snippet path: content bounded, annotation present.
+        res = await client.call_tool(
+            "recall_episodes",
+            {"query": "alpha beta gamma", "session_id": "s1", "max_chars": 50},
+        )
+        hit = next(h for h in res.data if h["content_chars"] >= 500)
+        assert hit["truncated"] is True
+        assert len(hit["content"]) == 50
+        assert hit["content_chars"] >= 500
+        # full=true escape hatch returns the untruncated content.
+        full = await client.call_tool(
+            "recall_episodes",
+            {"query": "alpha beta gamma", "session_id": "s1", "full": True},
+        )
+        fhit = next(h for h in full.data if h["content_chars"] >= 500)
+        assert fhit["truncated"] is False
+        assert len(fhit["content"]) == fhit["content_chars"]
+
+
+async def test_store_episode_session_id_optional(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """session_id is optional on store (no more raw pydantic missing-arg
+    dump); omitting it stores under the default namespace and the episode
+    is still recallable cross-session."""
+    mcp, _ = wired
+    async with Client(mcp) as client:
+        r = await client.call_tool("store_episode", {"content": "unscoped trace zeta"})
+        assert r.data["deduped"] is False
+        assert r.data["id"] >= 0
+        res = await client.call_tool("recall_episodes", {"query": "unscoped trace zeta"})
+        assert any("unscoped trace zeta" in (h.get("content") or "") for h in res.data)
+
+
+async def test_recall_episodes_scope_session_and_tags_filter(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """Opt-in scoping: scope_session hard-filters to the caller's session;
+    tags keep only episodic hits carrying every requested tag. Without
+    them recall stays cross-session (the documented default)."""
+    mcp, _ = wired
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "store_episode",
+            {"content": "shared topic alpha", "session_id": "proj-a", "tags": ["glf"]},
+        )
+        await client.call_tool(
+            "store_episode",
+            {"content": "shared topic alpha", "session_id": "proj-b", "tags": ["other"]},
+        )
+        # Cross-session default: both sessions can surface.
+        unscoped = await client.call_tool(
+            "recall_episodes", {"query": "shared topic alpha", "k": 8}
+        )
+        sids = {h["metadata"].get("session_id") for h in unscoped.data}
+        assert {"proj-a", "proj-b"} <= sids
+        # scope_session: only the caller's session survives.
+        scoped = await client.call_tool(
+            "recall_episodes",
+            {
+                "query": "shared topic alpha",
+                "session_id": "proj-a",
+                "scope_session": True,
+                "k": 8,
+            },
+        )
+        assert scoped.data
+        assert all(h["metadata"].get("session_id") == "proj-a" for h in scoped.data)
+        # tags: only hits carrying the requested tag.
+        tagged = await client.call_tool(
+            "recall_episodes",
+            {"query": "shared topic alpha", "tags": ["glf"], "k": 8},
+        )
+        assert tagged.data
+        assert all("glf" in (h["metadata"].get("tags") or []) for h in tagged.data)
+
+
+async def test_store_after_first_recall_is_immediately_recallable(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """Read-after-write: an episode stored *after* the one-shot
+    index-ready guard has fired must still be recallable without an
+    intervening consolidate. Reproduces the simplevecdb pending-buffer
+    hole described at service.py:_ensure_index_ready."""
+    mcp, _ = wired
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "store_episode", {"content": "first trace omega", "session_id": "s1"}
+        )
+        # First recall trips the one-shot _ensure_index_ready guard.
+        await client.call_tool("recall_episodes", {"query": "first trace omega"})
+        # Store again *after* the guard already fired.
+        await client.call_tool("store_episode", {"content": "second trace psi", "session_id": "s1"})
+        res = await client.call_tool("recall_episodes", {"query": "second trace psi"})
+        assert any("second trace psi" in (h.get("content") or "") for h in res.data)
+
+
+async def test_store_semantic_memory_supersedes_retires_stale_entry(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """supersedes retires the prior semantic entry so a correction
+    replaces it instead of layering; a bad id is an actionable error."""
+    import pytest  # noqa: PLC0415
+    from fastmcp.exceptions import ToolError  # noqa: PLC0415
+
+    mcp, _ = wired
+    async with Client(mcp) as client:
+        old = await client.call_tool(
+            "store_semantic_memory",
+            {"content": "use flake8 for linting", "kind": "preference"},
+        )
+        old_id = old.data["id"]
+        new = await client.call_tool(
+            "store_semantic_memory",
+            {"content": "use ruff for linting", "kind": "preference", "supersedes": old_id},
+        )
+        assert new.data["superseded"] == old_id
+        # The stale entry no longer surfaces; only the correction does.
+        hits = await client.call_tool("recall_semantic_memory", {"query": "linting tool", "k": 8})
+        ids = {h["id"] for h in hits.data}
+        assert old_id not in ids
+        assert new.data["id"] in ids
+        # Superseding a non-existent id is an actionable error, not a no-op.
+        with pytest.raises(ToolError) as excinfo:
+            await client.call_tool(
+                "store_semantic_memory",
+                {"content": "orphan correction", "supersedes": 999_999},
+            )
+        assert "not found" in str(excinfo.value)
+
+
+async def test_get_episode_returns_full_content_by_id(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """get_episode returns an episode's full untruncated text by id — the
+    companion to recall's bounded snippets; a missing id is an error."""
+    import pytest  # noqa: PLC0415
+    from fastmcp.exceptions import ToolError  # noqa: PLC0415
+
+    mcp, _ = wired
+    long_content = "delta epsilon zeta " * 30  # ~570 chars, single segment
+    async with Client(mcp) as client:
+        stored = await client.call_tool(
+            "store_episode", {"content": long_content, "session_id": "s1"}
+        )
+        ep_id = stored.data["id"]
+        # Recall truncates to a snippet...
+        rec = await client.call_tool(
+            "recall_episodes", {"query": "delta epsilon zeta", "max_chars": 40}
+        )
+        assert any(h["truncated"] for h in rec.data if h["content_chars"] >= 500)
+        # ...get_episode returns the whole thing.
+        full = await client.call_tool("get_episode", {"episode_id": ep_id})
+        assert full.data["id"] == ep_id
+        assert long_content.strip() in full.data["content"]
+        assert full.data["content_chars"] >= 500
+        assert len(full.data["content"]) == full.data["content_chars"]
+        # Missing id is an actionable error, not an empty result.
+        with pytest.raises(ToolError) as excinfo:
+            await client.call_tool("get_episode", {"episode_id": 999_999})
+        assert "not found" in str(excinfo.value)
+
+
+async def test_get_episode_reassembles_segmented_group(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """A theta-segmented episode is reassembled into its whole text rather
+    than returning a single 1024-char segment. A mismatched session_id
+    raises instead of returning one unreassembled segment."""
+    import pytest  # noqa: PLC0415
+    from fastmcp.exceptions import ToolError  # noqa: PLC0415
+
+    mcp, _ = wired
+    seg_content = "lambda mu nu " * 120  # ~1560 chars > theta_segment_max_chars
+    async with Client(mcp) as client:
+        stored = await client.call_tool(
+            "store_episode", {"content": seg_content, "session_id": "s1"}
+        )
+        assert "segment_ids" in stored.data  # confirm it segmented
+        full = await client.call_tool("get_episode", {"episode_id": stored.data["id"]})
+        assert full.data["group_id"] is not None
+        assert len(full.data["segment_ids"]) >= 2
+        assert full.data["content_chars"] >= 1500
+        # A segmented episode not visible in the requested session raises,
+        # rather than silently returning a single unreassembled segment.
+        with pytest.raises(ToolError) as excinfo:
+            await client.call_tool(
+                "get_episode", {"episode_id": stored.data["id"], "session_id": "other"}
+            )
+        assert "not visible" in str(excinfo.value)
+
+
+async def test_store_semantic_supersedes_rolls_back_new_on_retire_failure() -> None:
+    """If retiring the superseded entry fails *after* the correction is
+    inserted, the new entry is rolled back and the stale one is left
+    intact — never the both-layered state supersedes exists to prevent.
+
+    Drives the partial-failure window directly: ``delete_by_ids`` is made
+    to fail for the retire (old id) but succeed for the new-insert
+    rollback (fresh id), so the store ends with exactly the original entry.
+    """
+    import pytest  # noqa: PLC0415
+
+    db = AsyncVectorDB(":memory:")
+    try:
+        service = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        old = await service.store_semantic_memory(
+            content="use flake8 for linting", kind="preference"
+        )
+        old_id = old["id"]
+        assert await service.semantic.count() == 1
+
+        orig_delete = service.semantic.delete_by_ids
+
+        async def selective_delete(ids: list[int]) -> Any:
+            # Reject the retire (old id); allow the rollback (fresh id).
+            if old_id in ids:
+                raise RuntimeError("retire failed")
+            return await orig_delete(ids)
+
+        service.semantic.delete_by_ids = selective_delete
+        with pytest.raises(RuntimeError, match="retire failed"):
+            await service.store_semantic_memory(
+                content="use ruff for linting", kind="preference", supersedes=old_id
+            )
+        service.semantic.delete_by_ids = orig_delete
+
+        # Exactly one entry remains: the correction was rolled back and the
+        # stale entry survived — no both-layered residue.
+        assert await service.semantic.count() == 1
+        hits = await service.recall_semantic_memory(query="linting tool", k=8)
+        assert any(h["id"] == old_id for h in hits)
+    finally:
+        await db.close()
+
+
+def test_log_scope_cap_flags_saturated_under_return(caplog: Any) -> None:
+    """A saturated scoped fetch (episodic candidates reached fetch_k) that
+    leaves fewer than k survivors logs at INFO so the under-return is
+    visible; an un-saturated fetch emits no such cap warning."""
+    import logging  # noqa: PLC0415
+
+    from synara.features.memory.hippocampus.recall import _log_scope_cap  # noqa: PLC0415
+
+    name = "synara.features.memory.hippocampus.recall"
+    with caplog.at_level(logging.INFO, logger=name):
+        _log_scope_cap(fetch_k=32, ep_before=32, ep_after=1, k=4)
+    assert any(r.levelno == logging.INFO and "capped" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=name):
+        # Not saturated (ep_before < fetch_k): no INFO cap warning.
+        _log_scope_cap(fetch_k=32, ep_before=5, ep_after=5, k=4)
+    assert not any("capped" in r.getMessage() for r in caplog.records)
+
+
+async def test_recall_scope_session_without_session_id_warns(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """scope_session=true with no session_id can't filter — it is a silent
+    no-op. The tool must warn so the caller isn't misled into thinking
+    scoping took effect; recall still returns cross-session results."""
+    mcp, _ = wired
+    logs: list[tuple[str, str]] = []
+
+    async def capture(msg: Any) -> None:
+        logs.append((str(msg.level), str(msg.data)))
+
+    async with Client(mcp, log_handler=capture) as client:
+        await client.call_tool("store_episode", {"content": "scope warn probe", "session_id": "s1"})
+        res = await client.call_tool(
+            "recall_episodes", {"query": "scope warn probe", "scope_session": True}
+        )
+    assert res.data  # still cross-session (no-op), not an error
+    assert any(level == "warning" and "scope_session" in data for level, data in logs)

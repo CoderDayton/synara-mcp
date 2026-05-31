@@ -310,6 +310,10 @@ async def _insert_single(
         with contextlib.suppress(Exception):
             await service.episodic.delete_by_ids([new_id])
         raise
+    # ``distance`` is None on a fresh insert: there was no near-duplicate
+    # to match against, so there is no distance to report (the dedup-hit
+    # path reports the matched cosine distance instead). This is a store
+    # confirmation, not a recall hit — recall hits always carry a float.
     return {
         "id": new_id,
         "deduped": False,

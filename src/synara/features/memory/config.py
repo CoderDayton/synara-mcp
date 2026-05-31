@@ -74,6 +74,15 @@ class MemoryConfig:
     # SR window, and metadata; an unbounded value bloats every scan and
     # the durable edge table. 0 disables the cap.
     max_session_id_chars: int = 1_024
+    # Default per-hit content truncation for the ``recall_episodes`` tool.
+    # Recall returns one dict per hit carrying the raw ``content``; with a
+    # handful of full-length episodes the serialised result can exceed an
+    # MCP client's tool-result token budget and be spilled to disk unread
+    # (pure cost, zero context gained). The tool truncates each hit's
+    # content to this many characters and flags ``truncated`` + the full
+    # ``content_chars`` so a caller can re-fetch with ``full=true``. The
+    # tool's ``max_chars`` argument overrides this; 0 disables truncation.
+    recall_snippet_chars: int = 600
     # Power-law (Wickelgren/Wixted) decay exponent used by ``forget``:
     #   S(t) = salience * sum_k (1 + (t - t_k))^(-d)
     # Wixted & Ebbesen 1991 / 1997 fit individual episodic retention curves
