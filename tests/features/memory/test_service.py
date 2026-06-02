@@ -1019,6 +1019,49 @@ async def test_failed_reactor_consolidate_is_isolated_and_resets_counter(
         await db.close()
 
 
+# ----------------------------- reactor state rehydration across restart
+async def test_reactor_state_rehydrates_novel_encodes_from_persisted_log() -> None:
+    """Regression: the novel-encode counter must be rebuilt from the durable
+    event log on a fresh process. Under stdio-per-session the server is
+    relaunched every session, so a counter that resets to 0 each launch can
+    never reach the consolidate threshold and ``consolidate.run`` never fires.
+    """
+    from synara.features.memory.basal_ganglia.events import now_seconds  # noqa: PLC0415
+
+    db = AsyncVectorDB(":memory:")
+    try:
+        threshold = 5
+        # First "process": self-learning OFF so the reactor doesn't consume
+        # the counter itself — we only want it to populate the durable log.
+        svc1 = MemoryService(
+            db,
+            config=MemoryConfig(
+                self_learning_enabled=False,
+                reactor_consolidate_after_novel=threshold,
+            ),
+            embed_fn=hash_embed,
+        )
+        for i in range(threshold):
+            r = await svc1.encode_episode(f"unique episode {i} on subject {i}", "s1")
+            assert r["deduped"] is False
+
+        # Simulated restart: fresh service + fresh ReactorState over the same
+        # durable collection. The counter starts at 0...
+        svc2 = MemoryService(
+            db,
+            config=MemoryConfig(reactor_consolidate_after_novel=threshold),
+            embed_fn=hash_embed,
+        )
+        assert svc2._bus.state.novel_encodes_since_consolidate == 0
+
+        # ...and must be rebuilt from the persisted event log on first touch.
+        await svc2._bus.ensure_state_loaded()
+        assert svc2._bus.state.novel_encodes_since_consolidate >= threshold
+        assert svc2._bus.policy.consolidate_due(svc2._bus.state, now_seconds())
+    finally:
+        await db.close()
+
+
 # ----------------------------- concurrent consolidate serialisation
 async def test_concurrent_consolidate_calls_serialise(
     monkeypatch: pytest.MonkeyPatch,

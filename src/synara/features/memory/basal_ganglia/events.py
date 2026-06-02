@@ -4,8 +4,10 @@ Every public op on ``MemoryService`` emits an
 :class:`InteractionEvent` after its main work completes. Events are
 appended to the persistent ``coll.events`` change feed so cross-process
 subscribers and post-mortem inspection both see the same log; the
-in-memory :class:`ReactorState` is just hot-path bookkeeping for the
-:class:`TriggerPolicy` and is rebuilt from defaults on restart.
+in-memory :class:`ReactorState` is hot-path bookkeeping for the
+:class:`TriggerPolicy`; it is rebuilt from that persistent log on restart
+via :meth:`EventBus.ensure_state_loaded`, so the consolidate/dream
+triggers survive the stdio-per-session relaunch cycle.
 
 Reactor invariants
 ------------------
@@ -136,6 +138,13 @@ class EventBus:
         # Throttle prune calls so we don't hit SQL on every record().
         self._records_since_prune = 0
         self._prune_every = max(64, log_capacity // 4)
+        # Reactor counters live in ``self.state`` but are durable in the
+        # persistent event log. ``ensure_state_loaded`` rebuilds them from
+        # that log once per process so the consolidate/dream triggers
+        # survive the stdio-per-session relaunch cycle. Double-checked
+        # under a lock so concurrent first ``record`` calls replay once.
+        self._state_loaded = False
+        self._state_lock = asyncio.Lock()
 
     async def log(self) -> list[InteractionEvent]:
         """Snapshot of the most recent events (up to ``log_capacity``)."""
@@ -167,6 +176,7 @@ class EventBus:
 
     async def record(self, event: InteractionEvent) -> None:
         """Append the event and update reactor state counters."""
+        await self.ensure_state_loaded()
         if self._coll is not None:
             payload = dict(event.payload)
             if event.session_id is not None:
@@ -189,6 +199,15 @@ class EventBus:
             self._mem_log.append(event)
             if len(self._mem_log) > self.log_capacity:
                 del self._mem_log[: len(self._mem_log) - self.log_capacity]
+        self._apply_event_to_state(event)
+
+    def _apply_event_to_state(self, event: InteractionEvent) -> None:
+        """Fold one event into the reactor counters.
+
+        Shared by the live ``record`` path and ``ensure_state_loaded`` so
+        the restart-time replay stays consistent with the hot-path
+        bookkeeping.
+        """
         st = self.state
         st.last_event_at = event.timestamp
         st.total_events += 1
@@ -201,6 +220,41 @@ class EventBus:
         elif event.kind == "dream":
             st.last_dream_at = event.timestamp
             st.events_since_dream = 0
+
+    async def ensure_state_loaded(self) -> None:
+        """Rebuild reactor counters from the durable event log, once.
+
+        ``ReactorState`` is process-local and constructed empty, but the
+        triggers it feeds (consolidate after N novel encodes, dream after
+        N events) track lifetime activity. Under stdio the server is
+        relaunched per session, so without this replay the novel-encode
+        counter would reset to 0 every launch and the consolidate
+        threshold could never be reached. Idempotent and double-checked so
+        concurrent first ``record`` calls replay exactly once.
+
+        The replay window is bounded by ``log_capacity``: if the last
+        consolidate event has been pruned, novel encodes preceding it may
+        be recounted, at worst scheduling one extra (idempotent)
+        consolidate pass.
+        """
+        if self._state_loaded:
+            return
+        async with self._state_lock:
+            if self._state_loaded:
+                return
+            # Mark loaded before the replay: ``_apply_event_to_state`` only
+            # mutates counters (never calls back into ``record``), so the
+            # flag keeps a re-entrant ``record`` from double-counting.
+            # Reset on failure so a transient log-read error doesn't wedge
+            # the counters at their defaults.
+            self._state_loaded = True
+            try:
+                events = await self.log()
+            except Exception:
+                self._state_loaded = False
+                raise
+            for event in events:
+                self._apply_event_to_state(event)
 
     async def _maybe_prune(self) -> None:
         """Keep the persistent log bounded to ``log_capacity`` entries."""
