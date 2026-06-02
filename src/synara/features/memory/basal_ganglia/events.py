@@ -36,6 +36,16 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from simplevecdb import AsyncVectorCollection
 
+__all__ = [
+    "EventBus",
+    "EventKind",
+    "InteractionEvent",
+    "ReactorCallback",
+    "ReactorState",
+    "TriggerPolicy",
+    "now_seconds",
+]
+
 EventKind = Literal[
     "encode",
     "recall",
@@ -55,17 +65,47 @@ class InteractionEvent:
     session_id: str | None
     payload: dict[str, Any] = field(default_factory=dict)
 
+    @classmethod
+    def create(
+        cls,
+        kind: EventKind,
+        *,
+        session_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        timestamp: float | None = None,
+    ) -> InteractionEvent:
+        """Build an event for the common case: stamp ``now`` and copy payload.
+
+        ``timestamp`` defaults to :func:`now_seconds`; ``payload`` is copied
+        defensively so a caller's dict can't later mutate the (frozen)
+        event's contents.
+        """
+        return cls(
+            kind=kind,
+            timestamp=now_seconds() if timestamp is None else timestamp,
+            session_id=session_id,
+            payload=dict(payload) if payload else {},
+        )
+
 
 @dataclass(slots=True)
 class ReactorState:
-    """Mutable bookkeeping the policy reads to decide on triggers."""
+    """Mutable bookkeeping the policy reads to decide on triggers.
 
-    last_event_at: float = 0.0
+    :class:`TriggerPolicy` reads ``last_consolidate_at`` / ``last_dream_at``
+    / ``novel_encodes_since_consolidate`` / ``events_since_dream``.
+    ``last_event_at`` and ``total_events`` are inspection-only lifetime
+    tallies that no trigger consults; like the rest of the state they
+    reflect only the ``log_capacity`` rehydration window after a restart,
+    so treat them as approximate.
+    """
+
+    last_event_at: float = 0.0  # inspection-only; not read by the policy
     last_consolidate_at: float = 0.0
     last_dream_at: float = 0.0
     novel_encodes_since_consolidate: int = 0
     events_since_dream: int = 0
-    total_events: int = 0
+    total_events: int = 0  # inspection-only; not read by the policy
 
 
 @dataclass(slots=True)
@@ -76,6 +116,16 @@ class TriggerPolicy:
     consolidate_cooldown_seconds: float = 600.0  # 10 min; Tse et al 2007 cadence
     dream_after_events: int = 128
     dream_after_idle_seconds: float = 600.0  # 10 min; Carr et al 2011 awake replay
+
+    def __post_init__(self) -> None:
+        # Count thresholds use the ``<= 0 disables`` convention, so any int
+        # is meaningful. The time fields have no such escape hatch: a
+        # negative (or NaN) cooldown/idle would silently make the time gate
+        # always-true. ``not (x >= 0)`` rejects both negatives and NaN.
+        for name in ("consolidate_cooldown_seconds", "dream_after_idle_seconds"):
+            value: float = getattr(self, name)
+            if not (value >= 0):
+                raise ValueError(f"{name} must be >= 0, got {value!r}")
 
     def consolidate_due(self, state: ReactorState, now: float) -> bool:
         if self.consolidate_after_novel_encodes <= 0:
@@ -110,6 +160,41 @@ def _event_kind(kind: str) -> str:
     return f"{EVENT_KIND_PREFIX}{kind}"
 
 
+# Payload sentinel carrying ``InteractionEvent.session_id`` through the
+# durable row (which only stores ``kind`` + ``payload``).
+_SESSION_ID_KEY = "__session_id"
+
+
+def _encode_payload(event: InteractionEvent) -> dict[str, Any]:
+    """Fold ``session_id`` into the payload written to the durable row."""
+    payload = dict(event.payload)
+    if event.session_id is not None:
+        payload[_SESSION_ID_KEY] = event.session_id
+    return payload
+
+
+def _decode_row(row: Any) -> InteractionEvent | None:
+    """Inverse of :func:`_encode_payload`: durable row -> event.
+
+    Returns ``None`` for rows that are not ours (foreign ``kind`` prefix,
+    e.g. simplevecdb's own ``edge_upsert`` / ``rebuild`` entries).
+    """
+    if not row.kind.startswith(EVENT_KIND_PREFIX):
+        return None
+    payload = dict(row.payload or {})
+    session_id = payload.pop(_SESSION_ID_KEY, None)
+    return InteractionEvent(
+        kind=row.kind[len(EVENT_KIND_PREFIX) :],
+        timestamp=float(row.ts),
+        session_id=session_id,
+        payload=payload,
+    )
+
+
+# Async handler the reactor schedules when a consolidate/dream is due.
+ReactorCallback = Callable[[InteractionEvent], Awaitable[None]]
+
+
 class EventBus:
     """Persistent event log + reactor for self-triggered follow-ups.
 
@@ -124,6 +209,8 @@ class EventBus:
         collection: AsyncVectorCollection | None = None,
         policy: TriggerPolicy | None = None,
         log_capacity: int = 1024,
+        on_consolidate: ReactorCallback | None = None,
+        on_dream: ReactorCallback | None = None,
     ) -> None:
         if log_capacity <= 0:
             raise ValueError("log_capacity must be positive")
@@ -131,8 +218,11 @@ class EventBus:
         self.policy = policy or TriggerPolicy()
         self.state = ReactorState()
         self.log_capacity = int(log_capacity)
-        self.on_consolidate: Callable[[InteractionEvent], Awaitable[None]] | None = None
-        self.on_dream: Callable[[InteractionEvent], Awaitable[None]] | None = None
+        # Reactor handlers. Still settable post-construction, but prefer the
+        # constructor params so the bus's reactive contract is explicit at
+        # creation instead of wired up in a separate step.
+        self.on_consolidate: ReactorCallback | None = on_consolidate
+        self.on_dream: ReactorCallback | None = on_dream
         # In-memory fallback when no collection is wired (test paths).
         self._mem_log: list[InteractionEvent] = []
         # Throttle prune calls so we don't hit SQL on every record().
@@ -160,27 +250,15 @@ class EventBus:
         rows = await self._coll.read_events(since=since, limit=self.log_capacity)
         kept: list[InteractionEvent] = []
         for r in rows:
-            if not r.kind.startswith(EVENT_KIND_PREFIX):
-                continue
-            payload = dict(r.payload or {})
-            session_id = payload.pop("__session_id", None)
-            kept.append(
-                InteractionEvent(
-                    kind=r.kind[len(EVENT_KIND_PREFIX) :],
-                    timestamp=float(r.ts),
-                    session_id=session_id,
-                    payload=payload,
-                )
-            )
+            event = _decode_row(r)
+            if event is not None:
+                kept.append(event)
         return kept[-self.log_capacity :]
 
     async def record(self, event: InteractionEvent) -> None:
         """Append the event and update reactor state counters."""
         await self.ensure_state_loaded()
         if self._coll is not None:
-            payload = dict(event.payload)
-            if event.session_id is not None:
-                payload["__session_id"] = event.session_id
             # Coupling note: the async collection exposes ``read_events`` /
             # ``last_event_seq`` but no async ``append`` / ``prune``, so we
             # reach through ``_collection.events`` (the sync engine) under
@@ -190,7 +268,7 @@ class EventBus:
             await asyncio.to_thread(
                 self._coll._collection.events.append,
                 _event_kind(event.kind),
-                payload=payload,
+                payload=_encode_payload(event),
             )
             self._records_since_prune += 1
             if self._records_since_prune >= self._prune_every:
@@ -282,6 +360,11 @@ class EventBus:
         """Run any due reactor callbacks. Returns triggered action names."""
         if event.kind in _REACTOR_KINDS:
             return []
+        # ``react`` reads ``self.state``; rehydrate first so a standalone
+        # caller (one not preceded by ``record``) evaluates triggers
+        # against durable counters, not process-start defaults. Idempotent
+        # and ~free after the first load.
+        await self.ensure_state_loaded()
         triggered: list[str] = []
         if self.on_consolidate is not None and self.policy.consolidate_due(
             self.state, event.timestamp

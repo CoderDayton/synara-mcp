@@ -42,6 +42,7 @@ from simplevecdb import AsyncVectorDB
 from synara.core.errors import ValidationError
 
 from .basal_ganglia.events import EventBus as _EventBus
+from .basal_ganglia.events import EventKind as _EventKind
 from .basal_ganglia.events import InteractionEvent as _Event
 from .basal_ganglia.events import TriggerPolicy as _Policy
 from .basal_ganglia.events import now_seconds as _now_real
@@ -256,6 +257,10 @@ class MemoryService:
             ltd_decay_per_idle_day=self.config.ltd_decay_per_idle_day,
             time_compression=self.config.time_compression,
         )
+        # Reactor handlers are wired at construction; ``None`` when
+        # self-learning is off leaves ``react`` a no-op (it only fires
+        # handlers that are set).
+        _learning = self.config.self_learning_enabled
         self._bus: _EventBus = _EventBus(
             collection=self.episodic,
             policy=_Policy(
@@ -265,26 +270,20 @@ class MemoryService:
                 dream_after_idle_seconds=self.config.reactor_dream_after_idle_seconds,
             ),
             log_capacity=self.config.reactor_event_log_capacity,
+            on_consolidate=self._reactor_consolidate if _learning else None,
+            on_dream=self._reactor_dream if _learning else None,
         )
-        if self.config.self_learning_enabled:
-            self._bus.on_consolidate = self._reactor_consolidate
-            self._bus.on_dream = self._reactor_dream
 
     # -------------------------------------------- event emission / reactor
     async def _emit(
         self,
-        kind: str,
+        kind: _EventKind,
         *,
         session_id: str | None,
         payload: dict[str, Any] | None = None,
     ) -> None:
         """Record an interaction event and run any due reactor follow-ups."""
-        event = _Event(
-            kind=kind,  # type: ignore[arg-type]
-            timestamp=_now_real(),
-            session_id=session_id,
-            payload=dict(payload) if payload else {},
-        )
+        event = _Event.create(kind, session_id=session_id, payload=payload, timestamp=_now_real())
         await self._bus.record(event)
         if self.config.self_learning_enabled:
             # The reactor (consolidate/dream replay) reads the SR, so it

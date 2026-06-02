@@ -153,6 +153,75 @@ async def test_event_bus_prunes_persistent_log(db: AsyncVectorDB) -> None:
     assert len(log) <= 64
 
 
+# ---- reactor state rehydration (ensure_state_loaded) ----------------
+
+
+async def test_ensure_state_loaded_is_idempotent(db: AsyncVectorDB) -> None:
+    coll = db.collection("ep")
+    bus = EventBus(collection=coll)
+    for i in range(3):
+        await bus.record(
+            InteractionEvent(
+                kind="encode", timestamp=float(i), session_id="s", payload={"deduped": False}
+            )
+        )
+    assert bus.state.novel_encodes_since_consolidate == 3
+    # A fresh bus over the same durable collection rebuilds the counter,
+    # and a repeat call must not double-count.
+    bus2 = EventBus(collection=coll)
+    await bus2.ensure_state_loaded()
+    await bus2.ensure_state_loaded()
+    assert bus2.state.novel_encodes_since_consolidate == 3
+
+
+async def test_ensure_state_loaded_resets_novel_after_consolidate(db: AsyncVectorDB) -> None:
+    coll = db.collection("ep")
+    bus = EventBus(collection=coll)
+    await bus.record(
+        InteractionEvent(kind="encode", timestamp=1.0, session_id="s", payload={"deduped": False})
+    )
+    await bus.record(InteractionEvent(kind="consolidate", timestamp=2.0, session_id=None))
+    await bus.record(
+        InteractionEvent(kind="encode", timestamp=3.0, session_id="s", payload={"deduped": False})
+    )
+    # Replay must honour the consolidate boundary: only the post-consolidate
+    # encode is still "novel".
+    bus2 = EventBus(collection=coll)
+    await bus2.ensure_state_loaded()
+    assert bus2.state.novel_encodes_since_consolidate == 1
+    # Durable rows are stamped at DB-write time (``r.ts``), not the logical
+    # ``event.timestamp``; rehydrating a real wall-clock boundary is what
+    # makes the consolidate cooldown gate meaningful across a restart.
+    assert bus2.state.last_consolidate_at > 0.0
+
+
+async def test_ensure_state_loaded_resets_flag_on_failure(db: AsyncVectorDB) -> None:
+    coll = db.collection("ep")
+    bus = EventBus(collection=coll)
+    await bus.record(
+        InteractionEvent(kind="encode", timestamp=1.0, session_id="s", payload={"deduped": False})
+    )
+    bus2 = EventBus(collection=coll)
+    real_log = bus2.log
+    calls = 0
+
+    async def flaky_log() -> list[InteractionEvent]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient log read failure")
+        return await real_log()
+
+    bus2.log = flaky_log  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="transient log read failure"):
+        await bus2.ensure_state_loaded()
+    # A failed load must not wedge the flag at True (that would freeze the
+    # counters at process-start defaults forever); the retry rebuilds them.
+    assert bus2._state_loaded is False
+    await bus2.ensure_state_loaded()
+    assert bus2.state.novel_encodes_since_consolidate == 1
+
+
 # ---- consolidate replay score legacy path ---------------------------
 
 
