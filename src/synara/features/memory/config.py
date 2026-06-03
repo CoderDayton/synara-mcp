@@ -317,6 +317,14 @@ class MemoryConfig:
     # Mixing weight of the spreading-activation contribution into the
     # final rank key (added on top of the SR omega-weighted boost).
     spreading_activation_weight: float = 0.2
+    # Hub-degree guard for spreading activation: each frontier node
+    # expands only its top-N plasticity edges by weight per hop, so a
+    # single high-out-degree episode cannot flood the frontier. Default 8
+    # caps only genuine hubs -- the weakest edges drop first, so it is
+    # metric-neutral at the default 1 hop and only reshapes ranking once
+    # hops >= 2 or a hub accumulates many durable edges. Lower it to
+    # tighten the guard; set 0 to disable it (unbounded expansion).
+    spreading_activation_max_fanout: int = 8
 
     # Soft context bonus: episodes whose ``session_id`` matches the
     # caller's current session get this much subtracted from their rank

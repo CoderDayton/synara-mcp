@@ -547,6 +547,7 @@ async def _sr_rank_keys(
             [r[0] for r in episodic_hits],
             hops=cfg.spreading_activation_hops,
             gamma=cfg.spreading_activation_decay,
+            max_fanout=cfg.spreading_activation_max_fanout,
         )
     same_sess_bonus = float(cfg.same_session_bonus)
     use_context = bool(caller_sid) and same_sess_bonus > 0.0

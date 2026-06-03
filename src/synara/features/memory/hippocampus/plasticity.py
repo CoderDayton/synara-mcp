@@ -300,8 +300,15 @@ class PlasticityGraph:
         *,
         hops: int,
         gamma: float,
+        max_fanout: int = 0,
     ) -> dict[int, float]:
-        """Bounded-hop max-product BFS over durable weights."""
+        """Bounded-hop max-product BFS over durable weights.
+
+        When ``max_fanout > 0``, each frontier node expands only its
+        top-``max_fanout`` edges by weight per hop -- a hub-degree guard
+        against a single high-out-degree episode flooding the frontier.
+        ``0`` (default) leaves expansion unbounded.
+        """
         if hops <= 0 or gamma <= 0.0 or not targets:
             return dict.fromkeys(targets, 0.0)
         target_set = set(targets)
@@ -323,7 +330,12 @@ class PlasticityGraph:
             next_frontier: dict[int, float] = {}
             for k, edges in zip(keys, results, strict=True):
                 ak = frontier[k]
-                for e in edges:
+                node_edges = edges
+                if max_fanout > 0 and len(node_edges) > max_fanout:
+                    node_edges = sorted(node_edges, key=lambda e: float(e.weight), reverse=True)[
+                        :max_fanout
+                    ]
+                for e in node_edges:
                     w = float(e.weight)
                     if w <= 0.0:
                         continue
