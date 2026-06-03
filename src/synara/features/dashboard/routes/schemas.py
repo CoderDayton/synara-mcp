@@ -34,6 +34,10 @@ class HealthResponse(BaseModel):
     embedding_backend: Literal["local", "remote"]
     embedding_model: str
     uptime_seconds: float
+    # Best-effort name of the client hosting this server (Claude Code,
+    # Cursor, ...), resolved from the process ancestry at startup;
+    # "unknown" when it can't be determined.
+    mcp_client: str
 
 
 class StatsResponse(BaseModel):
@@ -236,3 +240,10 @@ class ForgetResult(BaseModel):
     schemas_scanned: int
     cold_schema_candidate_ids: list[int]
     schemas_removed: int
+
+
+class RestartResult(BaseModel):
+    """``POST /admin/restart`` — the server re-execs itself in place."""
+
+    status: str
+    detail: str

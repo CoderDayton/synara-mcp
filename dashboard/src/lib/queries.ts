@@ -116,3 +116,16 @@ export function useConsolidate() {
 export function useReflect() {
   return useMutation({ mutationFn: api.reflect });
 }
+
+export function useRestart() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.restart,
+    // The server is re-execing; drop cached health/stats so the UI
+    // reflects the brief outage and refetches once it's back up.
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["health"] });
+      void qc.invalidateQueries({ queryKey: ["stats"] });
+    },
+  });
+}

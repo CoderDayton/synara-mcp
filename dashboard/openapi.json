@@ -407,6 +407,10 @@
             "title": "Embedding Model",
             "type": "string"
           },
+          "mcp_client": {
+            "title": "Mcp Client",
+            "type": "string"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -431,7 +435,8 @@
           "db_path",
           "embedding_backend",
           "embedding_model",
-          "uptime_seconds"
+          "uptime_seconds",
+          "mcp_client"
         ],
         "title": "HealthResponse",
         "type": "object"
@@ -692,6 +697,25 @@
           "session_id"
         ],
         "title": "ReflectBody",
+        "type": "object"
+      },
+      "RestartResult": {
+        "description": "``POST /admin/restart`` \u2014 the server re-execs itself in place.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "detail"
+        ],
+        "title": "RestartResult",
         "type": "object"
       },
       "SemanticDetailResponse": {
@@ -1170,6 +1194,28 @@
           }
         },
         "summary": "Admin Reflect",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/restart": {
+      "post": {
+        "description": "Restart the server by re-executing the process in place.\n\nReloads on-disk code without losing the stdio MCP pipe, so connected\nclients re-handshake transparently. ``SYNARA_*`` is re-read from the\ncurrent process environment, which ``execv`` preserves unchanged \u2014 so\nediting a ``SYNARA_*`` value takes effect only after restarting the\nMCP client (which re-spawns this process), not via this route.\nDisruptive: every\nconnected session (and this dashboard) briefly drops while the new\nimage comes up. Guarded by the dashboard bearer token like every\nother ``/api`` route. The re-exec is scheduled a beat later so this\nreply reaches the client first.",
+        "operationId": "admin_restart_api_admin_restart_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestartResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Restart",
         "tags": [
           "admin"
         ]

@@ -42,4 +42,7 @@ async def health(request: Request) -> dict[str, Any]:
         "embedding_backend": backend,
         "embedding_model": settings.embedding.model or "default",
         "uptime_seconds": round(time.monotonic() - state.started_at, 3),
+        # Resolved once at app build (see build_dashboard_app); the route
+        # only reads the cached value rather than walking /proc per poll.
+        "mcp_client": getattr(state, "mcp_client", "") or "unknown",
     }

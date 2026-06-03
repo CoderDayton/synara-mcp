@@ -55,6 +55,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admin Restart
+         * @description Restart the server by re-executing the process in place.
+         *
+         *     Reloads on-disk code without losing the stdio MCP pipe, so connected
+         *     clients re-handshake transparently. ``SYNARA_*`` is re-read from the
+         *     current process environment, which ``execv`` preserves unchanged — so
+         *     editing a ``SYNARA_*`` value takes effect only after restarting the
+         *     MCP client (which re-spawns this process), not via this route.
+         *     Disruptive: every
+         *     connected session (and this dashboard) briefly drops while the new
+         *     image comes up. Guarded by the dashboard bearer token like every
+         *     other ``/api`` route. The re-exec is scheduled a beat later so this
+         *     reply reaches the client first.
+         */
+        post: operations["admin_restart_api_admin_restart_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/graph": {
         parameters: {
             query?: never;
@@ -352,6 +383,8 @@ export interface components {
             embedding_backend: "local" | "remote";
             /** Embedding Model */
             embedding_model: string;
+            /** Mcp Client */
+            mcp_client: string;
             /** Status */
             status: string;
             /** Transport */
@@ -469,6 +502,16 @@ export interface components {
             query?: string | null;
             /** Session Id */
             session_id: string;
+        };
+        /**
+         * RestartResult
+         * @description ``POST /admin/restart`` — the server re-execs itself in place.
+         */
+        RestartResult: {
+            /** Detail */
+            detail: string;
+            /** Status */
+            status: string;
         };
         /** SemanticDetailResponse */
         SemanticDetailResponse: {
@@ -696,6 +739,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_restart_api_admin_restart_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestartResult"];
                 };
             };
         };

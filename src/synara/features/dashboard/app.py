@@ -315,6 +315,13 @@ def build_dashboard_app(
 
     app.state.tool_metrics = tool_metrics if tool_metrics is not None else _ToolMetrics()
     app.state.started_at = time.monotonic()
+    # Identify the hosting MCP client (Claude Code, Cursor, ...) once at
+    # build time, when the spawning parent process is still our parent.
+    # build_dashboard_app runs inside the leader's lifespan startup, so
+    # the ancestry walk lands on the client that launched this server.
+    from .client_info import detect_mcp_client  # noqa: PLC0415
+
+    app.state.mcp_client = detect_mcp_client()
 
     # Host allowlist runs *before* routing/auth so a hostile ``Host``
     # header (DNS rebinding, naked-IP probes against an externally-named

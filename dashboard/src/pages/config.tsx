@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Info, Search, X } from "lucide-react";
 import { useHealth, useParams } from "@/lib/queries";
 import { PageHeader } from "@/components/common/page-header";
+import { RestartServerButton } from "@/components/config/restart-server-button";
 import { Panel } from "@/components/common/panel";
 import { ErrorState, Loading } from "@/components/common/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -59,6 +60,7 @@ export default function Config() {
         eyebrow="system"
         title="config"
         subtitle="Effective MemoryConfig and runtime — read-only by design."
+        actions={<RestartServerButton />}
       />
 
       <Alert className="mb-4 border-warning/40 bg-warning/5 font-mono text-xs">

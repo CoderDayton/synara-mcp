@@ -123,6 +123,9 @@ function validateHealth(raw: unknown): Health {
     embedding_backend: backend,
     embedding_model: asStr(raw.embedding_model, "embedding_model"),
     uptime_seconds: asNum(raw.uptime_seconds, "uptime_seconds"),
+    // Cosmetic field — coerce a missing/null value to "unknown" so an
+    // older field-less server can't blank the whole status readout.
+    mcp_client: asStr(raw.mcp_client ?? "unknown", "mcp_client"),
   };
 }
 
@@ -224,6 +227,8 @@ export type GraphData = Schemas["GraphResponse"] & { legacy: boolean };
 export type ForgetResult = Schemas["ForgetResult"];
 
 export type ConsolidateResult = Schemas["ConsolidateResult"];
+
+export type RestartResult = Schemas["RestartResult"];
 
 export type ReflectResult = Record<string, unknown>;
 
@@ -451,4 +456,5 @@ export const api = {
   }) => request<ForgetResult>("/admin/forget", { method: "POST", json: body }),
   reflect: (body: { session_id: string; query?: string | null; k?: number }) =>
     request<ReflectResult>("/admin/reflect", { method: "POST", json: body }),
+  restart: () => request<RestartResult>("/admin/restart", { method: "POST" }),
 };

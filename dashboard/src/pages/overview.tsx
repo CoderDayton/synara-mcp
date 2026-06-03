@@ -73,11 +73,12 @@ export default function Overview() {
             successor-representation prior.
           </p>
         </div>
-        <dl className="grid grid-cols-3 gap-x-6 gap-y-1 text-[0.7rem]">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-[0.7rem] sm:grid-cols-4">
           {[
             ["uptime", h ? formatDuration(h.uptime_seconds) : "—"],
             ["embed", h ? h.embedding_backend : "—"],
             ["model", h ? h.embedding_model.split("/").slice(-1)[0] : "—"],
+            ["client", h ? h.mcp_client : "—"],
           ].map(([k, v]) => (
             <div key={k} className="space-y-0.5">
               <dt className="eyebrow text-[0.6rem]">{k}</dt>

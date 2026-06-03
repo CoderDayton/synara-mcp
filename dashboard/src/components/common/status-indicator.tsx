@@ -48,6 +48,10 @@ export function StatusReadout({ className }: { className?: string }) {
               <span className="text-foreground/60">emb</span>{" "}
               <span className="text-foreground">{data.embedding_backend}</span>
             </span>
+            <span className="hidden lg:inline">
+              <span className="text-foreground/60">client</span>{" "}
+              <span className="text-foreground">{data.mcp_client}</span>
+            </span>
           </span>
         </>
       )}
