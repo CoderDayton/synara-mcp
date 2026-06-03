@@ -214,7 +214,7 @@ function EpisodicBody({
             <h3 className="eyebrow mb-2">
               Segments · {data.segments.length}
             </h3>
-            <div className="space-y-2">
+            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
               {data.segments.map((seg, i) => (
                 <pre
                   key={i}

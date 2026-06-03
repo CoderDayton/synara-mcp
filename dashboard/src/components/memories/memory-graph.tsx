@@ -677,6 +677,11 @@ export function MemoryGraph({
   const posRef = useRef<Positions>(new Map());
   const [layout, setLayout] = useState<Positions>(new Map());
   const [layoutVersion, setLayoutVersion] = useState(0);
+  // Context lens: off by default. When on, same-session episodes are
+  // chained in encoded-at order — the timeline of how each context
+  // unfolded. Sparse (n-1 links per session, not a clique) so it stays
+  // cheap; gated so the default view carries no extra edges.
+  const [contextLens, setContextLens] = useState(false);
   const reqIdRef = useRef(0);
   const sig = layoutSignature(data);
 
@@ -800,6 +805,42 @@ export function MemoryGraph({
 
   const flowEdges: Edge[] = [];
   if (data) {
+    if (contextLens) {
+      // Same-session connectors: link each session's episodes in
+      // encoded-at order. Pushed first so they sit beneath the SR /
+      // plasticity / consolidation edges. Straight, no marker / filter /
+      // animation, so the extra paint cost stays negligible.
+      const bySession = new Map<string, Array<{ id: number; t: number }>>();
+      for (const n of data.nodes) {
+        if (n.kind !== "episodic" || !n.session_id) continue;
+        const entry = { id: n.id, t: n.encoded_at };
+        const arr = bySession.get(n.session_id);
+        if (arr) arr.push(entry);
+        else bySession.set(n.session_id, [entry]);
+      }
+      let ci = 0;
+      for (const [sid, group] of bySession) {
+        if (group.length < 2) continue;
+        const ordered = [...group].sort((a, b) => a.t - b.t);
+        const hue = sessionHue(sid);
+        for (let i = 1; i < ordered.length; i++) {
+          const s = `ep:${ordered[i - 1].id}`;
+          const t = `ep:${ordered[i].id}`;
+          const dim = dimEdge(s, t);
+          flowEdges.push({
+            id: `ctx-${ci++}`,
+            source: s,
+            target: t,
+            type: "straight",
+            style: {
+              stroke: `oklch(0.72 0.14 ${hue})`,
+              strokeWidth: 1,
+              opacity: dim ? 0.04 : 0.4,
+            },
+          });
+        }
+      }
+    }
     data.sr_edges.forEach((e, i) => {
       const s = `ep:${e.src}`;
       const t = `ep:${e.dst}`;
@@ -833,7 +874,6 @@ export function MemoryGraph({
           strokeWidth: clamp(0.8 + e.strength * 1.6, 0.8, 7) * (e.is_habit ? 1.5 : 1),
           strokeDasharray: "5 4",
           opacity: dim ? 0.05 : e.is_habit ? 0.85 : 0.5,
-          filter: e.is_habit ? "drop-shadow(0 0 4px var(--color-chart-3))" : undefined,
         },
       });
     });
@@ -883,6 +923,7 @@ export function MemoryGraph({
       nodesDraggable={false}
       nodesConnectable={false}
       elementsSelectable
+      onlyRenderVisibleElements
       className="bg-transparent"
     >
       <ViewportController
@@ -895,6 +936,26 @@ export function MemoryGraph({
         size={1}
         color="color-mix(in oklab, var(--color-foreground) 9%, transparent)"
       />
+      {data && data.nodes.length > 0 && (
+        <Panel
+          position="top-left"
+          className="!m-3 rounded-md border border-border/70 bg-surface-overlay/85 p-1 font-mono shadow-card backdrop-blur"
+        >
+          <button
+            type="button"
+            aria-pressed={contextLens}
+            title="Context lens — link same-session episodes in time order"
+            onClick={() => setContextLens((v) => !v)}
+            className={`rounded px-2 py-1 text-[0.62rem] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary ${
+              contextLens
+                ? "bg-primary/15 text-primary"
+                : "text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+            }`}
+          >
+            context lens
+          </button>
+        </Panel>
+      )}
       <ZoomControls />
       <CommunityHullsLayer hulls={hulls} />
       <CaptionsOverlay nodes={nodes} />
@@ -948,6 +1009,15 @@ export function MemoryGraph({
             />
             community · halo = bridge
           </span>
+          {contextLens && (
+            <span className="flex items-center gap-1.5">
+              <span
+                className="h-0.5 w-5"
+                style={{ background: "oklch(0.72 0.14 200)" }}
+              />
+              context (same session)
+            </span>
+          )}
           <span className="mt-1 flex items-center gap-2 border-t border-border/60 pt-1.5 text-foreground/70">
             <span>ω {data.omega.toFixed(2)}</span>
             <span>·</span>

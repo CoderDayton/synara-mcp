@@ -179,6 +179,58 @@ async function forceLayout(data: GraphData): Promise<Positions> {
   return out;
 }
 
+/* ------------------------------------------------------------ de-overlap */
+
+/** Push apart discs that overlap. UMAP packs similar memories almost
+ *  on top of each other; this relaxes only *colliding* pairs so the
+ *  manifold's relative arrangement is preserved while nodes stop
+ *  occluding each other. A handful of passes, run once per layout —
+ *  never on the render/pan path. */
+function relaxOverlaps(positions: Positions, data: GraphData, padding = 8): void {
+  const items: Array<{ p: { x: number; y: number }; r: number }> = [];
+  for (const n of data.nodes) {
+    const p = positions.get(n.key);
+    if (p) items.push({ p, r: nodeRadius(n) });
+  }
+  const count = items.length;
+  if (count < 2) return;
+  // O(n²) per pass: cap the pass budget on large graphs so this one-shot
+  // relax can't stall the layout (the !moved early-out already converges
+  // most graphs in far fewer passes).
+  const passes = count > 600 ? 8 : count > 250 ? 20 : 50;
+  for (let pass = 0; pass < passes; pass++) {
+    let moved = false;
+    for (let i = 0; i < count; i++) {
+      const a = items[i].p;
+      const ri = items[i].r;
+      for (let j = i + 1; j < count; j++) {
+        const b = items[j].p;
+        const minDist = ri + items[j].r + padding;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist >= minDist) continue;
+        if (dist < 1e-6) {
+          // Coincident points — nudge deterministically by index so the
+          // split direction is stable across reloads (no RNG jitter).
+          dx = ((i * 7 + j) % 11) - 5;
+          dy = ((i * 5 + j) % 13) - 6;
+          dist = Math.hypot(dx, dy) || 1;
+        }
+        const shift = (minDist - dist) / 2;
+        const ux = dx / dist;
+        const uy = dy / dist;
+        a.x -= ux * shift;
+        a.y -= uy * shift;
+        b.x += ux * shift;
+        b.y += uy * shift;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
 /* ------------------------------------------------------------------- public */
 
 /**
@@ -193,7 +245,10 @@ export async function computeLayout(
   if (!data || data.nodes.length === 0) return new Map();
 
   const umap = umapLayout(data);
-  if (umap && umap.size === data.nodes.length) return umap;
+  if (umap && umap.size === data.nodes.length) {
+    relaxOverlaps(umap, data);
+    return umap;
+  }
 
   // Mixed case: some nodes have embeddings, others don't (e.g. a
   // freshly-consolidated schema before its aggregate vector is built,
@@ -219,5 +274,6 @@ export async function computeLayout(
       force.set(k, { x: p.x + cx, y: p.y + cy });
     }
   }
+  relaxOverlaps(force, data);
   return force;
 }
