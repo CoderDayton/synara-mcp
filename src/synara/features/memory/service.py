@@ -681,10 +681,11 @@ class MemoryService:
 
         This guard, invoked at the top of recall, is the canonical fix:
         flush any buffered adds (cheap when none) and call
-        ``rebuild_index`` iff the catalog disagrees with the index
-        (``coll.dim is None`` while ``count() > 0``). The work runs at
-        most once per service lifetime; thereafter writers' own pending
-        flushes keep the index current.
+        ``rebuild_index`` iff the index holds fewer vectors than the
+        catalog (``index.size < count()`` — covering both a fully empty
+        index and a partially-populated one whose later adds were lost).
+        The work runs at most once per service lifetime; thereafter
+        writers' own pending flushes keep the index current.
         """
         if self._index_ready:
             return
@@ -700,9 +701,14 @@ class MemoryService:
                 # flush_pending is a no-op when there's nothing buffered;
                 # cheap to call unconditionally.
                 await coll.flush_pending()
-                if coll.dim is None:
-                    # Catalog has rows but index is empty/desynced —
-                    # rebuild from the stored embeddings.
+                # ``coll.dim is None`` only catches a *fully* empty index.
+                # A partial index — some vectors persisted, later adds lost
+                # to an unclean exit while the SQLite catalog kept them —
+                # leaves dim set yet silently under-serves recall (search
+                # hits the index; count() reads the catalog). Rebuild from
+                # stored embeddings whenever the index trails the catalog;
+                # this subsumes the empty-index case (size 0 < cnt).
+                if coll._collection._index.size < cnt:
                     await coll.rebuild_index()
         except Exception:
             self._index_ready = False

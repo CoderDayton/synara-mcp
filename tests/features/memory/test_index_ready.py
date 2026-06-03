@@ -167,3 +167,54 @@ async def test_index_ready_no_op_when_collections_are_already_indexed() -> None:
         assert rebuilt["n"] == 0
     finally:
         await db.close()
+
+
+async def _service_with_partial_index() -> tuple[AsyncVectorDB, MemoryService, str]:
+    """Build a file-backed service whose index lost a *later* add.
+
+    Mirrors an unclean exit: the SQLite catalog holds two episodes (both
+    with stored embeddings) but the usearch index was only ever saved
+    with the first. ``dim`` stays set — so the old ``dim is None`` guard
+    skipped the rebuild and recall silently under-served, the index
+    (size 1) trailing the catalog (count 2).
+    """
+    td = tempfile.mkdtemp()
+    db_path = os.path.join(td, "store.db")
+    db = AsyncVectorDB(db_path)
+    service = MemoryService(db, config=MemoryConfig(), embed_fn=_hash_embed)
+    # First episode is indexed and saved into the .usearch file on close.
+    await service.encode_episode("cache layer needs work", "s1")
+    await db.close()
+
+    db2 = AsyncVectorDB(db_path)
+    svc2 = MemoryService(db2, config=MemoryConfig(), embed_fn=_hash_embed)
+    # Inject a second episode into the SQLite catalog *only* (with a stored
+    # embedding), leaving the index at size 1 while dim stays set — the
+    # partial desync the rebuild guard must heal.
+    sync = svc2.episodic._collection
+    sync._catalog.add_documents(
+        ["orbital mechanics overview"],
+        [{}],
+        None,
+        embeddings=[_hash_embed("orbital mechanics overview")],
+    )
+    return db2, svc2, td
+
+
+async def test_index_ready_rebuilds_partial_index() -> None:
+    """Regression: a partially-populated index (dim set, size < count) must
+    be rebuilt. The old ``dim is None`` guard only caught a fully empty
+    index and left the catalog-only rows permanently unsearchable."""
+    db, service, _ = await _service_with_partial_index()
+    try:
+        assert await service.episodic.count() == 2
+        assert service.episodic.dim is not None
+        assert service.episodic._collection._index.size == 1
+        assert service._index_ready is False
+
+        await service._ensure_index_ready()
+
+        assert service._index_ready is True
+        assert service.episodic._collection._index.size == 2
+    finally:
+        await db.close()
