@@ -100,7 +100,10 @@ async def run(
     # are never scoped out.
     tagset = frozenset(tags) if tags else None
     filtering = scope_session or bool(tagset)
-    fetch_k = max(k * 4, 32) if filtering else k
+    collapse = service.config.recall_collapse_groups
+    # Over-fetch when filtering *or* collapsing groups so that, after
+    # dropping out-of-scope or same-group fragments, ``k`` hits remain.
+    fetch_k = max(k * 4, 32) if (filtering or collapse) else k
     with _trace_span("query_arg"):
         q = await service.query_arg(query)
     # CA3 iterative pattern completion: refine the query by
@@ -150,23 +153,27 @@ async def run(
     # any future merge-list copying or wrapping.
     merged.sort(key=lambda r: rank_keys.get((r[0], r[4]), r[3]))
 
+    if collapse:
+        merged = _collapse_groups(merged)
+
+    t_now = now_seconds()
     out: list[dict[str, Any]] = []
     observed_episodic: list[tuple[str, int]] = []
     for doc_id, text, md, dist, source in merged[:k]:
-        out.append(
-            {
-                "id": doc_id,
-                "content": text,
-                # A non-finite cosine distance (NaN from a degenerate /
-                # zero-norm stored vector) would serialise to JSON ``null``
-                # and leave the hit unrankable against scored ones. Publish
-                # the cosine ceiling instead so it stays comparable (and
-                # sorts last, which the SR rank already enforces).
-                "distance": dist if math.isfinite(dist) else _MAX_COSINE_DISTANCE,
-                "source": source,
-                "metadata": md,
-            }
-        )
+        hit: dict[str, Any] = {
+            "id": doc_id,
+            "content": text,
+            # A non-finite cosine distance (NaN from a degenerate /
+            # zero-norm stored vector) would serialise to JSON ``null``
+            # and leave the hit unrankable against scored ones. Publish
+            # the cosine ceiling instead so it stays comparable (and
+            # sorts last, which the SR rank already enforces).
+            "distance": dist if math.isfinite(dist) else _MAX_COSINE_DISTANCE,
+            "source": source,
+            "metadata": md,
+        }
+        hit.update(_recency_fields(md or {}, source=source, now=t_now))
+        out.append(hit)
         # ``reinforce=False`` (ambient resource reads) makes recall a
         # pure read: no retrieval_count bump and — since the SR block
         # below guards on ``observed_episodic`` — no SR/plasticity update.
@@ -176,41 +183,14 @@ async def run(
             if sid:
                 observed_episodic.append((sid, doc_id))
 
-    # Anchor-model SR update: fold one edge from the best-cosine anchor
-    # (= first episodic hit after re-ranking) to each other episodic
-    # hit. Avoids the pairwise n*(n-1)/2 inflation that a naive
-    # "everything observed at the same t" loop would produce — five hits
-    # add four edges, not ten.
-    #
-    # Window is keyed on the *caller's* session, not the recalled
-    # episodes' original sessions. That way recalls in session B that
-    # pull episodes from session A enter B's window, and a subsequent
-    # recall in B chains across via the still-in-window prior anchor —
-    # bridging A and B into one connected graph instead of leaving
-    # per-original-session subgraphs. Falls back to the anchor's
-    # original session only when the caller didn't supply one.
-    if service._sr is not None and observed_episodic:
-        t = now_seconds()
-        anchor_id = observed_episodic[0][1]
-        window_sid = session_id or observed_episodic[0][0]
-        others = [j for _, j in observed_episodic[1:]]
-        await service._sr.observe_recall_set(window_sid, anchor_id, others, t)
-        await service._sr.flush()
-        # Plasticity layer: reinforce anchor->each-other edge with the
-        # cosine-similarity score (1 - distance, clipped). Co-recall is
-        # the brain's bread-and-butter Hebbian event.
-        out_lookup = {row["id"]: row for row in out}
-        anchor_row = out_lookup.get(anchor_id)
-        for j in others:
-            jrow = out_lookup.get(j)
-            score = _cosine_score_from_distance(jrow["distance"]) if jrow is not None else 0.5
-            await service._plasticity.reinforce(anchor_id, j, score=score, now=t)
-        # Reconsolidation (Nader 2000): when alpha is set, bump
-        # drift_total and pull the stored vector toward the cue
-        # (buffered; flushed to HNSW by the next consolidate pass).
-        if service.config.reconsolidation_alpha > 0.0 and anchor_row is not None:
-            cue = q if isinstance(q, list) else None
-            await _accrue_drift(service, anchor_row, t=t, cue=cue)
+    await _reinforce_recall_set(
+        service,
+        out=out,
+        observed_episodic=observed_episodic,
+        session_id=session_id,
+        q=q,
+        now=t_now,
+    )
     return out
 
 
@@ -271,6 +251,106 @@ def _cosine_score_from_distance(dist: float | None) -> float:
         return 0.5
     s = 1.0 - 0.5 * float(dist)
     return max(0.0, min(1.0, s))
+
+
+def _recency_fields(md: dict[str, Any], *, source: str, now: float) -> dict[str, Any]:
+    """Promote an episodic hit's group lineage and recency to top-level
+    fields so a caller can tell old memories from new and reassemble a
+    segmented episode (via ``group_id`` -> ``get_episode``) without
+    digging through the raw metadata blob. Semantic gists carry none of
+    these, so they pass through unchanged."""
+    if source != "episodic":
+        return {}
+    gid = md.get("episode_group_id")
+    seg_count = int(md.get("segment_count", 1))
+    created = md.get("encoded_at")
+    created_f = float(created) if isinstance(created, (int, float)) else None
+    stamps = [
+        float(v)
+        for v in (md.get("last_accessed"), md.get("last_reconsolidated_at"))
+        if isinstance(v, (int, float))
+    ]
+    updated = max(stamps) if stamps else created_f
+
+    def _age_days(ts: float | None) -> float | None:
+        return None if ts is None else max(0.0, (now - ts) / 86_400.0)
+
+    return {
+        # ``episode_group_id`` is set even for a standalone episode (to its
+        # own id); surface it only when actually segmented, so a non-null
+        # ``group_id`` means "reassemble the whole via get_episode".
+        "group_id": int(gid) if (gid is not None and seg_count > 1) else None,
+        "segment_count": seg_count,
+        "created_at": created_f,
+        "updated_at": updated,
+        "age_days": _age_days(created_f),
+        "updated_age_days": _age_days(updated),
+    }
+
+
+def _collapse_groups(merged: list[_Hit]) -> list[_Hit]:
+    """Fold the sibling segments of one theta-segmented episode into its
+    single best-ranked member (episodic only — semantic gists have no
+    group). Fragments of one memory then don't consume several ``k``
+    slots; the surfaced ``group_id`` / ``segment_count`` point the caller
+    at ``get_episode`` for the reassembled whole."""
+    seen_groups: set[int] = set()
+    kept: list[_Hit] = []
+    for row in merged:
+        if row[4] == "episodic":
+            gid = int((row[2] or {}).get("episode_group_id", row[0]))
+            if gid in seen_groups:
+                continue
+            seen_groups.add(gid)
+        kept.append(row)
+    return kept
+
+
+async def _reinforce_recall_set(
+    service: MemoryService,
+    *,
+    out: list[dict[str, Any]],
+    observed_episodic: list[tuple[str, int]],
+    session_id: str | None,
+    q: str | list[float],
+    now: float,
+) -> None:
+    """Anchor-model SR + plasticity update for one recall.
+
+    Fold one edge from the best-cosine anchor (= first episodic hit after
+    re-ranking) to each other episodic hit. Avoids the pairwise
+    n*(n-1)/2 inflation a naive "everything observed at the same t" loop
+    would produce — five hits add four edges, not ten.
+
+    The window is keyed on the *caller's* session, not the recalled
+    episodes' original sessions, so a recall in session B that pulls
+    episodes from session A enters B's window and a later recall in B
+    chains across via the still-in-window anchor — bridging A and B into
+    one connected graph. Falls back to the anchor's original session only
+    when the caller didn't supply one.
+    """
+    if service._sr is None or not observed_episodic:
+        return
+    anchor_id = observed_episodic[0][1]
+    window_sid = session_id or observed_episodic[0][0]
+    others = [j for _, j in observed_episodic[1:]]
+    await service._sr.observe_recall_set(window_sid, anchor_id, others, now)
+    await service._sr.flush()
+    # Plasticity layer: reinforce anchor->each-other edge with the
+    # cosine-similarity score (1 - distance, clipped). Co-recall is the
+    # brain's bread-and-butter Hebbian event.
+    out_lookup = {row["id"]: row for row in out}
+    anchor_row = out_lookup.get(anchor_id)
+    for j in others:
+        jrow = out_lookup.get(j)
+        score = _cosine_score_from_distance(jrow["distance"]) if jrow is not None else 0.5
+        await service._plasticity.reinforce(anchor_id, j, score=score, now=now)
+    # Reconsolidation (Nader 2000): when alpha is set, bump drift_total
+    # and pull the stored vector toward the cue (buffered; flushed to
+    # HNSW by the next consolidate pass).
+    if service.config.reconsolidation_alpha > 0.0 and anchor_row is not None:
+        cue = q if isinstance(q, list) else None
+        await _accrue_drift(service, anchor_row, t=now, cue=cue)
 
 
 async def _accrue_drift(

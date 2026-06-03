@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import itertools
 import logging
 import time
 import weakref
@@ -553,6 +554,12 @@ class MemoryService:
                     f"not visible in session {session_id!r}"
                 )
             content = "".join(m["content"] for m in members)
+            # Re-bond on access: engaging the whole episode strengthens
+            # its internal sibling chain (L-LTP for frequently-fetched
+            # episodes). Best-effort — a bond failure must not fail the
+            # read it decorates.
+            with contextlib.suppress(Exception):
+                await self._reinforce_segment_chain([int(m["id"]) for m in members], now_seconds())
             return {
                 "id": episode_id,
                 "content": content,
@@ -569,6 +576,22 @@ class MemoryService:
             "group_id": None,
             "segment_ids": None,
         }
+
+    async def _reinforce_segment_chain(self, seg_ids: list[int], now: float) -> None:
+        """Hebbian-bond consecutive sibling segments of one episode.
+
+        Reinforces ``seg_ids[i-1] -> seg_ids[i]`` so spreading activation
+        can resurface the whole episode from any one fragment. A no-op
+        when SR is disabled (``sr_enabled=False``) or the bond is disabled
+        (``segment_assoc_score <= 0``). Called at encode and again on
+        ``get_episode`` so a frequently-fetched episode crosses the L-LTP
+        threshold and the bond persists.
+        """
+        score = self.config.segment_assoc_score
+        if self._sr is None or score <= 0.0:
+            return
+        for a, b in itertools.pairwise(seg_ids):
+            await self._plasticity.reinforce(a, b, score=score, now=now)
 
     async def delete_episode(
         self,

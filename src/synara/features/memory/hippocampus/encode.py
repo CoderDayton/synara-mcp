@@ -381,6 +381,12 @@ async def _insert_segmented(
         with contextlib.suppress(Exception):
             await service.episodic.delete_by_ids(seg_ids)
         raise
+    # Hebbian sibling chain: bond consecutive segments so spreading
+    # activation can resurface the whole episode from any fragment.
+    # Best-effort: the episode is already durably stored, so a bond
+    # failure must not turn a successful store into a reported error.
+    with contextlib.suppress(Exception):
+        await service._reinforce_segment_chain(seg_ids, encoded_at)
     resolved_group_id = group_id
     return {
         "id": seg_ids[0],

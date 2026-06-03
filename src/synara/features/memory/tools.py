@@ -242,7 +242,14 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "mode: 'auto'/'hybrid' = episodic + semantic merged "
             "(default 'auto'); 'episodic' = raw traces only; "
             "'semantic' = schemas only — prefer recall_semantic_memory "
-            "for that case."
+            "for that case.\n"
+            "Each episodic hit also carries created_at/updated_at (unix "
+            "seconds) and age_days/updated_age_days so you can tell old "
+            "memories from new, plus group_id/segment_count: a non-null "
+            "group_id means the hit is one segment of a larger episode — "
+            "call get_episode(group_id) for the reassembled whole. Sibling "
+            "segments of one episode collapse to a single best-ranked hit "
+            "by default."
         ),
     )
     @_instrument(metrics, "recall_episodes")

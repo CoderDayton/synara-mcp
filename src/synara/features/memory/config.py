@@ -203,6 +203,18 @@ class MemoryConfig:
     # original ordering. Set ``theta_segment_max_chars=0`` to disable.
     theta_segment_max_chars: int = 1024
     theta_segment_max_items: int = 7
+    # Recall folds the sibling segments of one theta-segmented episode
+    # into a single best-ranked hit (so fragments of one memory don't eat
+    # several ``k`` slots); the collapsed hit carries ``group_id`` /
+    # ``segment_count`` so the caller can fetch the whole via
+    # ``get_episode``. Set false to return each segment as its own hit.
+    recall_collapse_groups: bool = True
+    # Hebbian strength of the within-episode sibling chain: consecutive
+    # segments are reinforced at encode (and re-bonded on ``get_episode``)
+    # so spreading activation can resurface the whole episode. 0 disables.
+    # Requires ``sr_enabled``: bonds are written only when the SR/plasticity
+    # layer is active, so this is a no-op when SR is off.
+    segment_assoc_score: float = 0.8
     # Successor representation (Stachenfeld 2017). When enabled, recall
     # blends a temporal co-occurrence boost ``M[i*, j]`` into the rank
     # score, where ``i*`` is the best-cosine episodic anchor. ``omega``
