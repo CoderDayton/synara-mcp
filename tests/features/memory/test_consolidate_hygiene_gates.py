@@ -407,10 +407,10 @@ async def test_min_promotion_confidence_rejects_low_confidence_cluster() -> None
         await db.close()
 
 
-# ============================================================ last_hit_at lifecycle
+# ========================================================= last_accessed lifecycle
 @pytest.mark.asyncio
-async def test_schema_last_hit_at_set_on_creation() -> None:
-    """Newly promoted schemas must carry ``last_hit_at`` so cold-schema
+async def test_schema_last_accessed_set_on_creation() -> None:
+    """Newly promoted schemas must carry ``last_accessed`` so cold-schema
     eviction has a timestamp to compare against."""
     db = AsyncVectorDB(":memory:")
     try:
@@ -426,15 +426,15 @@ async def test_schema_last_hit_at_set_on_creation() -> None:
         rows = await svc.semantic.get_documents(filter_dict=None)
         assert rows, "expected at least one schema"
         for _sid, _text, md in rows:
-            assert "last_hit_at" in md
-            assert isinstance(md["last_hit_at"], (int, float))
+            assert "last_accessed" in md
+            assert isinstance(md["last_accessed"], (int, float))
     finally:
         await db.close()
 
 
 @pytest.mark.asyncio
-async def test_schema_last_hit_at_bumped_on_absorb_merge() -> None:
-    """``_merge_into_schema`` must bump ``last_hit_at`` so absorbed
+async def test_schema_last_accessed_bumped_on_absorb_merge() -> None:
+    """``_merge_into_schema`` must bump ``last_accessed`` so absorbed
     episodes count as schema activity."""
     db = AsyncVectorDB(":memory:")
     try:
@@ -451,16 +451,16 @@ async def test_schema_last_hit_at_bumped_on_absorb_merge() -> None:
         rows = await svc.semantic.get_documents(filter_dict=None)
         assert rows
         sch_id = int(rows[0][0])
-        first_stamp = float(rows[0][2]["last_hit_at"])
+        first_stamp = float(rows[0][2]["last_accessed"])
         # Manually back-date the stamp, then trigger a merge.
-        await svc.semantic.update_metadata([(sch_id, {"last_hit_at": first_stamp - 1000.0})])
+        await svc.semantic.update_metadata([(sch_id, {"last_accessed": first_stamp - 1000.0})])
         await svc.encode_episode("kappa merge-stamp extra", session_id="s1", salience=0.6)
         await svc.recall("kappa merge-stamp extra", session_id="s1", k=1)
         await svc.consolidate(min_cluster_size=1)
         rows2 = await svc.semantic.get_documents({"id": sch_id}, limit=1)
         assert rows2
-        new_stamp = float(rows2[0][2]["last_hit_at"])
-        assert new_stamp > first_stamp - 1000.0, "merge did not bump last_hit_at"
+        new_stamp = float(rows2[0][2]["last_accessed"])
+        assert new_stamp > first_stamp - 1000.0, "merge did not bump last_accessed"
     finally:
         await db.close()
 
@@ -492,7 +492,9 @@ async def test_recall_semantic_memory_does_not_bump_when_eviction_off() -> None:
 @pytest.mark.asyncio
 async def test_recall_semantic_memory_bumps_when_eviction_enabled() -> None:
     """With ``forget_schema_unused_seconds > 0``, returned schemas must
-    have ``last_hit_at`` bumped so a fresh recall keeps the schema alive."""
+    have ``last_accessed`` bumped so a fresh recall keeps the schema alive.
+    Seeds the legacy ``last_hit_at`` key to also prove a pre-unification
+    schema gets a canonical stamp on its next recall."""
     db = AsyncVectorDB(":memory:")
     try:
         cfg = MemoryConfig(forget_schema_unused_seconds=60.0)
@@ -509,8 +511,8 @@ async def test_recall_semantic_memory_bumps_when_eviction_enabled() -> None:
         results = await svc.recall_semantic_memory("mu gist", k=1)
         assert results
         rows = await svc.semantic.get_documents(filter_dict=None)
-        new_stamp = float(rows[0][2]["last_hit_at"])
-        assert new_stamp > old, "recall must bump last_hit_at when eviction is enabled"
+        new_stamp = float(rows[0][2]["last_accessed"])
+        assert new_stamp > old, "recall must bump last_accessed when eviction is enabled"
     finally:
         await db.close()
 

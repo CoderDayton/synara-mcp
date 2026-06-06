@@ -279,8 +279,8 @@ export interface components {
             consolidated_into: number;
             /** Embedding */
             embedding: number[] | null;
-            /** Encoded At */
-            encoded_at: number;
+            /** Created At */
+            created_at: number;
             /** Group Id */
             group_id: number;
             /** Id */

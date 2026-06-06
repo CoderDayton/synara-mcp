@@ -11,6 +11,14 @@ from dataclasses import dataclass, field
 
 from .memory_types import MemoryTypeRegistry
 
+# Neutral salience base shared by the consolidate floor, the dream-replay
+# floor, and the auto-salience default. Equal to the ``derive_salience``
+# neutral base in ``amygdala/signals.py``: an episode carrying no salient
+# signals sits exactly here, so these gates admit a neutrally-salient trace
+# and reject only below-neutral noise. Kept as one constant so the invariant
+# the three field comments used to assert by hand cannot silently drift.
+NEUTRAL_SALIENCE_BASE: float = 0.3
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryConfig:
@@ -169,9 +177,11 @@ class MemoryConfig:
     # ``consolidate_confidence_full_at``) is below this floor. 0.0 = off.
     consolidate_min_promotion_confidence: float = 0.0
     # Cold-schema eviction in the forget pass: semantic schemas whose
-    # ``last_hit_at`` is older than this many seconds are deleted. A
-    # schema's ``last_hit_at`` is set at creation and bumped by every
-    # absorb-merge and every ``recall_semantic_memory`` hit. 0.0 = off
+    # ``last_accessed`` is older than this many seconds are deleted. A
+    # schema's ``last_accessed`` is set at creation and bumped by every
+    # absorb-merge and every ``recall_semantic_memory`` hit (legacy schemas
+    # predating field unification carry ``last_hit_at``; the timestamps
+    # helper reads either). 0.0 = off
     # (no schema lifecycle pruning); set to e.g. 60*60*24*30 (30 days)
     # for a slow ontology garbage-collector.
     forget_schema_unused_seconds: float = 0.0
@@ -343,10 +353,10 @@ class MemoryConfig:
     # Salience floor for consolidate eligibility. Episodes whose
     # ``salience`` is strictly below this value are skipped, preventing
     # low-salience noise from accumulating enough co-occurrence over
-    # repeated runs to form durable schema clusters. Default matches the
-    # ``derive_salience`` neutral base (0.3) so any episode at or above
-    # the neutral baseline still consolidates; set to 0.0 to disable.
-    consolidate_min_salience: float = 0.3
+    # repeated runs to form durable schema clusters. Defaults to the shared
+    # ``NEUTRAL_SALIENCE_BASE`` so any episode at or above the neutral
+    # baseline still consolidates; set to 0.0 to disable.
+    consolidate_min_salience: float = NEUTRAL_SALIENCE_BASE
     # Schema-margin replay weighting. The consolidation pass scores each
     # unconsolidated episode by ``strength * d1 / (1 + beta * margin)``,
     # where ``d1`` is the cosine distance to the nearest schema and
@@ -387,11 +397,12 @@ class MemoryConfig:
     # one (``encode_episode(..., salience=None)``). On by default — the
     # encoder calls ``derive_salience(derive_signals(content),
     # base=auto_salience_base)`` so failure / diff / decision records
-    # float to the top without per-call tuning. The neutral base matches
-    # ``consolidate_min_salience`` so untagged auto-derived episodes sit
-    # at the consolidate boundary; signalled content lifts above it.
+    # float to the top without per-call tuning. Defaults to the shared
+    # ``NEUTRAL_SALIENCE_BASE`` (== ``consolidate_min_salience``) so untagged
+    # auto-derived episodes sit at the consolidate boundary; signalled
+    # content lifts above it.
     auto_salience: bool = True
-    auto_salience_base: float = 0.3
+    auto_salience_base: float = NEUTRAL_SALIENCE_BASE
 
     # Reactor policy thresholds (only consulted when
     # ``self_learning_enabled``). Defaults are conservative enough that
@@ -419,11 +430,11 @@ class MemoryConfig:
     # (McGaugh arousal modulation). ``dream_replay_top_k=0`` disables
     # replay (LTD-only dream, the legacy behaviour).
     dream_replay_top_k: int = 16
-    # Salience floor for dream-replay rehearsal. Mirrors
-    # ``consolidate_min_salience`` (0.3 = ``derive_salience`` neutral
-    # base) so low-salience noise is not rehearsed into durable
-    # associations during SWR replay. Set to 0.0 to disable.
-    dream_replay_min_salience: float = 0.3
+    # Salience floor for dream-replay rehearsal. Defaults to the shared
+    # ``NEUTRAL_SALIENCE_BASE`` (== ``consolidate_min_salience``) so
+    # low-salience noise is not rehearsed into durable associations during
+    # SWR replay. Set to 0.0 to disable.
+    dream_replay_min_salience: float = NEUTRAL_SALIENCE_BASE
     dream_replay_gain: float = 0.3
     # Per-cycle scan size for dream replay. ``get_documents`` orders by
     # id, so a fixed ``limit`` would always return the oldest episodes

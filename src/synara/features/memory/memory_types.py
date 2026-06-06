@@ -16,6 +16,9 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
+
+from synara.core.errors import ValidationError
 
 
 class MemoryType(StrEnum):
@@ -134,9 +137,63 @@ def default_registry(
     )
 
 
+# --- Scope axis (orthogonal to MemoryType) -------------------------------
+# A record is either tied to a session (visible only when recalled in that
+# session) or global (visible from any session). Scope is stored as a plain
+# metadata field, independent of the episodic/semantic type, so it needs no
+# schema migration: legacy records that predate the field fall back to
+# ``session_id`` presence (see :func:`in_session_scope`).
+SCOPE_SESSION = "session"
+SCOPE_GLOBAL = "global"
+
+
+def resolve_scope(scope: str | None, session_id: str | None) -> str:
+    """Normalise an explicit ``scope`` against session presence.
+
+    An explicit value wins (and is validated); otherwise a record is
+    session-scoped when it carries a ``session_id`` and global when it
+    does not -- the rule applied at every write site.
+    """
+    if scope is not None:
+        if scope not in (SCOPE_SESSION, SCOPE_GLOBAL):
+            raise ValidationError(
+                f"unknown scope {scope!r}; expected {SCOPE_SESSION!r} or {SCOPE_GLOBAL!r}"
+            )
+        if scope == SCOPE_SESSION and not session_id:
+            raise ValidationError("session-scoped memory requires a session_id")
+        return scope
+    return SCOPE_SESSION if session_id else SCOPE_GLOBAL
+
+
+def in_session_scope(md: Mapping[str, Any] | None, *, session_id: str | None) -> bool:
+    """True if a record is visible from the caller's ``session_id``.
+
+    Honours an explicit ``scope`` field; for legacy records without one,
+    infers scope from ``session_id`` presence -- so existing episodes
+    (always session-stamped) stay session-scoped and existing scope-less
+    semantics stay global. A global record is always visible; a session
+    record only when its ``session_id`` matches the caller's.
+    """
+    md = md or {}
+    scope = md.get("scope")
+    if scope == SCOPE_GLOBAL:
+        return True
+    if scope == SCOPE_SESSION:
+        return session_id is not None and str(md.get("session_id", "")) == session_id
+    # Legacy / missing scope: infer from session_id presence.
+    rec_sid = md.get("session_id")
+    if rec_sid:
+        return session_id is not None and str(rec_sid) == session_id
+    return True
+
+
 __all__ = [
+    "SCOPE_GLOBAL",
+    "SCOPE_SESSION",
     "MemoryType",
     "MemoryTypeRegistry",
     "MemoryTypeSpec",
     "default_registry",
+    "in_session_scope",
+    "resolve_scope",
 ]

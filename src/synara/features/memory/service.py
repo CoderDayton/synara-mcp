@@ -52,9 +52,12 @@ from .hippocampus.plasticity import PlasticityGraph as _Plasticity
 from .hippocampus.separate import DGProjector as _DGProjector
 from .hippocampus.successor import SuccessorRepresentation as _SR
 from .memory_types import (
+    SCOPE_SESSION,
     MemoryType,
     MemoryTypeRegistry,
     default_registry,
+    in_session_scope,
+    resolve_scope,
 )
 from .port import HygieneCounters
 from .tracing import start_request as _start_request
@@ -745,7 +748,7 @@ class MemoryService:
         session_id: str | None = None,
         k: int = 8,
         mode: str = "auto",
-        scope_session: bool = False,
+        scope_session: bool | None = None,
         tags: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         return await self._recall(
@@ -765,6 +768,7 @@ class MemoryService:
         session_id: str | None = None,
         k: int = 8,
         mode: str = "auto",
+        scope_session: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Non-reinforcing recall for GET-like entry points (MCP resource reads).
 
@@ -773,9 +777,17 @@ class MemoryService:
         interaction event (so it never appends to the durable event log
         or advances dream pressure). A host may prefetch, cache, or poll
         a resource, so a read must not mutate durable memory state.
+
+        ``scope_session`` carries the same tri-state semantics as
+        :meth:`recall` (unset = scope when a ``session_id`` is given).
         """
         return await self._recall(
-            query=query, session_id=session_id, k=k, mode=mode, reinforce=False
+            query=query,
+            session_id=session_id,
+            k=k,
+            mode=mode,
+            reinforce=False,
+            scope_session=scope_session,
         )
 
     async def _recall(
@@ -786,7 +798,7 @@ class MemoryService:
         k: int,
         mode: str,
         reinforce: bool,
-        scope_session: bool = False,
+        scope_session: bool | None = None,
         tags: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         await self._ensure_sr_loaded()
@@ -911,6 +923,8 @@ class MemoryService:
         tags: Sequence[str] | None = None,
         confidence: float = 1.0,
         supersedes: int | None = None,
+        scope: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         if not content.strip():
             raise ValidationError("content must be non-empty")
@@ -931,6 +945,10 @@ class MemoryService:
                         f"tag exceeds max_tag_chars ({self.config.max_tag_chars})"
                     )
         await self._validate_supersedes(supersedes)
+        # Scope axis: explicit ``scope`` wins; otherwise a record is
+        # session-scoped when a session_id is supplied and global when not.
+        # resolve_scope rejects an explicit 'session' scope with no session.
+        eff_scope = resolve_scope(scope, session_id)
 
         now = now_seconds()
         tag_list = sorted({t for t in (tags or []) if isinstance(t, str) and t})
@@ -942,7 +960,10 @@ class MemoryService:
             "created_at": now,
             "updated_at": now,
             "authored": True,
+            "scope": eff_scope,
         }
+        if eff_scope == SCOPE_SESSION:
+            metadata["session_id"] = session_id
         sem_ids = await self.semantic.add_texts(
             [content],
             metadatas=[metadata],
@@ -980,6 +1001,7 @@ class MemoryService:
             "confidence": float(confidence),
             "created_at": now,
             "superseded": supersedes,
+            "scope": eff_scope,
         }
 
     async def recall_semantic_memory(
@@ -988,6 +1010,8 @@ class MemoryService:
         *,
         k: int = 8,
         kind: str | None = None,
+        session_id: str | None = None,
+        scope_session: bool | None = None,
     ) -> list[dict[str, Any]]:
         if not query.strip():
             raise ValidationError("query must be non-empty")
@@ -1003,16 +1027,21 @@ class MemoryService:
             return []
         await self._ensure_index_ready()
         q = await self.query_arg(query)
-        # When a kind filter is requested, over-fetch and filter in Python
-        # so cosine ranking still drives the final order; semantic store
-        # is small (gist-level) so the over-fetch is cheap.
-        fetch_k = k if kind is None else max(k * 4, 32)
+        # Scope filter: a supplied session_id scopes to that session (plus
+        # global schemas) by default; scope_session=False opts out.
+        scope_active = scope_session is not False and session_id is not None
+        # When a kind or scope filter is requested, over-fetch and filter in
+        # Python so cosine ranking still drives the final order; the semantic
+        # store is small (gist-level) so the over-fetch is cheap.
+        fetch_k = k if (kind is None and not scope_active) else max(k * 4, 32)
         hits = await self.semantic.similarity_search(q, k=fetch_k)
         out: list[dict[str, Any]] = []
         hit_bumps: list[tuple[int, dict[str, Any]]] = []
         for doc, dist in hits:
             md = dict(doc.metadata)
-            if kind is not None and str(md.get("kind", "")) != kind:
+            if (kind is not None and str(md.get("kind", "")) != kind) or (
+                scope_active and not in_session_scope(md, session_id=session_id)
+            ):
                 continue
             out.append(
                 {
@@ -1024,7 +1053,7 @@ class MemoryService:
             )
             if len(out) >= k:
                 break
-        # Bump ``last_hit_at`` on the schemas we actually returned so the
+        # Bump ``last_accessed`` on the schemas we actually returned so the
         # cold-schema eviction path (forget.run with
         # forget_schema_unused_seconds > 0) treats a recently-recalled
         # schema as alive.
@@ -1033,7 +1062,7 @@ class MemoryService:
             for r in out:
                 sid = int(r["id"])
                 if sid >= 0:
-                    hit_bumps.append((sid, {"last_hit_at": now}))
+                    hit_bumps.append((sid, {"last_accessed": now}))
             if hit_bumps:
                 await self.semantic.update_metadata(hit_bumps)
         return out

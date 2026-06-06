@@ -81,7 +81,7 @@ function EpisodicContent({
             label="Retrievals"
             value={String(node.retrieval_count)}
           />
-          <MetaRow label="Encoded" value={relativeTime(node.encoded_at)} />
+          <MetaRow label="Encoded" value={relativeTime(node.created_at)} />
           <MetaRow
             label="Last recall"
             value={relativeTime(node.last_accessed)}

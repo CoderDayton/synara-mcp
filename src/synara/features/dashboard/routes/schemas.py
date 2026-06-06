@@ -143,7 +143,7 @@ class EpisodicGraphNode(BaseModel):
     salience: float
     retrieval_count: int
     session_id: str | None
-    encoded_at: float
+    created_at: float
     last_accessed: float
     consolidated_into: int
     group_id: int

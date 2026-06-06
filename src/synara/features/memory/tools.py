@@ -222,15 +222,16 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "Hits are ranked by cosine + successor-representation + "
             "spreading activation; each hit bumps retrieval_count.\n"
             "query: text, cosine-matched.\n"
-            f"{_SID} Optional. Ranking hint by default — in-session "
-            "episodes get a small bonus and cross-session episodes are "
-            "still returned. Set scope_session=true to promote it to a "
-            "hard filter (episodic hits restricted to this session_id).\n"
-            "scope_session: bool, default false. Hard-filter episodic "
-            "hits to session_id (needs session_id set).\n"
+            f"{_SID} Optional. When set, recall is scoped to that session "
+            "by default (plus any global memories): only this session's "
+            "episodes and schemas are returned, and in-session episodes "
+            "still get a small ranking bonus. Set scope_session=false to "
+            "opt back into cross-session recall.\n"
+            "scope_session: optional bool. Default (unset) = scope when a "
+            "session_id is given; true = force scoping (needs session_id); "
+            "false = cross-session (the old default).\n"
             "tags: optional list[str]; when set, keep only episodic hits "
-            "whose stored tags include every listed tag. Semantic (gist) "
-            "hits are cross-session by design and are never scoped out.\n"
+            "whose stored tags include every listed tag.\n"
             "k: max results, default 4 (ascending distance). Kept small "
             "so the result fits a tool-result token budget.\n"
             "max_chars: per-hit content is truncated to this many chars "
@@ -260,7 +261,7 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         session_id: str | None = None,
         k: int = 4,
         mode: str = "auto",
-        scope_session: bool = False,
+        scope_session: bool | None = None,
         tags: list[str] | None = None,
         max_chars: int | None = None,
         full: bool = False,
@@ -270,10 +271,11 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             f"recall_episodes: session_id={session_id!r} k={k} mode={mode!r} "
             f"scope_session={scope_session} tags={tags} max_chars={max_chars} full={full}"
         )
-        if scope_session and session_id is None:
-            # The session filter needs a session_id to scope to; without one
-            # it is a silent no-op (recall stays cross-session). Surface that
-            # rather than letting the caller assume scoping took effect.
+        if scope_session is True and session_id is None:
+            # An explicit scope_session=true needs a session_id to scope to;
+            # without one it is a silent no-op (recall stays cross-session).
+            # Surface that rather than letting the caller assume scoping took
+            # effect. (scope_session left unset simply means "no scoping".)
             await ctx.warning(
                 "scope_session=true ignored: no session_id to scope to; recall stays cross-session"
             )
@@ -432,8 +434,13 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "a stable, durable truth: a user preference, a project "
             "convention, a procedure, an authored rule, a learned "
             "fact. Writes directly to the semantic store, bypassing "
-            "the episodic->consolidate pipeline. No session scope.\n"
+            "the episodic->consolidate pipeline.\n"
             "content: non-empty distilled text.\n"
+            "scope: optional 'session' | 'global'. Default: 'session' when "
+            "a session_id is given, else 'global'. A global memory is "
+            "returned from any session; a session memory only from its own.\n"
+            "session_id: required when scope is 'session'; the namespace "
+            "this memory is tied to.\n"
             "kind: free-form label stored as metadata.kind, default "
             "'fact'. Common values: fact | procedure | preference | "
             "schema. Filterable via recall_semantic_memory.\n"
@@ -455,11 +462,13 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         tags: list[str] | None = None,
         confidence: float = 1.0,
         supersedes: int | None = None,
+        scope: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         await _ensure_warmed(embedder, ctx)
         await ctx.debug(
             f"store_semantic_memory: kind={kind!r} confidence={confidence} "
-            f"tags={tags!r} supersedes={supersedes}"
+            f"tags={tags!r} supersedes={supersedes} scope={scope!r} session_id={session_id!r}"
         )
         result = await service.store_semantic_memory(
             content=content,
@@ -467,6 +476,8 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             tags=tags,
             confidence=confidence,
             supersedes=supersedes,
+            scope=scope,
+            session_id=session_id,
         )
         retired = result.get("superseded")
         if retired is not None:
@@ -485,7 +496,12 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "query: text, cosine-matched.\n"
             "k: max results, default 8 (ascending distance).\n"
             "kind: optional filter on metadata.kind (e.g. "
-            "'preference'). Omit to search all kinds."
+            "'preference'). Omit to search all kinds.\n"
+            "session_id: optional. When set, scopes to that session's "
+            "schemas plus global ones by default; scope_session=false opts "
+            "back into cross-session results.\n"
+            "scope_session: optional bool, same semantics as on "
+            "recall_episodes (unset = scope when session_id given)."
         ),
     )
     @_instrument(metrics, "recall_semantic_memory")
@@ -495,10 +511,17 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         ctx: Context,
         k: int = 8,
         kind: str | None = None,
+        session_id: str | None = None,
+        scope_session: bool | None = None,
     ) -> list[dict[str, Any]]:
         await _ensure_warmed(embedder, ctx)
-        await ctx.debug(f"recall_semantic_memory: k={k} kind={kind!r}")
-        results = await service.recall_semantic_memory(query=query, k=k, kind=kind)
+        await ctx.debug(
+            f"recall_semantic_memory: k={k} kind={kind!r} "
+            f"session_id={session_id!r} scope_session={scope_session}"
+        )
+        results = await service.recall_semantic_memory(
+            query=query, k=k, kind=kind, session_id=session_id, scope_session=scope_session
+        )
         await ctx.info(f"semantic recall returned {len(results)} hit(s)")
         return results
 

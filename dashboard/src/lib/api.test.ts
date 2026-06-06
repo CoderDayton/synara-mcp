@@ -111,7 +111,7 @@ describe("api.graph normalisation (version-skew tolerance)", () => {
       salience: 0.8,
       retrieval_count: 2,
       session_id: "s1",
-      encoded_at: 1,
+      created_at: 1,
       last_accessed: 2,
       consolidated_into: 0,
       group_id: 7,

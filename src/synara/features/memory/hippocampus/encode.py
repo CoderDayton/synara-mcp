@@ -23,6 +23,7 @@ from ..amygdala.signals import (
     derive_salience,
     derive_signals,
 )
+from ..memory_types import SCOPE_SESSION
 from ..service import UNCONSOLIDATED, now_seconds
 from .segment import split_into_segments
 from .separate import jaccard as _dg_jaccard
@@ -37,6 +38,7 @@ _RESERVED_META_KEYS: frozenset[str] = frozenset(
         "session_id",
         "tags",
         "salience",
+        "created_at",
         "encoded_at",
         "last_accessed",
         "retrieval_count",
@@ -281,9 +283,12 @@ async def _insert_single(
 ) -> dict[str, Any]:
     meta: dict[str, Any] = {
         "session_id": session_id,
+        # Episodes always carry a (mandatory) session_id, so they are
+        # always session-scoped; recall honours this via in_session_scope.
+        "scope": SCOPE_SESSION,
         "tags": list(tags) if tags else [],
         "salience": float(salience),
-        "encoded_at": encoded_at,
+        "created_at": encoded_at,
         "last_accessed": encoded_at,
         "retrieval_count": 0,
         "access_history": [encoded_at],
@@ -353,9 +358,11 @@ async def _insert_segmented(
     for pos, _seg in enumerate(segments):
         m: dict[str, Any] = {
             "session_id": session_id,
+            # Segmented episodes are session-scoped like any other episode.
+            "scope": SCOPE_SESSION,
             "tags": tags_list,
             "salience": float(salience),
-            "encoded_at": encoded_at,
+            "created_at": encoded_at,
             "last_accessed": encoded_at,
             "retrieval_count": 0,
             "access_history": [encoded_at],

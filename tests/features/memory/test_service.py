@@ -856,16 +856,20 @@ async def test_successor_recall_set_chains_across_recalls() -> None:
     assert sr.total_edges == edges_after_first + 2.0
 
 
-async def test_recall_is_cross_session_by_default() -> None:
-    """session_id is a hint, not a filter: results span all sessions."""
+async def test_recall_scopes_to_session_by_default() -> None:
+    """A supplied session_id scopes recall to that session by default;
+    scope_session=False opts back into cross-session results."""
     db = AsyncVectorDB(":memory:")
     try:
         svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
         await svc.encode_episode("shared cue alpha", "old", salience=0.5)
         await svc.encode_episode("shared cue beta", "now", salience=0.5)
-        hits = await svc.recall("shared cue", session_id="now", k=5, mode="episodic")
-        sessions_returned = {h["metadata"].get("session_id") for h in hits}
-        assert {"old", "now"} <= sessions_returned
+        scoped = await svc.recall("shared cue", session_id="now", k=5, mode="episodic")
+        assert {h["metadata"].get("session_id") for h in scoped} == {"now"}
+        cross = await svc.recall(
+            "shared cue", session_id="now", k=5, mode="episodic", scope_session=False
+        )
+        assert {"old", "now"} <= {h["metadata"].get("session_id") for h in cross}
     finally:
         await db.close()
 
@@ -879,7 +883,11 @@ async def test_recall_biases_same_session_at_equal_cosine() -> None:
         svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         await svc.encode_episode("identical content", "old", salience=0.5)
         await svc.encode_episode("identical content", "now", salience=0.5)
-        hits = await svc.recall("identical content", session_id="now", k=2, mode="episodic")
+        # scope_session=False keeps both sessions in play so the contextual
+        # bonus (not a hard filter) decides the tie-break order.
+        hits = await svc.recall(
+            "identical content", session_id="now", k=2, mode="episodic", scope_session=False
+        )
         assert len(hits) == 2
         assert hits[0]["metadata"]["session_id"] == "now"
         assert hits[1]["metadata"]["session_id"] == "old"
@@ -895,6 +903,51 @@ async def test_recall_cross_session_no_caller_session() -> None:
         await svc.encode_episode("alpha note", "b", salience=0.5)
         hits = await svc.recall("alpha", k=5, mode="episodic")
         assert {h["metadata"].get("session_id") for h in hits} == {"a", "b"}
+    finally:
+        await db.close()
+
+
+async def test_semantic_memory_scope_and_global() -> None:
+    """A session-scoped semantic memory surfaces only in its own session;
+    a global one surfaces from any session (and an absent caller session
+    disables scoping entirely)."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        await svc.store_semantic_memory(
+            "widget policy detail", scope="session", session_id="proj-a"
+        )
+        await svc.store_semantic_memory("widget policy detail", scope="global")
+        # In proj-a: the session-scoped fact and the global one are visible.
+        a = await svc.recall_semantic_memory("widget policy detail", session_id="proj-a")
+        assert sorted(h["metadata"].get("scope") for h in a) == ["global", "session"]
+        # In proj-b: only the global fact.
+        b = await svc.recall_semantic_memory("widget policy detail", session_id="proj-b")
+        assert [h["metadata"].get("scope") for h in b] == ["global"]
+        # No caller session: no scoping, both visible.
+        n = await svc.recall_semantic_memory("widget policy detail")
+        assert len(n) == 2
+        # Explicit opt-out also returns both even with a session.
+        c = await svc.recall_semantic_memory(
+            "widget policy detail", session_id="proj-b", scope_session=False
+        )
+        assert len(c) == 2
+    finally:
+        await db.close()
+
+
+async def test_store_semantic_memory_scope_defaults_and_validation() -> None:
+    """scope is inferred from session_id when unset; an explicit 'session'
+    scope without a session_id is rejected."""
+    db = AsyncVectorDB(":memory:")
+    try:
+        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        with_sid = await svc.store_semantic_memory("fact one", session_id="proj-a")
+        assert with_sid["scope"] == "session"
+        no_sid = await svc.store_semantic_memory("fact two")
+        assert no_sid["scope"] == "global"
+        with pytest.raises(ValidationError):
+            await svc.store_semantic_memory("fact three", scope="session")
     finally:
         await db.close()
 

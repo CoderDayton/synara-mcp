@@ -20,7 +20,9 @@ import numpy as np
 
 from synara.core.errors import ValidationError
 
+from ..memory_types import in_session_scope
 from ..service import now_seconds
+from ..timestamps import created_at as _created_at
 from ..tracing import current_context as _trace_current
 from ..tracing import record_span as _trace_span
 from . import complete as _complete_mod
@@ -71,7 +73,7 @@ async def run(
     session_id: str | None = None,
     k: int = 8,
     mode: str = "auto",
-    scope_session: bool = False,
+    scope_session: bool | None = None,
     tags: list[str] | None = None,
     reinforce: bool,
 ) -> list[dict[str, Any]]:
@@ -84,22 +86,22 @@ async def run(
     if k <= 0:
         return []
 
-    # Recall is always cross-session: ``session_id`` is the caller's
-    # current-session hint, used as the SR window key (so cross-session
-    # bridges form in the caller's context) but never as a hard filter
-    # on the simplevecdb search. Callers that want strict per-session
-    # results should post-filter the returned list themselves.
+    # The SR window key is still ``session_id`` regardless of scoping, so
+    # cross-session bridges keep forming in the caller's context.
     ep_filter: dict[str, Any] | None = None
-    # Opt-in hard scoping (P1). ``session_id`` stays a ranking hint by
-    # default; ``scope_session`` promotes it to a filter, and ``tags``
-    # restricts episodic hits to traces carrying every requested tag.
-    # Tags are stored as a list, so this is a Python post-filter over an
-    # over-fetched candidate set (mirroring ``recall_semantic_memory``)
-    # rather than a simplevecdb metadata filter, keeping cosine order the
-    # final arbiter. Semantic (gist) hits are cross-session by design and
-    # are never scoped out.
+    # Scope axis (default-on). A supplied ``session_id`` scopes recall to
+    # that session plus any global records; ``scope_session=False`` opts
+    # back into cross-session results, ``scope_session=True`` forces
+    # scoping, and ``None`` means auto (scope when a session is given).
+    # The scope check applies to both episodic and semantic hits via
+    # ``in_session_scope`` (global records always pass; legacy records
+    # without a ``scope`` field fall back to session_id presence). ``tags``
+    # is an additional episodic-only constraint. Both are Python
+    # post-filters over an over-fetched candidate set (not a simplevecdb
+    # metadata filter), keeping cosine order the final arbiter.
     tagset = frozenset(tags) if tags else None
-    filtering = scope_session or bool(tagset)
+    scope_active = scope_session is not False and session_id is not None
+    filtering = scope_active or bool(tagset)
     collapse = service.config.recall_collapse_groups
     # Over-fetch when filtering *or* collapsing groups so that, after
     # dropping out-of-scope or same-group fragments, ``k`` hits remain.
@@ -136,10 +138,8 @@ async def run(
         merged = [
             row
             for row in merged
-            if row[4] != "episodic"
-            or _passes_scope(
-                row[2], session_id=session_id, scope_session=scope_session, tags=tagset
-            )
+            if (not scope_active or in_session_scope(row[2], session_id=session_id))
+            and (row[4] != "episodic" or _passes_tags(row[2], tagset))
         ]
         _log_scope_cap(
             fetch_k=fetch_k,
@@ -222,27 +222,17 @@ def _log_scope_cap(*, fetch_k: int, ep_before: int, ep_after: int, k: int) -> No
         )
 
 
-def _passes_scope(
-    md: dict[str, Any] | None,
-    *,
-    session_id: str | None,
-    scope_session: bool,
-    tags: frozenset[str] | None,
-) -> bool:
-    """True if an episodic hit satisfies the opt-in recall scope.
+def _passes_tags(md: dict[str, Any] | None, tags: frozenset[str] | None) -> bool:
+    """True if an episodic hit carries every requested tag.
 
-    ``scope_session`` keeps only hits whose ``session_id`` matches the
-    caller's; ``tags`` keeps only hits whose stored tag list is a
-    superset of every requested tag.
+    Session/global scoping is handled separately by ``in_session_scope``;
+    this is the additional episodic-only tag constraint, keeping only hits
+    whose stored tag list is a superset of every requested tag.
     """
-    md = md or {}
-    if scope_session and session_id is not None and str(md.get("session_id", "")) != session_id:
-        return False
-    if tags:
-        hit_tags = {str(t) for t in (md.get("tags") or [])}
-        if not tags.issubset(hit_tags):
-            return False
-    return True
+    if not tags:
+        return True
+    hit_tags = {str(t) for t in ((md or {}).get("tags") or [])}
+    return tags.issubset(hit_tags)
 
 
 def _cosine_score_from_distance(dist: float | None) -> float:
@@ -263,8 +253,7 @@ def _recency_fields(md: dict[str, Any], *, source: str, now: float) -> dict[str,
         return {}
     gid = md.get("episode_group_id")
     seg_count = int(md.get("segment_count", 1))
-    created = md.get("encoded_at")
-    created_f = float(created) if isinstance(created, (int, float)) else None
+    created_f = _created_at(md)
     stamps = [
         float(v)
         for v in (md.get("last_accessed"), md.get("last_reconsolidated_at"))

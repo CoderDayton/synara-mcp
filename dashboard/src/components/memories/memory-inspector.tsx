@@ -132,7 +132,7 @@ function EpisodicBody({
         />
         <Stat
           label="Encoded"
-          value={relativeTime(node.encoded_at)}
+          value={relativeTime(node.created_at)}
           hint="When this episode was first stored."
         />
         <Stat

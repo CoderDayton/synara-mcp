@@ -63,11 +63,12 @@ Ontology hygiene knobs (all optional, all default off / back-compat):
 * ``consolidate_min_promotion_confidence`` — reject promotion when
   derived confidence is below the floor.
 * ``forget_schema_unused_seconds`` — cold-schema eviction in
-  ``forget.run``: semantic schemas whose ``last_hit_at`` is older than
-  this are deleted. ``last_hit_at`` is set at schema creation, bumped
+  ``forget.run``: semantic schemas whose ``last_accessed`` is older than
+  this are deleted. ``last_accessed`` is set at schema creation, bumped
   on every absorb-merge, and bumped on every ``recall_semantic_memory``
   hit (only when the knob is enabled, to keep recall write-free
-  otherwise).
+  otherwise). Legacy schemas predating field unification carry
+  ``last_hit_at`` instead; the timestamps helper reads either.
 """
 
 from __future__ import annotations
@@ -80,7 +81,9 @@ from typing import TYPE_CHECKING, Any
 
 from synara.core.errors import ValidationError
 
+from ..memory_types import SCOPE_GLOBAL, SCOPE_SESSION
 from ..service import UNCONSOLIDATED, now_seconds
+from ..timestamps import created_at as _created_at
 from .forget import _DEFAULT_SALIENCE, memory_strength
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -344,7 +347,8 @@ def _replay_score(
     if isinstance(history, list) and history:
         access_times: list[float] = [float(t) for t in history]
     else:
-        enc = float(md.get("encoded_at", now))
+        _c = _created_at(md)
+        enc = _c if _c is not None else now
         last = float(md.get("last_accessed", enc))
         rc = int(md.get("retrieval_count", 0))
         access_times = [enc] + [last] * max(rc, 0)
@@ -484,7 +488,7 @@ async def _merge_into_schema(
                     "source_episode_ids": new_sources,
                     "confidence": float(new_conf),
                     "updated_at": now,
-                    "last_hit_at": now,
+                    "last_accessed": now,
                 },
             )
         ]
@@ -523,7 +527,8 @@ def _apply_eligibility_gates(
     now_for_gate = now_seconds()
     eligible: list[tuple[int, str, dict[str, Any]]] = []
     for ep_id, text, md in candidates:
-        age = now_for_gate - float(md.get("encoded_at", now_for_gate))
+        _c = _created_at(md)
+        age = now_for_gate - (_c if _c is not None else now_for_gate)
         rc = int(md.get("retrieval_count", 0))
         sal = float(md.get("salience", _DEFAULT_SALIENCE))
         if age < cfg.consolidate_min_age_seconds:
@@ -749,8 +754,14 @@ async def _process_stage2_cluster(  # noqa: PLR0911 -- explicit branch-per-gate 
         "confidence": float(confidence),
         "created_at": now,
         "updated_at": now,
-        "last_hit_at": now,
+        "last_accessed": now,
+        # A schema drawn from a single session's episodes is scoped to it;
+        # one spanning sessions (no plurality winner) is genuinely
+        # cross-project, so it is promoted as global.
+        "scope": SCOPE_SESSION if cluster_session else SCOPE_GLOBAL,
     }
+    if cluster_session:
+        sem_meta["session_id"] = cluster_session
     sem_ids = await service.semantic.add_texts(
         [summary],
         metadatas=[sem_meta],

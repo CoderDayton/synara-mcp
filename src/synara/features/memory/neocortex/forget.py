@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any
 from synara.core.errors import ValidationError
 
 from ..service import UNCONSOLIDATED, now_seconds
+from ..timestamps import created_at as _created_at
+from ..timestamps import last_accessed as _last_accessed
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..port import MemoryServicePort as MemoryService
@@ -64,13 +66,16 @@ def memory_strength(
 def access_times_from_meta(md: dict[str, Any], *, fallback_now: float) -> list[float]:
     """Extract access-time list from episode metadata.
 
-    Newer: explicit access_history. Older: [encoded_at] + last_accessed
-    repeated retrieval_count times (coarse approximation).
+    Newer: explicit access_history. Older: [created_at] + last_accessed
+    repeated retrieval_count times (coarse approximation). Creation time
+    is read via the timestamps helper (canonical ``created_at``, legacy
+    episodic ``encoded_at``).
     """
     history = md.get("access_history")
     if isinstance(history, list) and history:
         return [float(t) for t in history]
-    enc = float(md.get("encoded_at", fallback_now))
+    _c = _created_at(md)
+    enc = _c if _c is not None else fallback_now
     last = float(md.get("last_accessed", enc))
     rc = int(md.get("retrieval_count", 0))
     return [enc] + [last] * max(rc, 0)
@@ -134,8 +139,9 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
 
     # Cold-schema eviction: optional ontology garbage-collector. Off by
     # default (forget_schema_unused_seconds == 0). When enabled, deletes
-    # semantic schemas whose ``last_hit_at`` is older than the threshold.
-    # Schemas without ``last_hit_at`` (legacy rows) are skipped --
+    # semantic schemas whose ``last_accessed`` is older than the threshold
+    # (legacy schemas carry ``last_hit_at``; the timestamps helper reads
+    # either). Schemas without any last-access stamp are skipped --
     # absence is treated as "unknown, assume alive" so an upgrade does
     # not mass-delete existing ontology.
     cold_threshold = float(service.config.forget_schema_unused_seconds)
@@ -146,7 +152,7 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
         sem_rows = await service.semantic.get_documents(filter_dict=None, limit=max_scan)
         schemas_scanned = len(sem_rows)
         for sch_id, _text, smd in sem_rows:
-            last_hit = smd.get("last_hit_at")
+            last_hit = _last_accessed(smd)
             if last_hit is None:
                 continue
             try:

@@ -60,7 +60,7 @@ def register_resources(
         metrics.declare(_RESOURCE_METRIC, headline="ambient recall (resource)")
 
     @mcp.resource(
-        "memory://recall/{query}{?k,session_id,mode}",
+        "memory://recall/{query}{?k,session_id,mode,scope_session}",
         name="relevant_memories",
         description=(
             "Ambient cross-session recall as a resource: read "
@@ -68,7 +68,9 @@ def register_resources(
             "memories for the current context with no explicit tool "
             "call. Hits are ranked by cosine + successor-representation + "
             "spreading activation. Optional query params: k (max hits, "
-            "default 8); session_id (ranking hint, never a filter); mode "
+            "default 8); session_id (scopes to that session plus global "
+            "records when set); scope_session (optional bool: unset = scope "
+            "when a session_id is given, false = cross-session); mode "
             "(auto|hybrid|episodic|semantic, default auto)."
         ),
         mime_type="application/json",
@@ -80,6 +82,7 @@ def register_resources(
         k: int = 8,
         session_id: str | None = None,
         mode: str = "auto",
+        scope_session: bool | None = None,
     ) -> str:
         # Inline metrics + error translation rather than stacking
         # decorators: keeping ``relevant_memories`` the exact function
@@ -92,8 +95,13 @@ def register_resources(
         try:
             if embedder is not None:
                 await embedder.warmup_async(ctx)
-            await ctx.debug(f"resource recall: session_id={session_id!r} k={k} mode={mode!r}")
-            hits = await service.recall_readonly(query=query, session_id=session_id, k=k, mode=mode)
+            await ctx.debug(
+                f"resource recall: session_id={session_id!r} k={k} mode={mode!r} "
+                f"scope_session={scope_session}"
+            )
+            hits = await service.recall_readonly(
+                query=query, session_id=session_id, k=k, mode=mode, scope_session=scope_session
+            )
             ok = True
             return json.dumps(hits)
         except ValidationError as exc:

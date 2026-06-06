@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import pytest
 
+from synara.core.errors import ValidationError
 from synara.features.memory.amygdala.signals import (
     SignalRegistry,
     SignalSpec,
     default_signal_registry,
 )
 from synara.features.memory.memory_types import (
+    SCOPE_GLOBAL,
+    SCOPE_SESSION,
     MemoryType,
     MemoryTypeRegistry,
     MemoryTypeSpec,
     default_registry,
+    in_session_scope,
+    resolve_scope,
 )
 
 # ---- SignalRegistry ---------------------------------------------------
@@ -125,3 +130,36 @@ def test_registry_dangling_consolidation_target_rejected() -> None:
                 )
             }
         )
+
+
+# ---- Scope axis -------------------------------------------------------
+
+
+def test_resolve_scope_explicit_and_inferred() -> None:
+    assert resolve_scope("global", None) == SCOPE_GLOBAL
+    assert resolve_scope("session", "s1") == SCOPE_SESSION
+    # Unset: inferred from session_id presence.
+    assert resolve_scope(None, "s1") == SCOPE_SESSION
+    assert resolve_scope(None, None) == SCOPE_GLOBAL
+
+
+def test_resolve_scope_rejects_unknown() -> None:
+    with pytest.raises(ValidationError):
+        resolve_scope("bogus", "s1")
+
+
+def test_in_session_scope_explicit() -> None:
+    assert in_session_scope({"scope": SCOPE_GLOBAL}, session_id="s1") is True
+    assert in_session_scope({"scope": SCOPE_GLOBAL}, session_id=None) is True
+    assert in_session_scope({"scope": SCOPE_SESSION, "session_id": "s1"}, session_id="s1") is True
+    assert in_session_scope({"scope": SCOPE_SESSION, "session_id": "s1"}, session_id="s2") is False
+    # A session-scoped record has nothing to match against without a caller session.
+    assert in_session_scope({"scope": SCOPE_SESSION, "session_id": "s1"}, session_id=None) is False
+
+
+def test_in_session_scope_legacy_fallback() -> None:
+    # No scope field: infer from session_id presence (zero-migration path).
+    assert in_session_scope({"session_id": "s1"}, session_id="s1") is True
+    assert in_session_scope({"session_id": "s1"}, session_id="s2") is False
+    assert in_session_scope({}, session_id="s1") is True  # no session -> global
+    assert in_session_scope(None, session_id="s1") is True

@@ -813,7 +813,7 @@ export function MemoryGraph({
       const bySession = new Map<string, Array<{ id: number; t: number }>>();
       for (const n of data.nodes) {
         if (n.kind !== "episodic" || !n.session_id) continue;
-        const entry = { id: n.id, t: n.encoded_at };
+        const entry = { id: n.id, t: n.created_at };
         const arr = bySession.get(n.session_id);
         if (arr) arr.push(entry);
         else bySession.set(n.session_id, [entry]);

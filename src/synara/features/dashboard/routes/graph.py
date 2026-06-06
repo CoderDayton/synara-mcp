@@ -24,6 +24,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query
 
 from synara.features.memory import MemoryService
+from synara.features.memory.timestamps import created_at as _created_at
 
 from ..deps import get_service
 from .schemas import GraphResponse
@@ -256,7 +257,7 @@ def _episodic_node(
         "salience": float(md.get("salience", 0.0)),
         "retrieval_count": int(md.get("retrieval_count", 0)),
         "session_id": md.get("session_id"),
-        "encoded_at": float(md.get("encoded_at", 0.0)),
+        "created_at": float(_created_at(md) or 0.0),
         "last_accessed": float(md.get("last_accessed", 0.0)),
         "consolidated_into": int(md.get("consolidated_into", 0)),
         "group_id": int(md.get("episode_group_id", nid)),
