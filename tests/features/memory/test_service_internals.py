@@ -142,7 +142,10 @@ async def test_recall_populates_last_trace_when_tracing_enabled() -> None:
 async def test_recall_semantic_memory_breaks_at_k() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        # Disable the relevance gate so this isolates the k-cap: an exact
+        # hash-embed match leaves a lone peak the elbow would otherwise trim.
+        cfg = MemoryConfig(recall_relevance_gate=False)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(6):
             await svc.store_semantic_memory(f"fact number {i}", kind="fact")
         out = await svc.recall_semantic_memory(query="fact number 1", k=2)

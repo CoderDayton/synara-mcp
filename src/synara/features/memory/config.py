@@ -219,6 +219,61 @@ class MemoryConfig:
     # ``segment_count`` so the caller can fetch the whole via
     # ``get_episode``. Set false to return each segment as its own hit.
     recall_collapse_groups: bool = True
+    # Master switch over the three-stage relevance gate below (dynamic
+    # ceiling + elbow + gap cut). False disables all of them in one knob;
+    # recall then returns the raw top-k by rank, ungated.
+    # Note: the gate cuts on *raw cosine distance*, not on the SR-/
+    # spreading-activation-adjusted rank. It never re-orders, but it can
+    # drop a relationally-linked neighbour that SR boosted to the top yet
+    # whose cosine distance is high — i.e. the gate can suppress an
+    # SR-surfaced-but-cosine-far hit. Disable it on paths that test or
+    # rely on spreading activation surfacing cosine-distant neighbours.
+    recall_relevance_gate: bool = True
+    # Adaptive relevance gate (normalised Kneedle knee detection; Satopaa
+    # et al., 2011). After ranking, recall fits the sorted cosine distances
+    # of each source (episodic / semantic gated independently) and drops the
+    # low-relevance "plateau" tail at the knee — so a query with one strong
+    # hit returns that hit instead of padding to ``k`` with noise, and an
+    # all-weak query can return nothing. ``sensitivity`` is the minimum
+    # normalised knee prominence in [0, 1] needed to accept a cut (higher =
+    # only sharper elbows); ``min_candidates`` skips the gate below a count
+    # too small to estimate a knee; ``min_spread`` skips it when every
+    # candidate sits within this cosine-distance band (no structure to cut).
+    recall_elbow_cutoff: bool = True
+    recall_elbow_sensitivity: float = 0.12
+    recall_elbow_min_candidates: int = 3
+    recall_elbow_min_spread: float = 0.05
+    # Dynamic relevance ceiling: an absolute distance cutoff *derived per
+    # recall* from the candidate distribution, so it tracks the embedding
+    # model's own distance scale instead of a hardcoded value. The far end
+    # of the over-fetched candidates approximates this model's "unrelated"
+    # distance; we take its ``quantile`` (p90) as a reference ``d_ref`` and
+    # keep hits with ``distance <= alpha * d_ref``. This covers the all-weak /
+    # no-knee case the relative elbow can't, without the model-dependence of a
+    # fixed threshold. There is no floor: an off-topic query whose nearest hit
+    # is itself beyond the ceiling empties rather than returning its least-bad
+    # hit. The one exception is ``standout_gap``: when the nearest hit is
+    # separated from the next by at least that gap, it is a real match in an
+    # otherwise-far cloud (a relevance cliff right after it) and is kept even
+    # above the ceiling — so a lone genuine hit is not lost, while a uniform
+    # off-topic cloud (no such gap) still empties. A gap is scale-robust like
+    # ``recall_gap_cut``, but smaller here since it acts on a single standout.
+    # Per-source (episodic / semantic) like the elbow. ``alpha`` <= 0 disables;
+    # ``min_candidates`` skips small samples (also sparing tiny synthetic
+    # corpora); ``standout_gap`` <= 0 disables the exception (pure
+    # empty-on-far). Applies to both episodic and semantic hits.
+    recall_max_distance_alpha: float = 0.8
+    recall_max_distance_quantile: float = 0.9
+    recall_max_distance_min_candidates: int = 4
+    recall_max_distance_standout_gap: float = 0.15
+    # Cross-source relevance-cliff cut, applied last to the pooled returned
+    # rows: walking the distances ascending, the first consecutive jump of at
+    # least this size ends the relevant run and the tail is dropped. Catches a
+    # head-vs-tail cliff straddling the episodic and semantic legs, which the
+    # per-source ceiling/elbow can't see. A gap (a difference) is more
+    # scale-robust than an absolute position — a compressed embedder never
+    # produces one, so this fails safe. Set <= 0 to disable.
+    recall_gap_cut: float = 0.35
     # Hebbian strength of the within-episode sibling chain: consecutive
     # segments are reinforced at encode (and re-bonded on ``get_episode``)
     # so spreading activation can resurface the whole episode. 0 disables.

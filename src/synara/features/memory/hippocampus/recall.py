@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -28,6 +29,7 @@ from ..tracing import record_span as _trace_span
 from . import complete as _complete_mod
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..config import MemoryConfig
     from ..port import MemoryServicePort as MemoryService
 
 
@@ -64,6 +66,242 @@ def _validate_recall_inputs(
         )
     if mode not in _VALID_MODES:
         raise ValidationError(f"unknown recall mode: {mode}")
+
+
+def elbow_cutoff(
+    distances: Sequence[float],
+    *,
+    sensitivity: float = 0.12,
+    min_candidates: int = 3,
+    min_spread: float = 0.05,
+) -> float | None:
+    """Adaptive relevance gate: the largest cosine distance worth keeping,
+    or ``None`` to keep everything.
+
+    Given one source's recall-candidate distances, locate the knee of the
+    sorted-ascending curve — the transition from the steep "relevant" ramp
+    to the flat "noise" plateau — and return the distance of the last point
+    *before* the knee. Hits with ``distance <= cutoff`` are relevant; the
+    plateau beyond it is dropped. ``None`` means no defensible knee.
+
+    Method: normalised Kneedle (Satopaa et al., "Finding a 'Kneedle' in a
+    Haystack", 2011). Sorted distances are rescaled so rank and distance
+    each span ``[0, 1]``; on that unit square the difference ``y - x`` is
+    maximised exactly where the local slope crosses 1 — i.e. where the ramp
+    gives way to the plateau. That peak's height is the knee's prominence,
+    and a knee is accepted only if it clears ``sensitivity``, so a roughly
+    linear curve (no real elbow) is left uncut.
+
+    Isotonic regression is deliberately *not* used: the input is sorted
+    ascending, hence already monotone, so a PAVA fit returns it unchanged —
+    a no-op. The knee lives in the curvature, which the normalised
+    difference curve captures directly. (Isotonic smoothing would earn its
+    keep only if the gate ran on the *non-monotone* SR-adjusted scores
+    rather than on raw cosine distance.)
+    """
+    finite = [d for d in distances if math.isfinite(d)]
+    n = len(finite)
+    if n < min_candidates:
+        return None
+    ds = sorted(finite)
+    lo, hi = ds[0], ds[-1]
+    spread = hi - lo
+    if spread < min_spread:
+        return None
+    inv = 1.0 / (n - 1)
+    best_i = 0
+    best_delta = 0.0
+    for i in range(n):
+        delta = (ds[i] - lo) / spread - i * inv
+        if delta > best_delta:
+            best_delta = delta
+            best_i = i
+    if best_delta < sensitivity or best_i < 1:
+        return None
+    # The knee sits at the first plateau point (the foot of the cliff), so
+    # the last distance we keep is its predecessor.
+    return ds[best_i - 1]
+
+
+def _quantile(sorted_vals: Sequence[float], q: float) -> float:
+    """Linear-interpolated quantile of an ascending-sorted, non-empty seq."""
+    last = len(sorted_vals) - 1
+    if last <= 0:
+        return sorted_vals[0]
+    pos = q * last
+    lo = math.floor(pos)
+    hi = min(lo + 1, last)
+    frac = pos - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def dynamic_ceiling(
+    distances: Sequence[float],
+    *,
+    alpha: float = 0.8,
+    quantile: float = 0.9,
+    min_candidates: int = 4,
+    standout_gap: float = 0.0,
+) -> float | None:
+    """Adaptive *absolute* relevance ceiling, calibrated to the embedding
+    model from the candidate distance distribution — no hardcoded cutoff.
+
+    The far end of a recall's over-fetched candidates approximates this
+    model's "unrelated" distance. We take the ``quantile`` (default p90) of
+    the per-source distances as that reference ``d_ref`` and keep only hits
+    within ``alpha`` of it (``distance <= alpha * d_ref``). Because d_ref
+    scales with the embedder, one ``alpha`` yields ~0.7 on a normalised
+    sentence-transformer and ~0.8 on a hash stub, with no per-model retuning
+    and no model-specific footgun.
+
+    There is no floor by default: when even the nearest hit exceeds
+    ``alpha * d_ref`` (``d_min > alpha * d_ref``), the candidate cloud is
+    packed at the far end with no near-field structure — the off-topic
+    signature — and the query returns empty rather than its least-bad hit.
+    The one exception is a *standout*: when ``standout_gap > 0`` and the
+    nearest hit is separated from the next by at least that gap, it is a real
+    match in an otherwise-far cloud (a relevance cliff right after it), not the
+    least-bad of a uniform cloud, so it is floored back in and kept even above
+    the ceiling. Returns ``None`` (no gate) below ``min_candidates``, where the
+    sample is too small to estimate a reference — which also spares small
+    synthetic corpora from emptying.
+    """
+    finite = sorted(d for d in distances if math.isfinite(d))
+    if len(finite) < min_candidates:
+        return None
+    ceiling = alpha * _quantile(finite, quantile)
+    if standout_gap > 0.0 and len(finite) > 1 and finite[1] - finite[0] >= standout_gap:
+        return max(ceiling, finite[0])
+    return ceiling
+
+
+def gate_relevance(hits: list[dict[str, Any]], cfg: MemoryConfig) -> list[dict[str, Any]]:
+    """Apply the dynamic relevance ceiling, the adaptive elbow gate, and the
+    gap cut to a single-source list of recall-hit dicts (each carrying a
+    ``distance``). The ceiling drops hits far on the model's own scale; the
+    elbow trims the noise plateau; the gap cut ends the run at the first
+    large jump. No-op when every knob is off or none finds a defensible cut.
+    Used by the semantic-only recall path; the hybrid path uses
+    :func:`_gate_merged`.
+    """
+    if not cfg.recall_relevance_gate:
+        return hits
+    if cfg.recall_max_distance_alpha > 0:
+        cut = dynamic_ceiling(
+            [h["distance"] for h in hits],
+            alpha=cfg.recall_max_distance_alpha,
+            quantile=cfg.recall_max_distance_quantile,
+            min_candidates=cfg.recall_max_distance_min_candidates,
+            standout_gap=cfg.recall_max_distance_standout_gap,
+        )
+        if cut is not None:
+            hits = [h for h in hits if h["distance"] <= cut + 1e-9]
+    if cfg.recall_elbow_cutoff:
+        cutoff = elbow_cutoff(
+            [h["distance"] for h in hits],
+            sensitivity=cfg.recall_elbow_sensitivity,
+            min_candidates=cfg.recall_elbow_min_candidates,
+            min_spread=cfg.recall_elbow_min_spread,
+        )
+        if cutoff is not None:
+            hits = [h for h in hits if h["distance"] <= cutoff + 1e-9]
+    if cfg.recall_gap_cut > 0:
+        gap = gap_cutoff([h["distance"] for h in hits], min_gap=cfg.recall_gap_cut)
+        if gap is not None:
+            hits = [h for h in hits if h["distance"] <= gap + 1e-9]
+    return hits
+
+
+def _apply_per_source(
+    merged: list[_Hit], cutoff_fn: Callable[[list[float]], float | None]
+) -> list[_Hit]:
+    """Filter merged rows by a per-source distance cutoff (``cutoff_fn`` maps
+    one source's distances to the largest distance to keep, or ``None`` for
+    no cut). Episodic and semantic legs are gated independently — their
+    cosine distances live on different scales — and filtering never
+    re-ranks, so SR order is preserved.
+    """
+    by_source: dict[str, list[float]] = {}
+    for row in merged:
+        if math.isfinite(row[3]):
+            by_source.setdefault(row[4], []).append(row[3])
+    cutoffs: dict[str, float] = {}
+    for src, dists in by_source.items():
+        c = cutoff_fn(dists)
+        if c is not None:
+            cutoffs[src] = c
+    if not cutoffs:
+        return merged
+    return [
+        row
+        for row in merged
+        if row[4] not in cutoffs or (math.isfinite(row[3]) and row[3] <= cutoffs[row[4]] + 1e-9)
+    ]
+
+
+def gap_cutoff(
+    distances: Sequence[float], *, min_gap: float, min_candidates: int = 2
+) -> float | None:
+    """Largest distance to keep before the first relevance cliff: walking the
+    ascending distances, the first consecutive jump of at least ``min_gap``
+    ends the relevant run, and everything beyond it is dropped. A *gap* is
+    scale-relative — a compressed embedder never produces one, so this fails
+    safe (no cut) rather than over-trimming. ``None`` when no such jump.
+    """
+    finite = sorted(d for d in distances if math.isfinite(d))
+    if len(finite) < min_candidates:
+        return None
+    for i in range(len(finite) - 1):
+        if finite[i + 1] - finite[i] >= min_gap:
+            return finite[i]
+    return None
+
+
+def _apply_gap_cut(merged: list[_Hit], min_gap: float) -> list[_Hit]:
+    """Cross-source relevance-cliff cut: a single large jump in the pooled
+    distances marks where relevance falls off regardless of source. The
+    per-source ceiling/elbow can't see a head-vs-tail cliff that straddles
+    the episodic and semantic legs; this can.
+    """
+    cut = gap_cutoff([row[3] for row in merged if math.isfinite(row[3])], min_gap=min_gap)
+    if cut is None:
+        return merged
+    return [row for row in merged if not math.isfinite(row[3]) or row[3] <= cut + 1e-9]
+
+
+def _gate_merged(merged: list[_Hit], cfg: MemoryConfig) -> list[_Hit]:
+    """Apply the dynamic relevance ceiling, the per-source elbow gate, and a
+    final cross-source gap cut to the merged hybrid rows — each a no-op when
+    its knob is off. The ceiling drops far hits on the model's own scale, the
+    elbow trims each source's noise plateau, and the gap cut ends the pooled
+    ranking at the first large head-vs-tail cliff.
+    """
+    if not cfg.recall_relevance_gate:
+        return merged
+    if cfg.recall_max_distance_alpha > 0:
+        merged = _apply_per_source(
+            merged,
+            lambda dists: dynamic_ceiling(
+                dists,
+                alpha=cfg.recall_max_distance_alpha,
+                quantile=cfg.recall_max_distance_quantile,
+                min_candidates=cfg.recall_max_distance_min_candidates,
+                standout_gap=cfg.recall_max_distance_standout_gap,
+            ),
+        )
+    if cfg.recall_elbow_cutoff:
+        merged = _apply_per_source(
+            merged,
+            lambda dists: elbow_cutoff(
+                dists,
+                sensitivity=cfg.recall_elbow_sensitivity,
+                min_candidates=cfg.recall_elbow_min_candidates,
+                min_spread=cfg.recall_elbow_min_spread,
+            ),
+        )
+    if cfg.recall_gap_cut > 0:
+        merged = _apply_gap_cut(merged, cfg.recall_gap_cut)
+    return merged
 
 
 async def run(
@@ -103,9 +341,15 @@ async def run(
     scope_active = scope_session is not False and session_id is not None
     filtering = scope_active or bool(tagset)
     collapse = service.config.recall_collapse_groups
-    # Over-fetch when filtering *or* collapsing groups so that, after
-    # dropping out-of-scope or same-group fragments, ``k`` hits remain.
-    fetch_k = max(k * 4, 32) if (filtering or collapse) else k
+    # Over-fetch when filtering, collapsing groups, *or* gating so that,
+    # after dropping out-of-scope/same-group fragments, ``k`` hits remain
+    # and the relevance gate estimates its knee over a real candidate
+    # distribution rather than just ``k`` (mirrors the semantic path).
+    cfg = service.config
+    gating = cfg.recall_relevance_gate and (
+        cfg.recall_elbow_cutoff or cfg.recall_max_distance_alpha > 0 or cfg.recall_gap_cut > 0
+    )
+    fetch_k = max(k * 4, 32) if (filtering or collapse or gating) else k
     with _trace_span("query_arg"):
         q = await service.query_arg(query)
     # CA3 iterative pattern completion: refine the query by
@@ -155,6 +399,12 @@ async def run(
 
     if collapse:
         merged = _collapse_groups(merged)
+
+    # Adaptive relevance gate: drop the low-relevance plateau tail so a
+    # sharply-peaked query returns only its real hits instead of padding
+    # to ``k`` with noise (per-source, post-rank — see ``elbow_cutoff``).
+    with _trace_span("relevance_gate"):
+        merged = _gate_merged(merged, service.config)
 
     t_now = now_seconds()
     out: list[dict[str, Any]] = []

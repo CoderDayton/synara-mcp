@@ -1033,7 +1033,15 @@ class MemoryService:
         # When a kind or scope filter is requested, over-fetch and filter in
         # Python so cosine ranking still drives the final order; the semantic
         # store is small (gist-level) so the over-fetch is cheap.
-        fetch_k = k if (kind is None and not scope_active) else max(k * 4, 32)
+        # Over-fetch when filtering *or* when the elbow gate is on, so the
+        # knee is estimated over a real candidate distribution, not just k.
+        gating = self.config.recall_relevance_gate and (
+            self.config.recall_elbow_cutoff
+            or self.config.recall_max_distance_alpha > 0
+            or self.config.recall_gap_cut > 0
+        )
+        wide = kind is not None or scope_active or gating
+        fetch_k = max(k * 4, 32) if wide else k
         hits = await self.semantic.similarity_search(q, k=fetch_k)
         out: list[dict[str, Any]] = []
         hit_bumps: list[tuple[int, dict[str, Any]]] = []
@@ -1051,8 +1059,10 @@ class MemoryService:
                     "metadata": md,
                 }
             )
-            if len(out) >= k:
-                break
+        # Adaptive relevance gate over the semantic candidates, then cap to
+        # k. Drops the low-relevance plateau so a weak query returns few (or
+        # no) schemas instead of k tenuous ones (see recall.gate_relevance).
+        out = _recall_mod.gate_relevance(out, self.config)[:k]
         # Bump ``last_accessed`` on the schemas we actually returned so the
         # cold-schema eviction path (forget.run with
         # forget_schema_unused_seconds > 0) treats a recently-recalled

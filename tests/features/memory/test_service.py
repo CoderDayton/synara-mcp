@@ -805,7 +805,11 @@ async def test_successor_td_propagates_through_chain() -> None:
 async def test_recall_observes_cooccurrences_into_sr() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        # Mechanics test: disable the relevance gate so both co-recalls
+        # return and fold an SR edge.
+        svc = MemoryService(
+            db, config=MemoryConfig(recall_relevance_gate=False), embed_fn=hash_embed
+        )
         await svc.encode_episode("alpha note", "s1", salience=0.5)
         await svc.encode_episode("beta note", "s1", salience=0.5)
         # First recall returns both, which folds an edge into SR.
@@ -822,7 +826,10 @@ async def test_recall_anchor_model_does_not_inflate_edges() -> None:
     pairwise-coincident inflation a naive observe-each loop produces."""
     db = AsyncVectorDB(":memory:")
     try:
-        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        # Disable the relevance gate so all four hits return: this isolates
+        # the anchor-fold edge count, not the elbow's plateau trimming.
+        cfg = MemoryConfig(recall_relevance_gate=False)
+        svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for tag in ("alpha", "beta", "gamma", "delta"):
             await svc.encode_episode(f"{tag} note", "s1", salience=0.5)
         await svc.recall("alpha note", session_id="s1", k=4, mode="episodic")
@@ -898,7 +905,11 @@ async def test_recall_biases_same_session_at_equal_cosine() -> None:
 async def test_recall_cross_session_no_caller_session() -> None:
     db = AsyncVectorDB(":memory:")
     try:
-        svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+        # Mechanics test: disable the relevance gate so cross-session recall
+        # returns both sessions' hits regardless of the synthetic distances.
+        svc = MemoryService(
+            db, config=MemoryConfig(recall_relevance_gate=False), embed_fn=hash_embed
+        )
         await svc.encode_episode("alpha", "a", salience=0.5)
         await svc.encode_episode("alpha note", "b", salience=0.5)
         hits = await svc.recall("alpha", k=5, mode="episodic")
@@ -958,7 +969,9 @@ async def test_sr_transitions_persist_across_restart(tmp_path: Path) -> None:
 
     db1 = AsyncVectorDB(db_path)
     try:
-        svc1 = MemoryService(db1, config=MemoryConfig(), embed_fn=hash_embed)
+        svc1 = MemoryService(
+            db1, config=MemoryConfig(recall_relevance_gate=False), embed_fn=hash_embed
+        )
         for tag in ("alpha", "beta", "gamma"):
             await svc1.encode_episode(f"{tag} note", "s1", salience=0.5)
         await svc1.recall("alpha note", session_id="s1", k=3, mode="episodic")
@@ -970,7 +983,9 @@ async def test_sr_transitions_persist_across_restart(tmp_path: Path) -> None:
 
     db2 = AsyncVectorDB(db_path)
     try:
-        svc2 = MemoryService(db2, config=MemoryConfig(), embed_fn=hash_embed)
+        svc2 = MemoryService(
+            db2, config=MemoryConfig(recall_relevance_gate=False), embed_fn=hash_embed
+        )
         assert svc2._sr is not None
         # Force the lazy load that normally happens on first async op.
         await svc2._ensure_sr_loaded()

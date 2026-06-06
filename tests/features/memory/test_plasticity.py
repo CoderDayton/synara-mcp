@@ -367,16 +367,22 @@ async def test_service_emits_event_per_op(service: MemoryService) -> None:
     assert "recall" in kinds
 
 
-async def test_service_records_plasticity_after_co_recall(
-    service: MemoryService,
-) -> None:
-    await service.encode_episode("alpha", "s1")
-    await service.encode_episode("beta", "s1")
-    await service.encode_episode("gamma", "s1")
-    await service.recall("alpha", session_id="s1", k=3)
-    await service.recall("alpha", session_id="s1", k=3)
-    stats = await service._plasticity.stats()
-    assert stats["edges"] >= 1.0
+async def test_service_records_plasticity_after_co_recall() -> None:
+    # Mechanics test: the relevance gate would drop the orthogonal hash-embed
+    # co-recalls, so disable it and verify co-recall writes plasticity edges.
+    db = AsyncVectorDB(":memory:")
+    try:
+        cfg = MemoryConfig(recall_relevance_gate=False)
+        service = MemoryService(db, config=cfg, embed_fn=hash_embed)
+        await service.encode_episode("alpha", "s1")
+        await service.encode_episode("beta", "s1")
+        await service.encode_episode("gamma", "s1")
+        await service.recall("alpha", session_id="s1", k=3)
+        await service.recall("alpha", session_id="s1", k=3)
+        stats = await service._plasticity.stats()
+        assert stats["edges"] >= 1.0
+    finally:
+        await db.close()
 
 
 async def test_reactor_consolidate_fires_after_threshold() -> None:
@@ -608,6 +614,9 @@ async def test_spreading_activation_boosts_neighbour_with_durable_edge() -> None
             # threshold flips bonus into a durable weight.
             l_ltp_threshold_hits=1,
             sr_enabled=False,
+            # Mechanics test: isolate ranking from the relevance gate, which
+            # would otherwise drop the equidistant neighbour and distractor.
+            recall_relevance_gate=False,
         )
         svc = MemoryService(db, config=cfg, embed_fn=stub_embed)
         r_a = await svc.encode_episode("anchor", "s1")

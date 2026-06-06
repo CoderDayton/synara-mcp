@@ -102,7 +102,11 @@ async def test_recall_collapse_disabled_keeps_fragments() -> None:
     try:
         svc = MemoryService(
             db,
-            config=MemoryConfig(theta_segment_max_chars=24, recall_collapse_groups=False),
+            config=MemoryConfig(
+                theta_segment_max_chars=24,
+                recall_collapse_groups=False,
+                recall_relevance_gate=False,
+            ),
             embed_fn=hash_embed,
         )
         res = await svc.encode_episode(_SEG_CONTENT, "s1")
