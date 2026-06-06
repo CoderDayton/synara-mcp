@@ -42,4 +42,30 @@ describe("DeleteMemoryButton", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith(7));
     await waitFor(() => expect(onDeleted).toHaveBeenCalled());
   });
+
+  it("deletes a semantic memory via the semantic endpoint", async () => {
+    const spy = vi
+      .spyOn(api, "deleteSemantic")
+      .mockResolvedValue({ deleted_ids: [9], count: 1 });
+    const epSpy = vi.spyOn(api, "deleteMemory");
+    const user = userEvent.setup();
+    const onDeleted = vi.fn();
+
+    renderWithClient(
+      <DeleteMemoryButton id={9} kind="semantic" onDeleted={onDeleted} />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /delete semantic memory 9/i }),
+    );
+    expect(
+      await screen.findByText(/delete semantic memory #9\?/i),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(onDeleted).toHaveBeenCalled());
+    expect(epSpy).not.toHaveBeenCalled();
+  });
 });

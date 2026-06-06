@@ -109,6 +109,10 @@
             "title": "Consolidated Into",
             "type": "integer"
           },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
           "embedding": {
             "anyOf": [
               {
@@ -122,10 +126,6 @@
               }
             ],
             "title": "Embedding"
-          },
-          "encoded_at": {
-            "title": "Encoded At",
-            "type": "number"
           },
           "group_id": {
             "title": "Group Id",
@@ -192,7 +192,7 @@
           "salience",
           "retrieval_count",
           "session_id",
-          "encoded_at",
+          "created_at",
           "last_accessed",
           "consolidated_into",
           "group_id",
@@ -1521,6 +1521,47 @@
       }
     },
     "/api/semantic/{semantic_id}": {
+      "delete": {
+        "operationId": "delete_semantic_api_semantic__semantic_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "semantic_id",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "title": "Semantic Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Semantic",
+        "tags": [
+          "memories"
+        ]
+      },
       "get": {
         "operationId": "semantic_detail_api_semantic__semantic_id__get",
         "parameters": [

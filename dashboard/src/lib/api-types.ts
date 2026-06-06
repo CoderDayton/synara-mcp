@@ -189,7 +189,8 @@ export interface paths {
         get: operations["semantic_detail_api_semantic__semantic_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Semantic */
+        delete: operations["delete_semantic_api_semantic__semantic_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -277,10 +278,10 @@ export interface components {
         EpisodicGraphNode: {
             /** Consolidated Into */
             consolidated_into: number;
-            /** Embedding */
-            embedding: number[] | null;
             /** Created At */
             created_at: number;
+            /** Embedding */
+            embedding: number[] | null;
             /** Group Id */
             group_id: number;
             /** Id */
@@ -952,6 +953,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SemanticDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_semantic_api_semantic__semantic_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                semantic_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteResult"];
                 };
             };
             /** @description Validation Error */

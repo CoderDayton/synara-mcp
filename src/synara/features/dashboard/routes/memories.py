@@ -2,8 +2,9 @@
 
 Every handler delegates to ``MemoryService``; no recall/SR/forget logic
 is reimplemented here. Listing/search and the SR/plasticity views are
-read paths; delete routes through ``MemoryService.delete_episode`` (the
-FK-safe, forget-consistent + SR-evicting core method).
+read paths; episode delete routes through ``MemoryService.delete_episode``
+(the FK-safe, forget-consistent + SR-evicting core method) and semantic
+delete through ``MemoryService.delete_semantic`` (the cold-schema GC path).
 """
 
 from __future__ import annotations
@@ -282,5 +283,16 @@ async def delete_memory(
 ) -> dict[str, Any]:
     try:
         return await service.delete_episode(episode_id)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.delete("/semantic/{semantic_id}", response_model=DeleteResult)
+async def delete_semantic(
+    service: _Service,
+    semantic_id: Annotated[int, Path(ge=0)],
+) -> dict[str, Any]:
+    try:
+        return await service.delete_semantic(semantic_id)
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

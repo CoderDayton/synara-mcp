@@ -74,6 +74,34 @@ async def test_delete_missing_raises(service: MemoryService) -> None:
         await service.delete_episode(999_999)
 
 
+async def test_delete_semantic_removes_entry(service: MemoryService) -> None:
+    r = await service.store_semantic_memory("prefer ruff over flake8", kind="preference")
+    sem_id = r["id"]
+    before = (await service.stats())["semantic_count"]
+
+    out = await service.delete_semantic(sem_id)
+
+    assert out == {"deleted_ids": [sem_id], "count": 1}
+    assert (await service.stats())["semantic_count"] == before - 1
+    assert await service.semantic.get_documents({"id": sem_id}) == []
+
+
+async def test_delete_semantic_missing_raises(service: MemoryService) -> None:
+    with pytest.raises(ValidationError, match="not found"):
+        await service.delete_semantic(999_999)
+
+
+async def test_delete_semantic_keeps_source_episodes(service: MemoryService) -> None:
+    """Semantic delete must not cascade into the episodic store."""
+    ep = await service.encode_episode("an otter trace to consolidate", "s1")
+    sch = await service.store_semantic_memory("otters are aquatic", kind="fact")
+
+    await service.delete_semantic(sch["id"])
+
+    assert await service.semantic.get_documents({"id": sch["id"]}) == []
+    assert await service.episodic.get_documents({"id": ep["id"]}) != []
+
+
 async def test_recall_still_works_after_delete(service: MemoryService) -> None:
     """Forget-consistent: dangling SR edges stay inert; recall unaffected."""
     keep = await service.encode_episode("keep this memory about otters", "s1")

@@ -252,9 +252,11 @@ function EpisodicBody({
 
 function SemanticBody({
   node,
+  onClose,
   onOpenFull,
 }: {
   node: Extract<GraphNode, { kind: "semantic" }>;
+  onClose: () => void;
   onOpenFull: () => void;
 }) {
   return (
@@ -300,11 +302,12 @@ function SemanticBody({
         )}
       </p>
       <Separator />
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Button variant="ghost" size="sm" onClick={onOpenFull}>
           <Maximize2 className="size-4" aria-hidden />
           View full
         </Button>
+        <DeleteMemoryButton id={node.id} kind="semantic" onDeleted={onClose} />
       </div>
     </div>
   );
@@ -363,7 +366,7 @@ export function MemoryInspector({
               onOpenFull={onOpenFull}
             />
           ) : (
-            <SemanticBody node={node} onOpenFull={onOpenFull} />
+            <SemanticBody node={node} onClose={onClose} onOpenFull={onOpenFull} />
           )}
         </div>
       </ScrollArea>

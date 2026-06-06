@@ -628,6 +628,23 @@ class MemoryService:
         await self._evict_and_delete(ordered)
         return {"deleted_ids": ordered, "count": len(ordered)}
 
+    async def delete_semantic(self, semantic_id: int) -> dict[str, Any]:
+        """Delete a semantic memory (consolidated schema or user-asserted entry).
+
+        Mirrors the cold-schema eviction path (``forget.run``) and the
+        ``supersedes`` retire: a plain ``delete_by_ids`` on the semantic
+        collection. Semantic docs carry no SR/plasticity edges (those are
+        episodic-only), so no eviction or state freeze is needed. Source
+        episodes' ``consolidated_into`` is intentionally left untouched —
+        identical to the cold-schema GC; a later consolidate re-points the
+        survivors. No reactor event is emitted: a targeted admin delete must
+        not feed the consolidation/dream trigger.
+        """
+        if not await self.semantic.get_documents({"id": semantic_id}):
+            raise ValidationError(f"semantic memory {semantic_id} not found")
+        await self.semantic.delete_by_ids([semantic_id])
+        return {"deleted_ids": [semantic_id], "count": 1}
+
     async def _evict_and_delete(self, ids: list[int]) -> None:
         """Delete episodic docs, evicting their SR in-memory state first.
 

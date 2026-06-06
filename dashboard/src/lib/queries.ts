@@ -91,6 +91,21 @@ export function useDeleteMemory() {
   });
 }
 
+export function useDeleteSemantic() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.deleteSemantic(id),
+    onSuccess: (_data, id) => {
+      void qc.invalidateQueries({ queryKey: ["memories"] });
+      void qc.invalidateQueries({ queryKey: ["stats"] });
+      void qc.invalidateQueries({ queryKey: ["graph"] });
+      // Evict the semantic detail cache so a still-mounted inspector
+      // unmounts cleanly instead of showing a deleted schema.
+      qc.removeQueries({ queryKey: ["semantic", id], exact: true });
+    },
+  });
+}
+
 export function useForget() {
   const qc = useQueryClient();
   return useMutation({

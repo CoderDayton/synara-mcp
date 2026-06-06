@@ -432,6 +432,8 @@ export const api = {
   semanticDetail: (id: number) => request<SemanticDetail>(`/semantic/${id}`),
   deleteMemory: (id: number) =>
     request<DeleteResult>(`/memories/${id}`, { method: "DELETE" }),
+  deleteSemantic: (id: number) =>
+    request<DeleteResult>(`/semantic/${id}`, { method: "DELETE" }),
 
   graph: async (q: { focus?: number; depth?: number; max_nodes?: number }) => {
     const p = new URLSearchParams();

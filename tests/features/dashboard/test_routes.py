@@ -204,3 +204,38 @@ async def test_delete_route_calls_service_method(
     resp = await client.request("DELETE", f"/api/memories/{enc['id']}")
     assert resp.status_code == 200
     assert seen["id"] == enc["id"]
+
+
+async def test_semantic_delete_roundtrip(
+    ctx: tuple[httpx.AsyncClient, MemoryService],
+) -> None:
+    client, service = ctx
+    stored = await service.store_semantic_memory("comets are icy", kind="fact")
+    sem_id = stored["id"]
+
+    dele = await client.request("DELETE", f"/api/semantic/{sem_id}")
+    assert dele.status_code == 200
+    assert dele.json() == {"deleted_ids": [sem_id], "count": 1}
+    assert (await service.semantic.get_documents({"id": sem_id})) == []
+
+    assert (await client.request("DELETE", "/api/semantic/999999")).status_code == 404
+
+
+async def test_semantic_delete_route_calls_service_method(
+    ctx: tuple[httpx.AsyncClient, MemoryService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard against inlined logic: the route must call delete_semantic."""
+    client, service = ctx
+    stored = await service.store_semantic_memory("spy semantic target", kind="fact")
+    seen: dict[str, int] = {}
+    real = service.delete_semantic
+
+    async def spy(semantic_id: int, **kw: object) -> dict[str, object]:
+        seen["id"] = semantic_id
+        return await real(semantic_id, **kw)
+
+    monkeypatch.setattr(service, "delete_semantic", spy)
+    resp = await client.request("DELETE", f"/api/semantic/{stored['id']}")
+    assert resp.status_code == 200
+    assert seen["id"] == stored["id"]
