@@ -27,7 +27,13 @@ const MCP_SNIPPET = `{
 export default function Overview() {
   const stats = useStats();
   const health = useHealth();
-  const recent = useMemories({ kind: "episodic", limit: 8 });
+  const recentCap = 25;
+  const recentOffset = Math.max(0, (stats.data?.episodic_count ?? 0) - recentCap);
+  const recent = useMemories({
+    kind: "episodic",
+    limit: recentCap,
+    offset: recentOffset,
+  });
 
   if (stats.isLoading || health.isLoading) return <Loading />;
   if (stats.error) return <ErrorState error={stats.error} />;
@@ -42,9 +48,14 @@ export default function Overview() {
     { name: "Episodic", count: ep },
     { name: "Semantic", count: sem },
   ];
+  // The store returns rows id-ascending, so the offset above fetches the
+  // tail — the newest `recentCap` episodes — which we then sort
+  // id-descending for a newest-first "tail -f" feed.
   const items =
     recent.data && "items" in recent.data
-      ? (recent.data.items as Array<{ id: number; content?: string }>)
+      ? [...(recent.data.items as Array<{ id: number; content?: string }>)].sort(
+          (a, b) => b.id - a.id,
+        )
       : [];
 
   return (
@@ -176,7 +187,7 @@ export default function Overview() {
             </span>
           ) : undefined
         }
-        bodyClassName="p-0"
+        bodyClassName="relative p-0 min-h-[22rem]"
       >
         {items.length === 0 ? (
           <Empty
@@ -186,8 +197,8 @@ export default function Overview() {
             hint="Stored traces will stream in here as the MCP client encodes them."
           />
         ) : (
-          <ul className="divide-y divide-border">
-            {items.slice(0, 6).map((it) => (
+          <ul className="absolute inset-0 divide-y divide-border overflow-y-auto">
+            {items.map((it) => (
               <li
                 key={it.id}
                 className="flex items-start gap-3 px-4 py-2 text-xs"

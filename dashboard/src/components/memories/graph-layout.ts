@@ -1,28 +1,40 @@
 /**
- * Memory-map layout — semantic geometry, not graph topology.
+ * Memory-map layout — clustered sunflower packing.
  *
- * The hippocampus encodes memories as positions in an abstract
- * cognitive map (Tolman → O'Keefe place cells → Behrens & Whittington
- * "Tolman-Eichenbaum machine" → "Hippocampal neurons construct a map
- * of an abstract value space", Nature 2020): similar memories sit
- * near each other in a low-dimensional manifold of the embedding
- * space. We faithfully render that manifold by projecting episode &
- * schema embedding vectors into 2D with UMAP — the same technique
- * the Allen Institute uses for single-cell neuron-type atlases.
+ * The communities here are known a priori (a node's session), so the
+ * layout imposes them by construction rather than discovering them with
+ * a force model. Noack's energy-model analysis ("Energy Models for Graph
+ * Clustering", JGAA 2007) shows the classic spring-electrical model does
+ * not separate clusters cleanly — dense clusters over-spread and the
+ * gaps between them collapse — which is exactly why earlier force-tuned
+ * attempts either sprawled or merged the sessions. Imposing the cluster
+ * geometry directly gives all three properties we want, exactly:
  *
- * The 2D position then *means* something: closeness on the canvas
- * mirrors closeness in the embedding manifold, which is what the
- * recall pipeline scores against. SR / plasticity / consolidation
- * edges then read as the actual neighbourhoods that spreading
- * activation walks.
+ *   1. **Dense nodes** — each session is laid out as a Vogel sunflower
+ *      (``r_k = c·√(k+½)``, ``θ_k = k·ψ`` with ψ the golden angle
+ *      ``π(3−√5) ≈ 137.508°``). This is the uniform-density even
+ *      packing of a disc; its minimum nearest-neighbour spacing is a
+ *      scale-invariant ``1.546·c`` (verified numerically), so choosing
+ *      ``c = (2·ρ_max + pad)/1.546`` packs the node discs as tightly as
+ *      they go without overlap. Nodes are ordered by descending in-
+ *      session degree, so hubs sit at the dense centre and leaves on the
+ *      rim — keeping some structure visible inside the disc.
+ *   2. **Separated communities** — every session is its own disc, so the
+ *      sessions never inter-mix; a gap is baked into each disc's packing
+ *      radius for clear visual separation.
+ *   3. **Circular overall** — the session discs are arranged by tangent
+ *      circle-packing-in-a-circle (Wang et al. 2006, the algorithm
+ *      behind d3.packSiblings): each disc is placed tangent to two
+ *      already-placed discs at the position closest to the centre, which
+ *      grows a compact, roughly circular enclosure.
  *
- * Fallback: if a node lacks an embedding (legacy server, no embedder
- * configured, or schema with no aggregate vector), we fall back to
- * ELK's force algorithm so the map degrades gracefully instead of
- * collapsing those nodes to the origin.
+ * Schemas carry no session, so each is folded into the session its
+ * consolidation sources mostly belong to (orphans share one small disc).
+ * A final bounded de-overlap pass clears any residual disc collisions,
+ * and the map is recentred on the origin. Everything is deterministic
+ * given the data (golden-angle spiral, degree-then-key ordering, size-
+ * then-key packing) so the layout reflects new memories, not RNG jitter.
  */
-import ELK, { type ElkNode } from "elkjs/lib/elk.bundled.js";
-import { UMAP } from "umap-js";
 import type { GraphData, GraphNode } from "@/lib/api";
 import { clamp } from "@/lib/format";
 
@@ -43,150 +55,205 @@ export function layoutSignature(data: GraphData | undefined): string {
     : "";
 }
 
-/* ---------------------------------------------------------------- UMAP path */
+/** Group key for an episode. Episodes without a session_id share a
+ *  single fallback disc rather than scattering to the origin. */
+const NO_SESSION = " nosession";
+/** Group key for schemas whose consolidation sources aren't in the
+ *  graph — they share one small disc instead of stranding. */
+const ORPHAN = " orphan";
 
-/** Pixel envelope of the rendered map. The UMAP output is scaled
- *  uniformly into this box so the layout fills the canvas regardless
- *  of how compact or spread the manifold is. */
-const CANVAS = { width: 1100, height: 760 };
-
-/** UMAP needs ≥ this many embedding-bearing nodes to be meaningful —
- *  below that, the projection has too few neighbours to fit and
- *  collapses to a near-line. We fall back to force layout then. */
-const MIN_UMAP_NODES = 4;
-
-function rescale(
-  raw: Array<[number, number]>,
-  box: { width: number; height: number },
-): Array<{ x: number; y: number }> {
-  if (raw.length === 0) return [];
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const [x, y] of raw) {
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  const spanX = maxX - minX || 1;
-  const spanY = maxY - minY || 1;
-  // Uniform scale (preserve aspect) so distances stay comparable in
-  // both axes — non-uniform stretch would distort the manifold.
-  const scale = Math.min(box.width / spanX, box.height / spanY);
-  return raw.map(([x, y]) => ({
-    x: (x - minX - spanX / 2) * scale,
-    y: (y - minY - spanY / 2) * scale,
-  }));
+function sessionOf(n: GraphNode): string {
+  if (n.kind !== "episodic") return NO_SESSION;
+  return n.session_id ?? NO_SESSION;
 }
 
-function umapLayout(data: GraphData): Positions | null {
-  const withEmbed = data.nodes
-    .map((n) => ({ key: n.key, embedding: n.embedding }))
-    .filter((n): n is { key: string; embedding: number[] } => !!n.embedding);
-  if (withEmbed.length < MIN_UMAP_NODES) return null;
+/* ---------------------------------------------------------------- geometry */
 
-  const dim = withEmbed[0].embedding.length;
-  if (!withEmbed.every((n) => n.embedding.length === dim)) return null;
+/** Golden angle, ψ = π(3 − √5) ≈ 2.39996 rad ≈ 137.508°. */
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** Scale-invariant min nearest-neighbour spacing of the Vogel lattice,
+ *  ``min‖p_i − p_j‖ = NN_FACTOR · c`` (verified numerically for all n). */
+const NN_FACTOR = 1.546;
+/** Extra px folded into the sunflower spacing — small for density. */
+const SUNFLOWER_PAD = 7;
+/** Gap left between session discs during circle-packing. */
+const GROUP_GAP = 40;
+/** How strongly disc placement is pulled toward the discs a session is
+ *  most bridged to (vs. pure compactness). Keeps cross-session edges
+ *  short without overriding the circular packing. */
+const PACK_LINK_PULL = 0.7;
+/** Padding between disc edges in the residual de-overlap pass. */
+const NODE_PAD = 6;
 
-  const umap = new UMAP({
-    nComponents: 2,
-    nNeighbors: Math.min(15, Math.max(2, withEmbed.length - 1)),
-    minDist: 0.25,
-    spread: 1.4,
-    // Deterministic seed so the layout is stable across reloads —
-    // moving memories should reflect new data, not RNG.
-    random: mulberry32(0x5e0a7a),
-  });
-  const proj = umap.fit(withEmbed.map((n) => n.embedding));
-  const placed = rescale(
-    proj.map((p) => [p[0], p[1]]),
-    CANVAS,
-  );
-  const out: Positions = new Map();
-  withEmbed.forEach((n, i) => out.set(n.key, placed[i]));
-  return out;
+type SimNode = { key: string; r: number; x: number; y: number };
+
+/**
+ * Place ``members`` as a Vogel sunflower centred on the origin and
+ * return the disc's bounding radius. ``members`` is assumed already
+ * ordered (index 0 = centre). ``maxR`` is the largest node radius in the
+ * group, which sets the spacing so even the two biggest neighbours clear.
+ */
+function placeSunflower(members: SimNode[], maxR: number): number {
+  const m = members.length;
+  if (m === 0) return 0;
+  if (m === 1) {
+    members[0].x = 0;
+    members[0].y = 0;
+    return members[0].r;
+  }
+  const c = (2 * maxR + SUNFLOWER_PAD) / NN_FACTOR;
+  for (let k = 0; k < m; k++) {
+    const rad = c * Math.sqrt(k + 0.5);
+    const a = k * GOLDEN_ANGLE;
+    members[k].x = rad * Math.cos(a);
+    members[k].y = rad * Math.sin(a);
+  }
+  // Recentre on the lattice centroid so the disc is centred on the
+  // origin (the first few Vogel points are slightly off-centre).
+  let cx = 0;
+  let cy = 0;
+  for (const p of members) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= m;
+  cy /= m;
+  let R = 0;
+  for (const p of members) {
+    p.x -= cx;
+    p.y -= cy;
+    const reach = Math.hypot(p.x, p.y) + p.r;
+    if (reach > R) R = reach;
+  }
+  return R;
+}
+
+/* ---------------------------------------------------------------- packing */
+
+/** Centres at distance ``r1`` from c1 and ``r2`` from c2 — the 0/1/2
+ *  intersection points of two circles. */
+function circleIntersect(
+  x1: number,
+  y1: number,
+  r1: number,
+  x2: number,
+  y2: number,
+  r2: number,
+): Array<[number, number]> {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const d = Math.hypot(dx, dy);
+  if (d === 0 || d > r1 + r2 || d < Math.abs(r1 - r2)) return [];
+  const a = (r1 * r1 - r2 * r2 + d * d) / (2 * d);
+  const h2 = r1 * r1 - a * a;
+  const h = h2 > 0 ? Math.sqrt(h2) : 0;
+  const xm = x1 + (a * dx) / d;
+  const ym = y1 + (a * dy) / d;
+  if (h === 0) return [[xm, ym]];
+  const ox = (-dy / d) * h;
+  const oy = (dx / d) * h;
+  return [
+    [xm + ox, ym + oy],
+    [xm - ox, ym - oy],
+  ];
 }
 
 /**
- * Deterministic PRNG (Mulberry32). UMAP accepts a `random: () => number`
- * so seeding here makes the projection reproducible — the alternative
- * (`Math.random`) jiggles every layout.
+ * Tangent circle-packing in a circle (Wang et al. 2006 / d3.packSiblings,
+ * simplified for the handful of discs this view shows). Largest disc at
+ * the origin; each subsequent disc is placed tangent to two already-
+ * placed discs, growing a compact, roughly circular enclosure. Among the
+ * valid tangent slots we pick the one minimizing ``distance-to-centre +
+ * PACK_LINK_PULL · (mean distance to the discs this session bridges to)``
+ * — so compactness keeps it circular while connectivity pulls heavily-
+ * bridged sessions adjacent, shortening cross-session edges. Determin-
+ * istic: discs packed largest-first, ties broken by key.
  */
-function mulberry32(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/* --------------------------------------------------------------- force fallback */
-
-const elk = new ELK();
-
-const FORCE_OPTIONS: Record<string, string> = {
-  "elk.algorithm": "org.eclipse.elk.force",
-  "elk.force.iterations": "400",
-  "elk.force.repulsivePower": "1",
-  "elk.spacing.nodeNode": "80",
-  "elk.force.temperature": "0.001",
-};
-
-async function forceLayout(data: GraphData): Promise<Positions> {
-  const out: Positions = new Map();
-  if (data.nodes.length === 0) return out;
-  const present = new Set(data.nodes.map((n) => n.key));
-  const children: ElkNode[] = data.nodes.map((n) => {
-    const d = nodeRadius(n) * 2;
-    return { id: n.key, width: d, height: d };
-  });
-  const edges: { id: string; sources: string[]; targets: string[] }[] = [];
-  let i = 0;
-  for (const e of data.sr_edges) {
-    const s = `ep:${e.src}`;
-    const t = `ep:${e.dst}`;
-    if (present.has(s) && present.has(t))
-      edges.push({ id: `sr-${i++}`, sources: [s], targets: [t] });
-  }
-  for (const e of data.plasticity_edges) {
-    const s = `ep:${e.src}`;
-    const t = `ep:${e.dst}`;
-    if (present.has(s) && present.has(t))
-      edges.push({ id: `pl-${i++}`, sources: [s], targets: [t] });
-  }
-  for (const e of data.consolidation_edges) {
-    const s = `ep:${e.src}`;
-    if (present.has(s) && present.has(e.dst))
-      edges.push({ id: `cs-${i++}`, sources: [s], targets: [e.dst] });
-  }
-  const root: ElkNode = {
-    id: "root",
-    layoutOptions: FORCE_OPTIONS,
-    children,
-    edges,
-  };
-  const result = await elk.layout(root);
-  for (const c of result.children ?? []) {
-    const w = c.width ?? 0;
-    const h = c.height ?? 0;
-    out.set(c.id, { x: (c.x ?? 0) + w / 2, y: (c.y ?? 0) + h / 2 });
+function packDiscs(
+  discs: Array<{ key: string; r: number }>,
+  links: Map<string, Map<string, number>>,
+): Map<string, { x: number; y: number }> {
+  const order = [...discs].sort((a, b) => b.r - a.r || a.key.localeCompare(b.key));
+  const placed: Array<{ key: string; x: number; y: number; r: number }> = [];
+  const out = new Map<string, { x: number; y: number }>();
+  for (const d of order) {
+    const myLinks = links.get(d.key);
+    let pos: { x: number; y: number } | null = null;
+    if (placed.length === 0) {
+      pos = { x: 0, y: 0 };
+    } else if (placed.length === 1) {
+      pos = { x: placed[0].x + placed[0].r + d.r, y: placed[0].y };
+    } else {
+      let bestScore = Infinity;
+      for (let i = 0; i < placed.length; i++) {
+        for (let j = i + 1; j < placed.length; j++) {
+          const cands = circleIntersect(
+            placed[i].x,
+            placed[i].y,
+            placed[i].r + d.r,
+            placed[j].x,
+            placed[j].y,
+            placed[j].r + d.r,
+          );
+          for (const [cx, cy] of cands) {
+            let ok = true;
+            for (const p of placed) {
+              if (Math.hypot(cx - p.x, cy - p.y) < p.r + d.r - 1e-3) {
+                ok = false;
+                break;
+              }
+            }
+            if (!ok) continue;
+            let connPull = 0;
+            let wsum = 0;
+            if (myLinks) {
+              for (const p of placed) {
+                const w = myLinks.get(p.key) ?? 0;
+                if (w > 0) {
+                  connPull += w * Math.hypot(cx - p.x, cy - p.y);
+                  wsum += w;
+                }
+              }
+            }
+            const score =
+              Math.hypot(cx, cy) + (wsum > 0 ? PACK_LINK_PULL * (connPull / wsum) : 0);
+            if (score < bestScore) {
+              bestScore = score;
+              pos = { x: cx, y: cy };
+            }
+          }
+        }
+      }
+      if (!pos) {
+        // Fallback: spiral outward from the origin until clear.
+        for (let t = 0; t < 4000 && !pos; t++) {
+          const ang = t * 0.5;
+          const rad = 2 * ang;
+          const cx = Math.cos(ang) * rad;
+          const cy = Math.sin(ang) * rad;
+          let ok = true;
+          for (const p of placed) {
+            if (Math.hypot(cx - p.x, cy - p.y) < p.r + d.r) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) pos = { x: cx, y: cy };
+        }
+        if (!pos) pos = { x: 0, y: 0 };
+      }
+    }
+    placed.push({ key: d.key, x: pos.x, y: pos.y, r: d.r });
+    out.set(d.key, pos);
   }
   return out;
 }
 
-/* ------------------------------------------------------------ de-overlap */
+/* ---------------------------------------------------------------- overlap */
 
-/** Push apart discs that overlap. UMAP packs similar memories almost
- *  on top of each other; this relaxes only *colliding* pairs so the
- *  manifold's relative arrangement is preserved while nodes stop
- *  occluding each other. A handful of passes, run once per layout —
- *  never on the render/pan path. */
-function relaxOverlaps(positions: Positions, data: GraphData, padding = 8): void {
+/** Final pass: clear any residual disc collisions across the whole map.
+ *  Bounded passes so a large graph can't stall the one-shot layout. */
+function relaxGlobal(positions: Positions, data: GraphData): void {
   const items: Array<{ p: { x: number; y: number }; r: number }> = [];
   for (const n of data.nodes) {
     const p = positions.get(n.key);
@@ -194,25 +261,19 @@ function relaxOverlaps(positions: Positions, data: GraphData, padding = 8): void
   }
   const count = items.length;
   if (count < 2) return;
-  // O(n²) per pass: cap the pass budget on large graphs so this one-shot
-  // relax can't stall the layout (the !moved early-out already converges
-  // most graphs in far fewer passes).
-  const passes = count > 600 ? 8 : count > 250 ? 20 : 50;
+  const passes = count > 600 ? 8 : count > 250 ? 20 : 60;
   for (let pass = 0; pass < passes; pass++) {
     let moved = false;
     for (let i = 0; i < count; i++) {
-      const a = items[i].p;
-      const ri = items[i].r;
       for (let j = i + 1; j < count; j++) {
+        const a = items[i].p;
         const b = items[j].p;
-        const minDist = ri + items[j].r + padding;
+        const minDist = items[i].r + items[j].r + NODE_PAD;
         let dx = b.x - a.x;
         let dy = b.y - a.y;
         let dist = Math.hypot(dx, dy);
         if (dist >= minDist) continue;
         if (dist < 1e-6) {
-          // Coincident points — nudge deterministically by index so the
-          // split direction is stable across reloads (no RNG jitter).
           dx = ((i * 7 + j) % 11) - 5;
           dy = ((i * 5 + j) % 13) - 6;
           dist = Math.hypot(dx, dy) || 1;
@@ -234,46 +295,124 @@ function relaxOverlaps(positions: Positions, data: GraphData, padding = 8): void
 /* ------------------------------------------------------------------- public */
 
 /**
- * Lay out the memory map. UMAP on embedding vectors when available
- * (the scientifically faithful path); ELK force as a graceful
- * fallback. Async because UMAP iterates and force is intrinsically
- * Promise-shaped.
+ * Lay out the memory map as one sunflower disc per session, the discs
+ * circle-packed into a roughly circular whole. Returns a Promise to
+ * preserve the caller's contract (the previous force/UMAP paths were
+ * Promise-shaped); the work itself is synchronous and deterministic.
  */
-export async function computeLayout(
+export function computeLayout(
   data: GraphData | undefined,
 ): Promise<Positions> {
-  if (!data || data.nodes.length === 0) return new Map();
+  if (!data || data.nodes.length === 0)
+    return Promise.resolve<Positions>(new Map());
 
-  const umap = umapLayout(data);
-  if (umap && umap.size === data.nodes.length) {
-    relaxOverlaps(umap, data);
-    return umap;
+  // Episode → its session; used to route each schema to a session disc.
+  const epSession = new Map<string, string>();
+  for (const nd of data.nodes) {
+    if (nd.kind === "episodic") epSession.set(nd.key, sessionOf(nd));
+  }
+  const schemaGroup = (key: string): string => {
+    const tally = new Map<string, number>();
+    for (const e of data.consolidation_edges) {
+      if (e.dst !== key) continue;
+      const s = epSession.get(`ep:${e.src}`);
+      if (s !== undefined) tally.set(s, (tally.get(s) ?? 0) + 1);
+    }
+    let best = ORPHAN;
+    let bestN = 0;
+    for (const [s, c] of tally) {
+      if (c > bestN || (c === bestN && s.localeCompare(best) < 0)) {
+        best = s;
+        bestN = c;
+      }
+    }
+    return best;
+  };
+
+  // Partition nodes into groups (sessions + schema discs).
+  const groups = new Map<string, SimNode[]>();
+  const groupOf = new Map<string, string>();
+  for (const nd of data.nodes) {
+    const g = nd.kind === "episodic" ? sessionOf(nd) : schemaGroup(nd.key);
+    groupOf.set(nd.key, g);
+    const node: SimNode = { key: nd.key, r: nodeRadius(nd), x: 0, y: 0 };
+    const arr = groups.get(g);
+    if (arr) arr.push(node);
+    else groups.set(g, [node]);
   }
 
-  // Mixed case: some nodes have embeddings, others don't (e.g. a
-  // freshly-consolidated schema before its aggregate vector is built,
-  // or a legacy server). Place the embedded ones via UMAP and fall
-  // through to force for the rest so nothing collapses to (0,0).
-  const force = await forceLayout(data);
-  if (umap) {
-    // Centre UMAP positions on the force-layout centroid so the two
-    // pools don't disagree on origin.
-    let cx = 0;
-    let cy = 0;
-    let n = 0;
-    for (const p of force.values()) {
-      cx += p.x;
-      cy += p.y;
-      n++;
+  // One pass over every edge feeds two things: in-session weighted
+  // degree (hubs sort to the disc centre) for intra-group edges, and
+  // an inter-disc link weight (how heavily two sessions bridge) for
+  // cross-group edges, which steers the disc packing below.
+  const degree = new Map<string, number>();
+  const links = new Map<string, Map<string, number>>();
+  const addLink = (a: string, b: string, w: number) => {
+    let m = links.get(a);
+    if (!m) {
+      m = new Map();
+      links.set(a, m);
     }
-    if (n > 0) {
-      cx /= n;
-      cy /= n;
+    m.set(b, (m.get(b) ?? 0) + w);
+  };
+  const edge = (ka: string, kb: string, w: number) => {
+    const ga = groupOf.get(ka);
+    const gb = groupOf.get(kb);
+    if (ga === undefined || gb === undefined) return;
+    if (ga === gb) {
+      degree.set(ka, (degree.get(ka) ?? 0) + w);
+      degree.set(kb, (degree.get(kb) ?? 0) + w);
+    } else {
+      addLink(ga, gb, w);
+      addLink(gb, ga, w);
     }
-    for (const [k, p] of umap) {
-      force.set(k, { x: p.x + cx, y: p.y + cy });
-    }
+  };
+  for (const e of data.sr_edges) edge(`ep:${e.src}`, `ep:${e.dst}`, clamp(e.m, 0, 1));
+  for (const e of data.plasticity_edges)
+    edge(`ep:${e.src}`, `ep:${e.dst}`, clamp(e.strength, 0, 1));
+  for (const e of data.consolidation_edges) edge(`ep:${e.src}`, e.dst, 0.6);
+
+  // Lay out each group as a sunflower; collect disc radii for packing.
+  const discs: Array<{ key: string; r: number }> = [];
+  for (const [key, members] of groups) {
+    members.sort(
+      (a, b) =>
+        (degree.get(b.key) ?? 0) - (degree.get(a.key) ?? 0) ||
+        a.key.localeCompare(b.key),
+    );
+    let maxR = 0;
+    for (const nd of members) if (nd.r > maxR) maxR = nd.r;
+    const radius = placeSunflower(members, maxR);
+    discs.push({ key, r: radius + GROUP_GAP / 2 });
   }
-  relaxOverlaps(force, data);
-  return force;
+
+  // Pack the discs into a circle and translate each group into place.
+  const centres = packDiscs(discs, links);
+  const positions: Positions = new Map();
+  for (const [key, members] of groups) {
+    const c = centres.get(key) ?? { x: 0, y: 0 };
+    for (const nd of members) positions.set(nd.key, { x: nd.x + c.x, y: nd.y + c.y });
+  }
+
+  relaxGlobal(positions, data);
+
+  // Recentre on the origin so the viewport framing is stable.
+  const ctr = centroid(positions);
+  for (const p of positions.values()) {
+    p.x -= ctr.x;
+    p.y -= ctr.y;
+  }
+  return Promise.resolve(positions);
+}
+
+function centroid(positions: Positions): { x: number; y: number } {
+  let x = 0;
+  let y = 0;
+  let n = 0;
+  for (const p of positions.values()) {
+    x += p.x;
+    y += p.y;
+    n++;
+  }
+  return n > 0 ? { x: x / n, y: y / n } : { x: 0, y: 0 };
 }

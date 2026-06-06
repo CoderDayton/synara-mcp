@@ -16,9 +16,10 @@
  *
  * Selecting a node spreads activation: its association edges animate and
  * everything else dims — the same neighbourhood the recall pipeline
- * would walk. Layout is ELK's 'layered' (Sugiyama-style hierarchic)
- * pass — the same top-down shape yFiles' HierarchicLayout produces —
- * recomputed whenever the graph signature changes.
+ * would walk. Layout is the session-clustered force graph (see
+ * graph-layout.ts): one spring-electrical bubble per session, the
+ * bubbles circle-packed apart, recomputed whenever the graph signature
+ * changes.
  */
 import {
   Background,
@@ -51,8 +52,8 @@ import {
   bridgeThreshold,
   buildClusterHulls,
   computeBridgeScores,
-  detectCommunities,
   polygonPath,
+  sessionCommunities,
   type CommunityEdge,
   type HullEntry,
 } from "./community";
@@ -612,12 +613,12 @@ function ZoomControls() {
   );
 }
 
-/** Refits the viewport whenever the layout signature settles — UMAP
- *  is async so ReactFlow's built-in fitView runs before positions
- *  arrive and ends up framing the (0,0) placeholders. When a camera
- *  focus is set ("Recenter map" / 'F' / search hit) we pan to that
- *  node instead of refitting the whole graph, so the user's spatial
- *  understanding of the UMAP manifold is preserved. */
+/** Refits the viewport whenever the layout signature settles — the
+ *  layout resolves a tick after data arrives, so ReactFlow's built-in
+ *  fitView would otherwise run before positions land and frame the
+ *  (0,0) placeholders. When a camera focus is set ("Recenter map" /
+ *  'F' / search hit) we pan to that node instead of refitting the whole
+ *  graph, so the user's spatial understanding of the map is preserved. */
 function ViewportController({
   version,
   focusKey,
@@ -661,8 +662,8 @@ export function MemoryGraph({
   data: GraphData | undefined;
   selectedKey: string | null;
   /** Camera-only focus: pans the viewport to this episode without
-   *  refetching or re-laying-out. Keeps the UMAP manifold stable
-   *  across recenter clicks. */
+   *  refetching or re-laying-out. Keeps the map stable across recenter
+   *  clicks. */
   cameraFocus?: number | null;
   onSelect: (node: GraphNode | null) => void;
   onFocus: (episodeId: number) => void;
@@ -670,10 +671,10 @@ export function MemoryGraph({
    *  and rings the matches — search acts on the whole graph. */
   highlight?: Set<string>;
 }) {
-  // ELK's 'layered' pass runs on the main thread — for the graph sizes
-  // this view shows it settles in a few ms. The request id discards
-  // stale results so a slow settle can't overwrite a newer one driven
-  // by a focus change.
+  // The session-clustered force layout runs synchronously on the main
+  // thread — for the graph sizes this view shows it settles in a few
+  // ms. The request id discards a stale result so a slow settle can't
+  // overwrite a newer one driven by a focus change.
   const posRef = useRef<Positions>(new Map());
   const [layout, setLayout] = useState<Positions>(new Map());
   const [layoutVersion, setLayoutVersion] = useState(0);
@@ -702,11 +703,12 @@ export function MemoryGraph({
   const active = selectedKey;
   const searchOn = !active && !!highlight && highlight.size > 0;
 
-  // Community structure + bridge nodes. Computed from the SR +
-  // plasticity edge weights — these are the functional/transition
-  // graph, distinct from the embedding-similarity manifold UMAP draws
-  // positions from. The React Compiler auto-memoizes the result so
-  // this only re-runs when `data` or `layout` actually change.
+  // Session bubbles + bridge nodes. Hulls group the map by session_id
+  // (matching how the layout clusters each session); bridge scores come
+  // from the SR + plasticity edge weights, so a "bridge" is now an
+  // episode whose transitions cross session boundaries. The React
+  // Compiler auto-memoizes the result so this only re-runs when `data`
+  // or `layout` actually change.
   let hulls: HullEntry[] = [];
   const bridgeKeys = new Set<string>();
   if (data && data.nodes.length > 0) {
@@ -729,7 +731,7 @@ export function MemoryGraph({
           w: clamp(e.strength, 0, 1),
         });
       }
-      const comms = detectCommunities(episodicKeys, edgeList);
+      const comms = sessionCommunities(data.nodes);
       const scores = computeBridgeScores(episodicKeys, edgeList, comms);
       const thresh = bridgeThreshold(scores);
       for (const [k, v] of scores) if (v > 0 && v >= thresh) bridgeKeys.add(k);
@@ -775,7 +777,7 @@ export function MemoryGraph({
       const p = layout.get(n.key) ?? { x: 0, y: 0 };
       const r = nodeRadius(n);
       // is_focus is now driven client-side from the camera focus so
-      // the global UMAP fetch never has to be re-issued for recenter.
+      // the global graph fetch never has to be re-issued for recenter.
       const node: GraphNode =
         n.kind === "episodic" && cameraFocus != null && n.id === cameraFocus
           ? { ...n, is_focus: true }
@@ -1007,7 +1009,7 @@ export function MemoryGraph({
               className="size-2 rounded-sm border border-muted-foreground/40"
               style={{ background: "oklch(0.65 0.13 200 / 0.18)" }}
             />
-            community · halo = bridge
+            session · halo = bridge
           </span>
           {contextLens && (
             <span className="flex items-center gap-1.5">

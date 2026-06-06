@@ -1,23 +1,20 @@
 /**
  * Community structure for the memory map.
  *
- * Two interpretability layers on top of the UMAP-positioned graph:
+ * Two interpretability layers on top of the session-clustered graph:
  *
- *  1. **Communities** — label propagation over the union of SR +
- *     plasticity edges. Episodes that co-activate end up in the same
- *     group regardless of where embedding similarity placed them. The
- *     hulls drawn from these groups answer "what activates together"
- *     independent of "what means the same thing."
+ *  1. **Sessions** — `sessionCommunities` groups episodes by
+ *     `session_id`, so each recall session becomes one bubble. The
+ *     hulls drawn from these groups answer "which session is this" at a
+ *     glance, matching how the layout packs each session apart.
  *
- *  2. **Bridges** — episodes whose edges cross community boundaries.
- *     Their cross-community weight sum is a cheap-but-honest proxy
- *     for betweenness: at 20-200 nodes it picks out the same routing
+ *  2. **Bridges** — episodes whose edges cross session boundaries.
+ *     Their cross-session weight sum is a cheap-but-honest proxy for
+ *     betweenness: at 20-200 nodes it picks out the same routing
  *     abstractions a full Brandes pass would, in a fraction of the
  *     time. Bridges get a halo on the disc.
  *
- * Label propagation is fine at this scale (typical < 200 nodes) — it
- * converges in passes ≈ graph diameter, has no random init, and is
- * fully deterministic given a sorted key order for tie-breaks.
+ * Everything is deterministic given a sorted key order for tie-breaks.
  */
 
 export type CommunityEdge = {
@@ -26,64 +23,32 @@ export type CommunityEdge = {
   w: number;
 };
 
-/** Label propagation. Each node starts in its own community; each
- *  pass it adopts the label with the highest summed neighbour weight,
- *  ties broken by lowest label id. Sorted node order makes this
- *  deterministic. Output labels are compacted to dense [0..k). */
-export function detectCommunities(
-  nodeKeys: readonly string[],
-  edges: readonly CommunityEdge[],
+/** Assign each episodic node a dense community id by ``session_id`` so
+ *  the hull/bridge machinery carves the map into one bubble per session
+ *  instead of label-propagation clusters. Non-episodic nodes (schemas)
+ *  are skipped — they get no hull. Deterministic: sessions are numbered
+ *  in first-seen order over the key-sorted node list. */
+export function sessionCommunities(
+  nodes: ReadonlyArray<{ key: string; kind: string; session_id?: string | null }>,
 ): Map<string, number> {
-  const labels = new Map<string, number>();
-  const order = [...nodeKeys].sort();
-  order.forEach((k, i) => labels.set(k, i));
-
-  const adj = new Map<string, Array<{ nbr: string; w: number }>>();
-  for (const k of order) adj.set(k, []);
-  for (const e of edges) {
-    if (!adj.has(e.src) || !adj.has(e.dst)) continue;
-    if (e.w <= 0) continue;
-    adj.get(e.src)!.push({ nbr: e.dst, w: e.w });
-    adj.get(e.dst)!.push({ nbr: e.src, w: e.w });
-  }
-
-  const MAX_ITERS = 20;
-  for (let iter = 0; iter < MAX_ITERS; iter++) {
-    let changed = false;
-    for (const k of order) {
-      const nbrs = adj.get(k);
-      if (!nbrs || nbrs.length === 0) continue;
-      const counts = new Map<number, number>();
-      for (const { nbr, w } of nbrs) {
-        const lbl = labels.get(nbr);
-        if (lbl === undefined) continue;
-        counts.set(lbl, (counts.get(lbl) ?? 0) + w);
-      }
-      if (counts.size === 0) continue;
-      let bestLbl = Number.MAX_SAFE_INTEGER;
-      let bestW = -Infinity;
-      for (const [lbl, w] of counts) {
-        if (w > bestW || (w === bestW && lbl < bestLbl)) {
-          bestLbl = lbl;
-          bestW = w;
-        }
-      }
-      if (labels.get(k) !== bestLbl) {
-        labels.set(k, bestLbl);
-        changed = true;
-      }
-    }
-    if (!changed) break;
-  }
-
-  // Compact to dense ids in stable order (sorted-key traversal).
-  const remap = new Map<number, number>();
-  let next = 0;
   const out = new Map<string, number>();
-  for (const k of order) {
-    const orig = labels.get(k)!;
-    if (!remap.has(orig)) remap.set(orig, next++);
-    out.set(k, remap.get(orig)!);
+  const sessionIdx = new Map<string, number>();
+  const eps = nodes
+    .filter((n) => n.kind === "episodic")
+    .slice()
+    .sort((a, b) => a.key.localeCompare(b.key));
+  let next = 0;
+  for (const n of eps) {
+    // Leading-space sentinel for null/absent session_id: groups all
+    // session-less episodes into one bubble. The space can't collide
+    // with a real session_id (those are never space-prefixed).
+    const s = n.session_id ?? " nosession";
+    let idx = sessionIdx.get(s);
+    if (idx === undefined) {
+      idx = next++;
+      sessionIdx.set(s, idx);
+    }
+    out.set(n.key, idx);
   }
   return out;
 }
