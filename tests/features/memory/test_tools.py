@@ -91,6 +91,46 @@ async def test_recall_episodes_tool_returns_hits(
         assert any("alpha beta gamma" in (h.get("content") or "") for h in hits)
 
 
+async def test_recall_content_only_projects_id_kind_content(
+    wired: tuple[FastMCP, _FakeEmbedder],
+) -> None:
+    """content_only=True reduces each hit to {id, kind, content}, dropping
+    distance/source/metadata/recency for both recall tools."""
+    mcp, _ = wired
+    async with Client(mcp) as client:
+        await client.call_tool("store_episode", {"content": "alpha beta gamma", "session_id": "s1"})
+        await client.call_tool(
+            "store_semantic_memory",
+            {"content": "prefer ruff over flake8", "kind": "preference"},
+        )
+
+        ep = await client.call_tool(
+            "recall_episodes",
+            {"query": "alpha beta gamma", "session_id": "s1", "content_only": True},
+        )
+        assert ep.data, "expected an episodic hit"
+        for h in ep.data:
+            assert set(h) == {"id", "kind", "content"}
+        assert any("alpha beta gamma" in (h["content"] or "") for h in ep.data)
+        # Raw episodic traces carry no kind.
+        assert all(h["kind"] is None for h in ep.data)
+
+        sem = await client.call_tool(
+            "recall_semantic_memory",
+            {"query": "prefer ruff over flake8", "content_only": True},
+        )
+        assert sem.data, "expected a semantic hit"
+        for h in sem.data:
+            assert set(h) == {"id", "kind", "content"}
+        assert any(h["kind"] == "preference" for h in sem.data)
+
+        # Default (content_only omitted) keeps the rich shape.
+        rich = await client.call_tool(
+            "recall_episodes", {"query": "alpha beta gamma", "session_id": "s1"}
+        )
+        assert all("metadata" in h and "distance" in h for h in rich.data)
+
+
 async def test_consolidate_episodes_tool(
     wired: tuple[FastMCP, _FakeEmbedder],
 ) -> None:

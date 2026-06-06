@@ -159,6 +159,22 @@ def _apply_snippet(
     return out
 
 
+def _project_content_only(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reduce each hit to ``{id, kind, content}`` for callers that opt into
+    ``content_only`` and want a minimal payload — the identifier (for
+    ``get_episode``/``supersedes``), the ``metadata.kind`` label, and the text,
+    dropping distance/source/metadata/recency fields. ``kind`` is ``None`` when
+    the hit carries none (e.g. raw episodic traces)."""
+    return [
+        {
+            "id": hit.get("id"),
+            "kind": (hit.get("metadata") or {}).get("kind"),
+            "content": hit.get("content"),
+        }
+        for hit in hits
+    ]
+
+
 def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per MCP tool
     mcp: FastMCP,
     service: MemoryService,
@@ -244,6 +260,10 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "(default 'auto'); 'episodic' = raw traces only; "
             "'semantic' = schemas only — prefer recall_semantic_memory "
             "for that case.\n"
+            "content_only: opt-in bool, default false. When true, each hit "
+            "is reduced to {id, kind, content} — the metadata, distance, "
+            "source, and recency fields are dropped for a minimal payload "
+            "(snippet truncation still applies to content).\n"
             "Each episodic hit also carries created_at/updated_at (unix "
             "seconds) and age_days/updated_age_days so you can tell old "
             "memories from new, plus group_id/segment_count: a non-null "
@@ -265,11 +285,13 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         tags: list[str] | None = None,
         max_chars: int | None = None,
         full: bool = False,
+        content_only: bool = False,
     ) -> list[dict[str, Any]]:
         await _ensure_warmed(embedder, ctx)
         await ctx.debug(
             f"recall_episodes: session_id={session_id!r} k={k} mode={mode!r} "
-            f"scope_session={scope_session} tags={tags} max_chars={max_chars} full={full}"
+            f"scope_session={scope_session} tags={tags} max_chars={max_chars} "
+            f"full={full} content_only={content_only}"
         )
         if scope_session is True and session_id is None:
             # An explicit scope_session=true needs a session_id to scope to;
@@ -291,6 +313,8 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         results = _apply_snippet(results, max_chars=limit, full=full)
         n_trunc = sum(1 for h in results if h.get("truncated"))
         await ctx.info(f"recall returned {len(results)} hit(s); {n_trunc} truncated")
+        if content_only:
+            results = _project_content_only(results)
         return results
 
     @mcp.tool(
@@ -501,7 +525,9 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "schemas plus global ones by default; scope_session=false opts "
             "back into cross-session results.\n"
             "scope_session: optional bool, same semantics as on "
-            "recall_episodes (unset = scope when session_id given)."
+            "recall_episodes (unset = scope when session_id given).\n"
+            "content_only: opt-in bool, default false. When true, each hit "
+            "is reduced to {id, kind, content}, dropping distance/metadata."
         ),
     )
     @_instrument(metrics, "recall_semantic_memory")
@@ -513,16 +539,20 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         kind: str | None = None,
         session_id: str | None = None,
         scope_session: bool | None = None,
+        content_only: bool = False,
     ) -> list[dict[str, Any]]:
         await _ensure_warmed(embedder, ctx)
         await ctx.debug(
             f"recall_semantic_memory: k={k} kind={kind!r} "
-            f"session_id={session_id!r} scope_session={scope_session}"
+            f"session_id={session_id!r} scope_session={scope_session} "
+            f"content_only={content_only}"
         )
         results = await service.recall_semantic_memory(
             query=query, k=k, kind=kind, session_id=session_id, scope_session=scope_session
         )
         await ctx.info(f"semantic recall returned {len(results)} hit(s)")
+        if content_only:
+            results = _project_content_only(results)
         return results
 
     @mcp.tool(
