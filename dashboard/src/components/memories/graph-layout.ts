@@ -1,50 +1,38 @@
 /**
- * Memory-map layout — clustered sunflower packing.
+ * Memory-map layout — deterministic clustered force embedding.
  *
- * The communities here are known a priori (a node's session), so the
- * layout imposes them by construction rather than discovering them with
- * a force model. Noack's energy-model analysis ("Energy Models for Graph
- * Clustering", JGAA 2007) shows the classic spring-electrical model does
- * not separate clusters cleanly — dense clusters over-spread and the
- * gaps between them collapse — which is exactly why earlier force-tuned
- * attempts either sprawled or merged the sessions. Imposing the cluster
- * geometry directly gives all three properties we want, exactly:
- *
- *   1. **Dense nodes** — each session is laid out as a Vogel sunflower
- *      (``r_k = c·√(k+½)``, ``θ_k = k·ψ`` with ψ the golden angle
- *      ``π(3−√5) ≈ 137.508°``). This is the uniform-density even
- *      packing of a disc; its minimum nearest-neighbour spacing is a
- *      scale-invariant ``1.546·c`` (verified numerically), so choosing
- *      ``c = (2·ρ_max + pad)/1.546`` packs the node discs as tightly as
- *      they go without overlap. Nodes are ordered by descending in-
- *      session degree, so hubs sit at the dense centre and leaves on the
- *      rim — keeping some structure visible inside the disc.
- *   2. **Separated communities** — every session is its own disc, so the
- *      sessions never inter-mix; a gap is baked into each disc's packing
- *      radius for clear visual separation.
- *   3. **Circular overall** — the session discs are arranged by tangent
- *      circle-packing-in-a-circle (Wang et al. 2006, the algorithm
- *      behind d3.packSiblings): each disc is placed tangent to two
- *      already-placed discs at the position closest to the centre, which
- *      grows a compact, roughly circular enclosure.
+ * The communities are known a priori (a node's session), so the layout
+ * imposes them by construction: each session is laid out independently
+ * with a deterministic Fruchterman–Reingold spring-electrical pass
+ * seeded on a golden-angle spiral (hubs at the centre), which gives the
+ * organic chains / leaf fans of a classic force graph *within* each
+ * cluster. The settled cluster discs are then arranged by tangent
+ * circle-packing-in-a-circle (Wang et al. 2006, the algorithm behind
+ * d3.packSiblings) — compactness keeps the whole map roughly circular
+ * while a connectivity pull places heavily-bridged sessions adjacent,
+ * shortening cross-session edges.
  *
  * Schemas carry no session, so each is folded into the session its
  * consolidation sources mostly belong to (orphans share one small disc).
- * A final bounded de-overlap pass clears any residual disc collisions,
- * and the map is recentred on the origin. Everything is deterministic
- * given the data (golden-angle spiral, degree-then-key ordering, size-
- * then-key packing) so the layout reflects new memories, not RNG jitter.
+ * A final bounded de-overlap pass clears residual dot collisions, and
+ * the map is recentred on the origin.
+ *
+ * Everything is deterministic given the data: the spiral seed and the
+ * fixed-iteration force schedule replace RNG jitter, node order is
+ * degree-then-key, disc packing is size-then-key. Same data → same map.
  */
 import type { GraphData, GraphNode } from "@/lib/api";
 import { clamp } from "@/lib/format";
 
 export type Positions = Map<string, { x: number; y: number }>;
 
+/** Dot-scale radii: the map reads as a constellation of small discs
+ *  (size ∝ salience + retrievals; schemas ∝ source count), not cards. */
 export function nodeRadius(n: GraphNode): number {
-  if (n.kind === "semantic") return 30 + clamp(n.source_count, 0, 12) * 1.4;
+  if (n.kind === "semantic") return 6 + clamp(n.source_count, 0, 12) * 0.5;
   const sal = clamp(n.salience, 0, 1);
   const ret = clamp(n.retrieval_count, 0, 10);
-  return (n.is_focus ? 26 : 17) + sal * 16 + ret * 1.1;
+  return (n.is_focus ? 7 : 4) + sal * 3.5 + ret * 0.35;
 }
 
 export function layoutSignature(data: GraphData | undefined): string {
@@ -71,45 +59,123 @@ function sessionOf(n: GraphNode): string {
 
 /** Golden angle, ψ = π(3 − √5) ≈ 2.39996 rad ≈ 137.508°. */
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-/** Scale-invariant min nearest-neighbour spacing of the Vogel lattice,
- *  ``min‖p_i − p_j‖ = NN_FACTOR · c`` (verified numerically for all n). */
-const NN_FACTOR = 1.546;
-/** Extra px folded into the sunflower spacing — small for density. */
-const SUNFLOWER_PAD = 7;
 /** Gap left between session discs during circle-packing. */
-const GROUP_GAP = 40;
+const GROUP_GAP = 60;
 /** How strongly disc placement is pulled toward the discs a session is
  *  most bridged to (vs. pure compactness). Keeps cross-session edges
  *  short without overriding the circular packing. */
 const PACK_LINK_PULL = 0.7;
-/** Padding between disc edges in the residual de-overlap pass. */
-const NODE_PAD = 6;
+/** Padding between dot edges in the de-overlap passes. */
+const NODE_PAD = 4;
 
 type SimNode = { key: string; r: number; x: number; y: number };
+type SimEdge = { a: number; b: number; w: number };
+
+/* ------------------------------------------------------- per-cluster force */
 
 /**
- * Place ``members`` as a Vogel sunflower centred on the origin and
- * return the disc's bounding radius. ``members`` is assumed already
- * ordered (index 0 = centre). ``maxR`` is the largest node radius in the
- * group, which sets the spacing so even the two biggest neighbours clear.
+ * Deterministic spring-electrical settle of one session's members.
+ *
+ * Fruchterman–Reingold shape: pairwise repulsion ``k²/d``, spring
+ * attraction toward a per-edge ideal length (stronger edges sit
+ * closer), a light centring pull, and a fixed geometric cooling
+ * schedule. Seeded on a golden-angle spiral with hubs (highest
+ * weighted in-cluster degree) at the centre — no RNG anywhere, so the
+ * settle is a pure function of the member/edge lists.
  */
-function placeSunflower(members: SimNode[], maxR: number): number {
+function settleCluster(members: SimNode[], edges: SimEdge[]): void {
   const m = members.length;
-  if (m === 0) return 0;
+  if (m === 0) return;
   if (m === 1) {
     members[0].x = 0;
     members[0].y = 0;
-    return members[0].r;
+    return;
   }
-  const c = (2 * maxR + SUNFLOWER_PAD) / NN_FACTOR;
-  for (let k = 0; k < m; k++) {
-    const rad = c * Math.sqrt(k + 0.5);
-    const a = k * GOLDEN_ANGLE;
-    members[k].x = rad * Math.cos(a);
-    members[k].y = rad * Math.sin(a);
+  let maxR = 0;
+  for (const nd of members) if (nd.r > maxR) maxR = nd.r;
+  // Ideal edge length: two dots plus breathing room.
+  const k = 2 * maxR + 26;
+
+  // Seed: golden-angle spiral, dense centre outward.
+  for (let i = 0; i < m; i++) {
+    const rad = k * 0.55 * Math.sqrt(i + 0.5);
+    const a = i * GOLDEN_ANGLE;
+    members[i].x = rad * Math.cos(a);
+    members[i].y = rad * Math.sin(a);
   }
-  // Recentre on the lattice centroid so the disc is centred on the
-  // origin (the first few Vogel points are slightly off-centre).
+
+  const iters = m > 400 ? 120 : 240;
+  const dx = new Float64Array(m);
+  const dy = new Float64Array(m);
+  const k2 = k * k;
+  for (let it = 0; it < iters; it++) {
+    // Geometric cooling: ~k/2 initial step shrinking to ~px scale.
+    const temp = (k / 2) * Math.pow(0.975, it);
+    dx.fill(0);
+    dy.fill(0);
+    // Repulsion (all pairs — clusters are small; the budget is bounded
+    // by the iteration scale-down above).
+    for (let i = 0; i < m; i++) {
+      for (let j = i + 1; j < m; j++) {
+        let ux = members[i].x - members[j].x;
+        let uy = members[i].y - members[j].y;
+        let d2 = ux * ux + uy * uy;
+        if (d2 < 1e-6) {
+          // Deterministic tie-break for coincident points.
+          ux = ((i * 7 + j) % 11) - 5 || 1;
+          uy = ((i * 5 + j) % 13) - 6;
+          d2 = ux * ux + uy * uy;
+        }
+        const d = Math.sqrt(d2);
+        const f = k2 / d2;
+        const fx = (ux / d) * f;
+        const fy = (uy / d) * f;
+        dx[i] += fx;
+        dy[i] += fy;
+        dx[j] -= fx;
+        dy[j] -= fy;
+      }
+    }
+    // Spring attraction along edges: stronger edges pull tighter.
+    for (const e of edges) {
+      const ux = members[e.a].x - members[e.b].x;
+      const uy = members[e.a].y - members[e.b].y;
+      const d = Math.hypot(ux, uy) || 1;
+      const ideal = k * (1.5 - 0.7 * clamp(e.w, 0, 1));
+      const f = (d - ideal) / ideal;
+      const fx = ux * f * 0.6;
+      const fy = uy * f * 0.6;
+      dx[e.a] -= fx;
+      dy[e.a] -= fy;
+      dx[e.b] += fx;
+      dy[e.b] += fy;
+    }
+    // Light centring keeps disconnected satellites from drifting off.
+    for (let i = 0; i < m; i++) {
+      dx[i] -= members[i].x * 0.03;
+      dy[i] -= members[i].y * 0.03;
+    }
+    // Apply, displacement capped by the cooling temperature.
+    for (let i = 0; i < m; i++) {
+      const len = Math.hypot(dx[i], dy[i]);
+      if (len < 1e-9) continue;
+      const step = Math.min(len, temp);
+      members[i].x += (dx[i] / len) * step;
+      members[i].y += (dy[i] / len) * step;
+    }
+  }
+
+  // Clear residual dot overlaps inside the cluster.
+  relaxPairs(
+    members.map((nd) => ({ p: nd, r: nd.r })),
+    30,
+  );
+}
+
+/** Recentre members on their centroid; return the disc's bounding radius. */
+function recentreCluster(members: SimNode[]): number {
+  const m = members.length;
+  if (m === 0) return 0;
   let cx = 0;
   let cy = 0;
   for (const p of members) {
@@ -251,17 +317,13 @@ function packDiscs(
 
 /* ---------------------------------------------------------------- overlap */
 
-/** Final pass: clear any residual disc collisions across the whole map.
- *  Bounded passes so a large graph can't stall the one-shot layout. */
-function relaxGlobal(positions: Positions, data: GraphData): void {
-  const items: Array<{ p: { x: number; y: number }; r: number }> = [];
-  for (const n of data.nodes) {
-    const p = positions.get(n.key);
-    if (p) items.push({ p, r: nodeRadius(n) });
-  }
+/** Bounded pairwise de-overlap over mutable positions. */
+function relaxPairs(
+  items: Array<{ p: { x: number; y: number }; r: number }>,
+  passes: number,
+): void {
   const count = items.length;
   if (count < 2) return;
-  const passes = count > 600 ? 8 : count > 250 ? 20 : 60;
   for (let pass = 0; pass < passes; pass++) {
     let moved = false;
     for (let i = 0; i < count; i++) {
@@ -292,13 +354,24 @@ function relaxGlobal(positions: Positions, data: GraphData): void {
   }
 }
 
+/** Final pass: clear residual dot collisions across the whole map.
+ *  Bounded passes so a large graph can't stall the one-shot layout. */
+function relaxGlobal(positions: Positions, data: GraphData): void {
+  const items: Array<{ p: { x: number; y: number }; r: number }> = [];
+  for (const n of data.nodes) {
+    const p = positions.get(n.key);
+    if (p) items.push({ p, r: nodeRadius(n) });
+  }
+  relaxPairs(items, items.length > 600 ? 8 : items.length > 250 ? 20 : 60);
+}
+
 /* ------------------------------------------------------------------- public */
 
 /**
- * Lay out the memory map as one sunflower disc per session, the discs
- * circle-packed into a roughly circular whole. Returns a Promise to
- * preserve the caller's contract (the previous force/UMAP paths were
- * Promise-shaped); the work itself is synchronous and deterministic.
+ * Lay out the memory map as one force-settled cluster per session, the
+ * cluster discs circle-packed into a roughly circular whole. Returns a
+ * Promise to preserve the caller's contract; the work itself is
+ * synchronous and deterministic.
  */
 export function computeLayout(
   data: GraphData | undefined,
@@ -341,11 +414,12 @@ export function computeLayout(
     else groups.set(g, [node]);
   }
 
-  // One pass over every edge feeds two things: in-session weighted
-  // degree (hubs sort to the disc centre) for intra-group edges, and
-  // an inter-disc link weight (how heavily two sessions bridge) for
-  // cross-group edges, which steers the disc packing below.
+  // One pass over every edge feeds three things: in-session weighted
+  // degree (hubs sort to the cluster centre), the intra-group spring
+  // list for the force settle, and an inter-disc link weight (how
+  // heavily two sessions bridge) that steers the disc packing below.
   const degree = new Map<string, number>();
+  const intra = new Map<string, Array<{ a: string; b: string; w: number }>>();
   const links = new Map<string, Map<string, number>>();
   const addLink = (a: string, b: string, w: number) => {
     let m = links.get(a);
@@ -362,6 +436,10 @@ export function computeLayout(
     if (ga === gb) {
       degree.set(ka, (degree.get(ka) ?? 0) + w);
       degree.set(kb, (degree.get(kb) ?? 0) + w);
+      const arr = intra.get(ga);
+      const rec = { a: ka, b: kb, w };
+      if (arr) arr.push(rec);
+      else intra.set(ga, [rec]);
     } else {
       addLink(ga, gb, w);
       addLink(gb, ga, w);
@@ -372,7 +450,7 @@ export function computeLayout(
     edge(`ep:${e.src}`, `ep:${e.dst}`, clamp(e.strength, 0, 1));
   for (const e of data.consolidation_edges) edge(`ep:${e.src}`, e.dst, 0.6);
 
-  // Lay out each group as a sunflower; collect disc radii for packing.
+  // Force-settle each group; collect disc radii for packing.
   const discs: Array<{ key: string; r: number }> = [];
   for (const [key, members] of groups) {
     members.sort(
@@ -380,9 +458,17 @@ export function computeLayout(
         (degree.get(b.key) ?? 0) - (degree.get(a.key) ?? 0) ||
         a.key.localeCompare(b.key),
     );
-    let maxR = 0;
-    for (const nd of members) if (nd.r > maxR) maxR = nd.r;
-    const radius = placeSunflower(members, maxR);
+    const index = new Map<string, number>();
+    members.forEach((nd, i) => index.set(nd.key, i));
+    const simEdges: SimEdge[] = [];
+    for (const e of intra.get(key) ?? []) {
+      const a = index.get(e.a);
+      const b = index.get(e.b);
+      if (a !== undefined && b !== undefined && a !== b)
+        simEdges.push({ a, b, w: e.w });
+    }
+    settleCluster(members, simEdges);
+    const radius = recentreCluster(members);
     discs.push({ key, r: radius + GROUP_GAP / 2 });
   }
 

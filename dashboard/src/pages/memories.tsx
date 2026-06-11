@@ -16,6 +16,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MemoryGraph } from "@/components/memories/memory-graph";
+import type { EdgeInfo } from "@/components/memories/graph-canvas";
+import { EdgeInspector } from "@/components/memories/edge-inspector";
 import { MemoryInspector } from "@/components/memories/memory-inspector";
 import { MemoryDialog } from "@/components/memories/memory-dialog";
 
@@ -75,7 +77,13 @@ export default function Memories() {
   // global UMAP manifold must stay stable across recenter clicks, so
   // every fetch sees the same node set.
   const [focus, setFocus] = useState<number | null>(null);
+  // Re-focus nonce: bumped on every focus request so "Recenter" on the
+  // already-focused episode still glides the camera back to it.
+  const [focusTick, setFocusTick] = useState(0);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  // A clicked edge opens in the same sidebar slot; node and edge
+  // selection are mutually exclusive.
+  const [selectedEdge, setSelectedEdge] = useState<EdgeInfo | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const episodicSearch = useMemories({
@@ -109,9 +117,20 @@ export default function Memories() {
     setFocus(matchIds[0]);
   }, [query, matchIds, graph.data]);
 
+  function focusOn(id: number) {
+    setFocus(id);
+    setFocusTick((t) => t + 1);
+  }
+
+  function selectNode(node: GraphNode | null) {
+    setSelected(node);
+    if (node) setSelectedEdge(null);
+  }
+
   function reset() {
     setFocus(null);
     setSelected(null);
+    setSelectedEdge(null);
     setQuery("");
     setDraft("");
   }
@@ -120,6 +139,7 @@ export default function Memories() {
     graph.data && graph.data.nodes.length === 0 && !graph.isLoading;
 
   const showReset = focus != null || !!query;
+  const sidebarOpen = selected != null || selectedEdge != null;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-3">
@@ -145,7 +165,11 @@ export default function Memories() {
         </Alert>
       )}
 
-      <div className="panel relative flex min-h-[28rem] flex-1 overflow-hidden bg-surface-canvas">
+      {/* Viewport-bound height: the map always fits on screen (no page
+       *  scroll to reach it) — 100dvh minus the app chrome above the
+       *  panel, clamped to sane floors/ceilings for tiny and huge
+       *  displays. */}
+      <div className="panel relative flex h-[clamp(22rem,calc(100dvh-16.5rem),64rem)] overflow-hidden bg-surface-canvas">
         {/* Search operates on the whole map */}
         <form
           onSubmit={(e) => {
@@ -223,8 +247,8 @@ export default function Memories() {
           <div
             className={
               "absolute top-3 z-40 flex items-center gap-1 rounded-lg border border-border/70 bg-surface-overlay p-1 shadow-card backdrop-blur sm:top-4 " +
-              (selected
-                ? "hidden sm:flex sm:right-[calc(22rem+1rem)] lg:right-4"
+              (sidebarOpen
+                ? "hidden sm:flex sm:right-[calc(26rem+1rem)] xl:right-[calc(30rem+1rem)]"
                 : "right-3 sm:right-4")
             }
           >
@@ -269,9 +293,16 @@ export default function Memories() {
               data={graph.data}
               selectedKey={selected?.key ?? null}
               cameraFocus={focus}
+              focusNonce={focusTick}
               highlight={highlight}
-              onSelect={setSelected}
-              onFocus={(id) => setFocus(id)}
+              selectedEdge={selectedEdge}
+              onSelect={selectNode}
+              onSelectEdge={(info) => {
+                setSelectedEdge(info);
+                setSelected(null);
+              }}
+              onFocus={focusOn}
+              onClearFocus={() => setFocus(null)}
             />
           )}
           {searchError && (
@@ -281,18 +312,29 @@ export default function Memories() {
           )}
         </div>
 
-        {/* Inspector */}
-        {selected && (
-          <aside className="absolute inset-y-0 right-0 z-30 w-full border-l border-border/60 bg-surface-floating backdrop-blur sm:w-[22rem] lg:static lg:bg-surface-canvas lg:backdrop-blur-none">
-            <MemoryInspector
-              node={selected}
-              onFocus={(id) => setFocus(id)}
-              onClose={() => {
-                setSelected(null);
-                setDialogOpen(false);
-              }}
-              onOpenFull={() => setDialogOpen(true)}
-            />
+        {/* Inspector — node or edge, same sidebar slot */}
+        {sidebarOpen && (
+          <aside className="absolute inset-y-0 right-0 z-30 w-full border-l border-border/60 bg-surface-floating backdrop-blur sm:w-[26rem] xl:w-[30rem] lg:static lg:bg-surface-canvas lg:backdrop-blur-none">
+            {selected ? (
+              <MemoryInspector
+                node={selected}
+                onFocus={focusOn}
+                onClose={() => {
+                  setSelected(null);
+                  setDialogOpen(false);
+                }}
+                onOpenFull={() => setDialogOpen(true)}
+              />
+            ) : selectedEdge ? (
+              <EdgeInspector
+                info={selectedEdge}
+                onInspectEndpoint={(key) => {
+                  const node = graph.data?.nodes.find((n) => n.key === key);
+                  if (node) selectNode(node);
+                }}
+                onClose={() => setSelectedEdge(null)}
+              />
+            ) : null}
           </aside>
         )}
       </div>

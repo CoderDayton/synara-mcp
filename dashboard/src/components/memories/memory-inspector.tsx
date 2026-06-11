@@ -102,14 +102,8 @@ function Stat({
 
 function EpisodicBody({
   node,
-  onFocus,
-  onClose,
-  onOpenFull,
 }: {
   node: Extract<GraphNode, { kind: "episodic" }>;
-  onFocus: (id: number) => void;
-  onClose: () => void;
-  onOpenFull: () => void;
 }) {
   const { data, isLoading, error } = useMemoryDetail(node.id);
   return (
@@ -148,7 +142,7 @@ function EpisodicBody({
       </div>
 
       {node.preview && (
-        <p className="rounded-md border border-border/70 bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+        <p className="rounded-md border border-border/70 bg-muted/40 p-3 text-xs leading-relaxed break-words text-muted-foreground">
           {node.preview}
         </p>
       )}
@@ -214,11 +208,11 @@ function EpisodicBody({
             <h3 className="eyebrow mb-2">
               Segments · {data.segments.length}
             </h3>
-            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+            <div className="max-h-96 space-y-2 overflow-y-auto pr-1">
               {data.segments.map((seg, i) => (
                 <pre
                   key={i}
-                  className="overflow-x-auto rounded-md border border-border bg-muted/40 p-3 text-[0.7rem] leading-relaxed"
+                  className="rounded-md border border-border bg-muted/40 p-3 text-[0.7rem] leading-relaxed break-words whitespace-pre-wrap"
                 >
                   {JSON.stringify(seg, null, 2)}
                 </pre>
@@ -227,37 +221,14 @@ function EpisodicBody({
           </section>
         </div>
       )}
-
-      <Separator />
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => onFocus(node.id)}
-          >
-            <Crosshair className="size-4" aria-hidden />
-            Recenter map
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onOpenFull}>
-            <Maximize2 className="size-4" aria-hidden />
-            View full
-          </Button>
-        </div>
-        <DeleteMemoryButton id={node.id} onDeleted={onClose} />
-      </div>
     </div>
   );
 }
 
 function SemanticBody({
   node,
-  onClose,
-  onOpenFull,
 }: {
   node: Extract<GraphNode, { kind: "semantic" }>;
-  onClose: () => void;
-  onOpenFull: () => void;
 }) {
   return (
     <div className="space-y-5">
@@ -279,7 +250,7 @@ function SemanticBody({
         />
       </div>
       {node.preview && (
-        <p className="rounded-md border border-border/70 bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+        <p className="rounded-md border border-border/70 bg-muted/40 p-3 text-xs leading-relaxed break-words text-muted-foreground">
           {node.preview}
         </p>
       )}
@@ -301,14 +272,6 @@ function SemanticBody({
           </>
         )}
       </p>
-      <Separator />
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button variant="ghost" size="sm" onClick={onOpenFull}>
-          <Maximize2 className="size-4" aria-hidden />
-          View full
-        </Button>
-        <DeleteMemoryButton id={node.id} kind="semantic" onDeleted={onClose} />
-      </div>
     </div>
   );
 }
@@ -347,26 +310,60 @@ export function MemoryInspector({
             {node.label}
           </div>
         </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Close inspector"
-          onClick={onClose}
-        >
-          <X className="size-4" aria-hidden />
-        </Button>
+        {/* Action toolbar: every node action lives here, in one place —
+         *  recenter (episodes), expand, delete, close. Each is an icon
+         *  button with a tooltip; delete keeps its confirm dialog. */}
+        <div className="flex shrink-0 items-center gap-0.5">
+          {node.kind === "episodic" && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Recenter map on #${node.id}`}
+                  onClick={() => onFocus(node.id)}
+                >
+                  <Crosshair className="size-4" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Recenter map</TooltipContent>
+            </Tooltip>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="View full memory"
+                onClick={onOpenFull}
+              >
+                <Maximize2 className="size-4" aria-hidden />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">View full</TooltipContent>
+          </Tooltip>
+          <DeleteMemoryButton
+            id={node.id}
+            kind={node.kind === "semantic" ? "semantic" : "episodic"}
+            onDeleted={onClose}
+          />
+          <Separator orientation="vertical" className="mx-1 !h-5" />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Close inspector"
+            onClick={onClose}
+          >
+            <X className="size-4" aria-hidden />
+          </Button>
+        </div>
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="p-4 sm:p-5">
           {node.kind === "episodic" ? (
-            <EpisodicBody
-              node={node}
-              onFocus={onFocus}
-              onClose={onClose}
-              onOpenFull={onOpenFull}
-            />
+            <EpisodicBody node={node} />
           ) : (
-            <SemanticBody node={node} onClose={onClose} onOpenFull={onOpenFull} />
+            <SemanticBody node={node} />
           )}
         </div>
       </ScrollArea>

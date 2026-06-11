@@ -83,7 +83,7 @@ export function DeleteMemoryButton({
       <DialogTrigger asChild>
         <Button
           variant="ghost"
-          size="icon"
+          size="icon-sm"
           aria-label={copy.aria(id)}
           className="text-muted-foreground hover:text-destructive"
         >

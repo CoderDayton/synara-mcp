@@ -10,6 +10,7 @@ import { useMemoryDetail, useSemanticDetail } from "@/lib/queries";
 import type { GraphNode } from "@/lib/api";
 import { relativeTime, shortSession } from "@/lib/format";
 import { ErrorState } from "@/components/common/states";
+import { MemoryContent } from "@/components/memories/memory-content";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -37,10 +38,31 @@ function EpisodicContent({
   node: Extract<GraphNode, { kind: "episodic" }>;
 }) {
   const { data, isLoading, error } = useMemoryDetail(node.id);
+  // Theta segmentation is a storage detail: segments are char-budget
+  // slices of ONE episode and can split mid-word. Reassemble the
+  // original text exactly like `MemoryService.get_episode` does —
+  // ordered by position, joined with no separator.
+  const segments = data?.segments ?? [];
+  const ordered = [...segments].sort(
+    (a, b) =>
+      (typeof a.position === "number" ? a.position : 0) -
+      (typeof b.position === "number" ? b.position : 0),
+  );
+  const textParts = ordered
+    .map((seg) => (typeof seg.content === "string" ? seg.content : null))
+    .filter((s): s is string => s !== null);
+  const fullText = textParts.join("");
   return (
     <div className="space-y-5">
       <section className="space-y-2">
-        <h3 className="eyebrow">Content</h3>
+        <h3 className="eyebrow">
+          Content
+          {ordered.length > 1 && (
+            <span className="ml-2 normal-case tracking-normal text-muted-foreground/70">
+              · {ordered.length} segments, reassembled
+            </span>
+          )}
+        </h3>
         {isLoading && (
           <div className="space-y-2" role="status" aria-busy="true">
             <Skeleton className="h-3 w-full" />
@@ -49,25 +71,17 @@ function EpisodicContent({
           </div>
         )}
         {error && <ErrorState error={error} />}
-        {data && (
-          <div className="space-y-3">
-            {data.segments.length === 0 && (
-              <p className="text-xs text-muted-foreground">no content</p>
-            )}
-            {data.segments.map((seg, i) => {
-              const content =
-                typeof seg.content === "string" ? seg.content : JSON.stringify(seg);
-              return (
-                <pre
-                  key={i}
-                  className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 p-3 text-xs leading-relaxed text-foreground"
-                >
-                  {content}
-                </pre>
-              );
-            })}
-          </div>
-        )}
+        {data &&
+          (fullText ? (
+            <MemoryContent text={fullText} />
+          ) : ordered.length > 0 ? (
+            // Non-string segment payloads (defensive): show raw.
+            <pre className="rounded-md border border-border bg-muted/40 p-3 text-xs leading-relaxed break-words whitespace-pre-wrap text-foreground">
+              {JSON.stringify(ordered, null, 2)}
+            </pre>
+          ) : (
+            <p className="text-xs text-muted-foreground">no content</p>
+          ))}
       </section>
 
       <Separator />
@@ -118,11 +132,12 @@ function SemanticContent({
           </div>
         )}
         {error && <ErrorState error={error} />}
-        {data && (
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 p-3 text-xs leading-relaxed text-foreground">
-            {data.content || "(empty)"}
-          </pre>
-        )}
+        {data &&
+          (data.content ? (
+            <MemoryContent text={data.content} />
+          ) : (
+            <p className="text-xs text-muted-foreground">(empty)</p>
+          ))}
       </section>
 
       <Separator />
@@ -182,7 +197,7 @@ export function MemoryDialog({
       : "Episode";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-full sm:max-w-2xl">
+      <DialogContent className="max-w-full sm:max-w-2xl lg:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="font-mono text-sm uppercase tracking-wider">
             {titleKind}
