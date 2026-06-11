@@ -7,7 +7,6 @@ these tests poke the collection directly (no in-memory shortcut).
 from __future__ import annotations
 
 import hashlib
-import math
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -59,40 +58,6 @@ async def svc_gated() -> AsyncIterator[MemoryService]:
         yield MemoryService(db, config=cfg, embed_fn=_embed)
     finally:
         await db.close()
-
-
-# ============================================================ cosine helper
-def test_cosine_distance_identical_vectors() -> None:
-    v = [1.0, 0.0, 0.0]
-    assert cm._cosine_distance(v, v) == pytest.approx(0.0, abs=1e-9)
-
-
-def test_cosine_distance_orthogonal_vectors() -> None:
-    assert cm._cosine_distance([1.0, 0.0], [0.0, 1.0]) == pytest.approx(1.0)
-
-
-def test_cosine_distance_opposite_vectors() -> None:
-    assert cm._cosine_distance([1.0, 0.0], [-1.0, 0.0]) == pytest.approx(2.0)
-
-
-def test_cosine_distance_length_mismatch_is_non_matching() -> None:
-    assert cm._cosine_distance([1.0, 0.0], [1.0, 0.0, 0.0]) == 1.0
-
-
-def test_cosine_distance_zero_vector_is_non_matching() -> None:
-    assert cm._cosine_distance([0.0, 0.0], [1.0, 0.0]) == 1.0
-
-
-def test_cosine_helper_matches_numpy_for_random_vectors() -> None:
-    rng = np.random.default_rng(0)
-    for _ in range(20):
-        a = rng.standard_normal(16).tolist()
-        b = rng.standard_normal(16).tolist()
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(x * x for x in b))
-        dot = sum(x * y for x, y in zip(a, b, strict=True))
-        ref = 1.0 - dot / (na * nb)
-        assert cm._cosine_distance(a, b) == pytest.approx(ref, abs=1e-9)
 
 
 # ============================================================ aging behaviour
@@ -168,25 +133,30 @@ async def test_recurrence_promotes_when_hit_count_crosses_threshold(
     recurrence under a real embedder is empirically covered by the
     recall_eval and self_learning_sim A/B runs.
     """
-    for i in range(2):
-        await svc_gated.encode_episode(
-            f"epsilon promote me {i}",
-            session_id="s1",
-            salience=0.6,
-        )
-    eps = await svc_gated.episodic.get_documents(filter_dict=None)
-    head_text = max(eps, key=lambda r: float(r[2].get("salience", 0.0)))[1]
-    # Seed at the headline's embedding: build_gist puts the headline
-    # first, so cosine_distance(headline_emb, full_gist_emb) is small.
-    await _seed_candidate(svc_gated, _embed(head_text), hits=1, age=0)
+    texts = [f"epsilon promote me {i}" for i in range(2)]
+    for t in texts:
+        await svc_gated.encode_episode(t, session_id="s1", salience=0.6)
+
+    # Seed a candidate for every possible gist the consolidate pass could
+    # produce.  build_gist selects the highest-salience text as the
+    # headline; with both episodes carrying equal salience (0.6) the
+    # winner depends on K-Means cluster ordering, so both orderings are
+    # possible.  Seeding the _embed of each exact gist string guarantees
+    # a cosine-distance of 0.0 <= merge_dist against whichever gist the
+    # pass actually builds — making the bump-to-hits=2 branch deterministic
+    # without touching production code or widening any threshold.
+    for head in texts:
+        gist = cm.build_gist(head, texts)
+        await _seed_candidate(svc_gated, _embed(gist), hits=1, age=0)
     pre_schema_count = await svc_gated.semantic.count()
 
     await svc_gated.consolidate(min_cluster_size=2)
 
     new_schemas = (await svc_gated.semantic.count()) - pre_schema_count
-    if new_schemas == 0:
-        pytest.skip("test-embedder gist drift defeated the seeded match")
-    assert new_schemas >= 1
+    assert new_schemas >= 1, (
+        "Expected at least one schema to be promoted; candidate hit count should have "
+        "crossed min_recurrence=2 because a matching candidate was pre-seeded at hits=1."
+    )
     # The seeded candidate should be gone (promoted), though the gate
     # may have created a fresh candidate for a different K-Means
     # cluster on the same pass.

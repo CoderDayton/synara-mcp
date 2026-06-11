@@ -593,8 +593,14 @@ class MemoryService:
         score = self.config.segment_assoc_score
         if self._sr is None or score <= 0.0:
             return
-        for a, b in itertools.pairwise(seg_ids):
-            await self._plasticity.reinforce(a, b, score=score, now=now)
+        pairs = list(itertools.pairwise(seg_ids))
+        if pairs:
+            # Consecutive sibling pairs are distinct edges (segment ids are
+            # unique within a group), so the per-edge locks never contend;
+            # gather pipelines the read+upsert round-trips.
+            await asyncio.gather(
+                *(self._plasticity.reinforce(a, b, score=score, now=now) for a, b in pairs)
+            )
 
     async def delete_episode(
         self,
@@ -664,10 +670,18 @@ class MemoryService:
 
     # ------------------------------------------------------------------ stats
     async def stats(self) -> dict[str, int]:
+        # The three counts are independent reads; gather them so a stats
+        # poll (dashboard, health check) pays one round-trip of latency
+        # instead of three.
+        episodic_count, semantic_count, candidate_count = await asyncio.gather(
+            self.episodic.count(),
+            self.semantic.count(),
+            self.schema_candidates.count(),
+        )
         out: dict[str, int] = {
-            "episodic_count": await self.episodic.count(),
-            "semantic_count": await self.semantic.count(),
-            "schema_candidate_count": await self.schema_candidates.count(),
+            "episodic_count": episodic_count,
+            "semantic_count": semantic_count,
+            "schema_candidate_count": candidate_count,
             "consolidate_epoch": int(self._consolidate_epoch),
         }
         out.update(cast("dict[str, int]", self._hygiene_counters))

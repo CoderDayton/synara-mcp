@@ -51,7 +51,7 @@ class MemoryConfig:
     tracing_enabled: bool = False
     # Optional signal-registry override for the encode path. ``None``
     # falls back to the hardcoded :data:`SALIENCE_WEIGHTS` table inside
-    # ``primitives/signals.py``. Pass a custom registry to add a signal
+    # ``amygdala/signals.py``. Pass a custom registry to add a signal
     # without touching ``encode.py``.
     signal_registry: object | None = field(default=None, repr=False)
     # Cosine distance below this threshold counts as a duplicate within a

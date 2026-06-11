@@ -95,3 +95,6 @@ scripts/sim/bench_snapshot.json
 
 # Playwright MCP scratch (screenshots, snapshots, console logs)
 .playwright-mcp/
+
+# Local notes
+IMPORTANT.md

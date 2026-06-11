@@ -409,6 +409,7 @@ async def run(
     t_now = now_seconds()
     out: list[dict[str, Any]] = []
     observed_episodic: list[tuple[str, int]] = []
+    bumps: list[tuple[int, dict[str, Any]]] = []
     for doc_id, text, md, dist, source in merged[:k]:
         hit: dict[str, Any] = {
             "id": doc_id,
@@ -428,10 +429,16 @@ async def run(
         # pure read: no retrieval_count bump and — since the SR block
         # below guards on ``observed_episodic`` — no SR/plasticity update.
         if reinforce and source == "episodic" and doc_id >= 0:
-            await service.bump_retrieval(doc_id, md)
+            bumps.append((doc_id, md))
             sid = str(md.get("session_id", "")) if md else ""
             if sid:
                 observed_episodic.append((sid, doc_id))
+    if bumps:
+        # Hits within one recall are distinct doc ids, so their
+        # read-append-write sections are independent (per-doc locks never
+        # contend) — run them concurrently instead of paying k sequential
+        # round-trips on the hot path.
+        await asyncio.gather(*(service.bump_retrieval(d, m) for d, m in bumps))
 
     await _reinforce_recall_set(
         service,
@@ -580,10 +587,25 @@ async def _reinforce_recall_set(
     # brain's bread-and-butter Hebbian event.
     out_lookup = {row["id"]: row for row in out}
     anchor_row = out_lookup.get(anchor_id)
-    for j in others:
-        jrow = out_lookup.get(j)
-        score = _cosine_score_from_distance(jrow["distance"]) if jrow is not None else 0.5
-        await service._plasticity.reinforce(anchor_id, j, score=score, now=now)
+    if others:
+        # Each (anchor, j) edge is distinct, so the per-edge locks never
+        # contend; gather pipelines the read+upsert round-trips instead
+        # of serialising them per co-recalled hit.
+        await asyncio.gather(
+            *(
+                service._plasticity.reinforce(
+                    anchor_id,
+                    j,
+                    score=(
+                        _cosine_score_from_distance(jrow["distance"])
+                        if (jrow := out_lookup.get(j)) is not None
+                        else 0.5
+                    ),
+                    now=now,
+                )
+                for j in others
+            )
+        )
     # Reconsolidation (Nader 2000): when alpha is set, bump drift_total
     # and pull the stored vector toward the cue (buffered; flushed to
     # HNSW by the next consolidate pass).
@@ -769,9 +791,9 @@ async def _sr_rank_keys(
     if not episodic_hits:
         return {}
     anchor_id = min(episodic_hits, key=lambda r: r[1])[0]
-    ep_count = await service.episodic.count()
     cfg = service.config
-    omega = service._sr.omega(ep_count) if service._sr is not None else 0.0
+    # Only pay the count() round-trip when the SR can actually use it.
+    omega = service._sr.omega(await service.episodic.count()) if service._sr is not None else 0.0
     sr_boost: dict[int, float] = {}
     if service._sr is not None and omega > 0.0:
         # Lock-guarded snapshot so a concurrent ``observe`` running on

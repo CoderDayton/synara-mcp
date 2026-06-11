@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from synara.core.errors import ValidationError
 
+from ..config import NEUTRAL_SALIENCE_BASE
 from ..service import UNCONSOLIDATED, now_seconds
 from ..timestamps import created_at as _created_at
 from ..timestamps import last_accessed as _last_accessed
@@ -33,10 +34,11 @@ from ..timestamps import last_accessed as _last_accessed
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..port import MemoryServicePort as MemoryService
 
-# Neutral salience for episodes missing the field. Matches the base in
-# ``amygdala.signals.derive_salience`` so an un-tagged episode decays
-# like a default-tagged one rather than being prune-on-sight.
-_DEFAULT_SALIENCE = 0.3
+# Neutral salience for episodes missing the field — the shared
+# ``NEUTRAL_SALIENCE_BASE`` (== ``derive_salience``'s neutral base), so an
+# un-tagged episode decays like a default-tagged one rather than being
+# prune-on-sight, and the value cannot drift from the config constant.
+_DEFAULT_SALIENCE = NEUTRAL_SALIENCE_BASE
 
 
 def memory_strength(

@@ -1,18 +1,19 @@
-"""Narrow service port for ops/.
+"""Narrow service port for the region operation modules.
 
-The ops/ submodules (``encode``, ``recall``, ``consolidate``, ``forget``,
-``reflect``) historically took the whole ``MemoryService`` as a
-parameter, which made them un-testable in isolation and tangled every
-new op into the full service surface.
+The operation modules (``hippocampus/encode``, ``hippocampus/recall``,
+``neocortex/consolidate``, ``neocortex/forget``, ``neocortex/reflect``)
+historically took the whole ``MemoryService`` as a parameter, which made
+them un-testable in isolation and tangled every new op into the full
+service surface.
 
 :class:`MemoryServicePort` defines the structural subset the ops
 actually need. ``MemoryService`` satisfies it by structure, so no
 runtime change happens — but tests and alternative implementations can
 now provide a stub that implements just this protocol.
 
-Kept deliberately narrow: only the methods that ops/ call on
-``self``-typed parameters. Anything an op imports directly from
-``primitives/*`` does not appear here.
+Kept deliberately narrow: only the methods that ops call on
+``self``-typed parameters. Anything an op imports directly from a
+primitive module (``separate``, ``successor``, ...) does not appear here.
 """
 
 from __future__ import annotations
@@ -32,9 +33,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 @runtime_checkable
 class _Collection(Protocol):
-    """Subset of the simplevecdb collection used by ops/.
+    """Subset of the simplevecdb collection used by the operation modules.
 
-    Defined for type-checker hygiene; ops/ call these directly and we
+    Defined for type-checker hygiene; ops call these directly and we
     want the port to advertise what they touch.
     """
 
@@ -116,7 +117,7 @@ class HygieneCounters(TypedDict):
 
 @runtime_checkable
 class MemoryServicePort(Protocol):
-    """Structural interface ops/ depend on.
+    """Structural interface the operation modules depend on.
 
     Implemented by :class:`MemoryService`; tests can stub the
     handful of attributes/methods listed here to drive an op in
@@ -128,7 +129,7 @@ class MemoryServicePort(Protocol):
     semantic: _Collection
     memory_types: MemoryTypeRegistry
     schema_candidates: _Collection
-    # Package-private state that ops/ read or mutate directly on ``self``.
+    # Package-private state that ops read or mutate directly on ``self``.
     # They are single-underscore implementation detail of ``MemoryService``
     # but appear here so in-package ops type-check against the abstract
     # port; external callers should not depend on them.

@@ -394,12 +394,11 @@ async def _insert_segmented(
     # failure must not turn a successful store into a reported error.
     with contextlib.suppress(Exception):
         await service._reinforce_segment_chain(seg_ids, encoded_at)
-    resolved_group_id = group_id
     return {
         "id": seg_ids[0],
         "deduped": False,
         "distance": None,
         "session_id": session_id,
-        "group_id": resolved_group_id,
+        "group_id": group_id,
         "segment_ids": seg_ids,
     }

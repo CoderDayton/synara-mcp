@@ -6,10 +6,11 @@ specs, no prose. Validation lives in ``MemoryService``.
 Surface
 -------
 Episodic store (raw event traces, scoped by ``session_id``):
-    store_episode, recall_episodes, consolidate_episodes,
+    store_episode, recall_episodes, get_episode, consolidate_episodes,
     forget_episodes, reflect_session.
 
-Semantic store (distilled facts/procedures/preferences/schemas, global):
+Semantic store (distilled facts/procedures/preferences/schemas,
+session-scoped or global via the scope axis):
     store_semantic_memory, recall_semantic_memory.
 
 The semantic store is also written to by ``consolidate_episodes`` —
@@ -99,7 +100,7 @@ def _translate_errors[R](
 # first poll instead of waiting for a call to materialise each row.
 _TOOL_HEADLINES: dict[str, str] = {
     "store_episode": "encode an episodic trace",
-    "recall_episodes": "cross-session episodic recall",
+    "recall_episodes": "ranked episodic recall",
     "get_episode": "fetch full episode by id",
     "consolidate_episodes": "cluster traces → schemas",
     "forget_episodes": "power-law decay prune",
@@ -114,14 +115,15 @@ _TOOL_HEADLINES: dict[str, str] = {
 _SID = (
     "session_id: caller-defined namespace str (e.g. conversation id, "
     "project name, persona). Same string = same namespace; not an "
-    "MCP/process session. Acts as a ranking hint for episodic recall; "
-    "scopes dedup, consolidate, and reflect. Semantic store ignores it."
+    "MCP/process session. Scopes recall to that session plus global "
+    "records by default and grants in-session hits a ranking bonus; "
+    "also scopes dedup, consolidate, and reflect."
 )
 
-# Namespace used when a caller omits ``session_id`` on store. Episodic
-# recall is always cross-session, so an un-namespaced store is still
-# fully recallable; the default just gives dedup/consolidate/reflect a
-# stable bucket instead of forcing the caller to invent one.
+# Namespace used when a caller omits ``session_id`` on store. A
+# session-less recall (or one with scope_session=false) still sees these
+# records cross-session; the default just gives dedup/consolidate/
+# reflect a stable bucket instead of forcing the caller to invent one.
 _DEFAULT_SESSION_ID = "default"
 
 

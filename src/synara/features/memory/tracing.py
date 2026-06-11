@@ -1,9 +1,10 @@
 """Request-scoped tracing for the recall path.
 
 A single :class:`RequestContext` is published on a ``ContextVar`` for
-the duration of a service op. Any layer inside the op (ops/recall,
-primitives/complete, primitives/plasticity, ...) can append a span
-without threading a parameter through every signature.
+the duration of a service op. Any layer inside the op
+(``hippocampus/recall``, ``hippocampus/complete``,
+``hippocampus/plasticity``, ...) can append a span without threading a
+parameter through every signature.
 
 Tracing is *opt-in* via ``MemoryConfig.tracing_enabled``. When
 disabled, :func:`start_request` returns a sentinel that no-ops on

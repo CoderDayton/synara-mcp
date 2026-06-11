@@ -299,28 +299,6 @@ def _infer_cluster_session(
     return top_sid
 
 
-def _cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
-    """Cosine distance for two equal-length, non-zero vectors.
-
-    Used by the candidate gate to compare an in-memory gist embedding
-    against buffered candidates without a DB round-trip. Returns 1.0 on
-    a length mismatch or all-zero vector so the caller treats them as
-    non-matching rather than crashing the consolidate pass.
-    """
-    if len(a) != len(b):
-        return 1.0
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b, strict=True):
-        dot += x * y
-        na += x * x
-        nb += y * y
-    if na <= 0.0 or nb <= 0.0:
-        return 1.0
-    return 1.0 - dot / math.sqrt(na * nb)
-
-
 def _replay_score(
     md: dict[str, Any],
     *,
@@ -765,7 +743,7 @@ async def _process_stage2_cluster(  # noqa: PLR0911 -- explicit branch-per-gate 
     sem_ids = await service.semantic.add_texts(
         [summary],
         metadatas=[sem_meta],
-        embeddings=[summary_emb] if summary_emb is not None else None,
+        embeddings=[summary_emb],
     )
     sem_id = int(sem_ids[0])
     # The row exists but its metadata has no ``id`` yet. If the id-patch
