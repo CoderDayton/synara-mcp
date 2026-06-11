@@ -115,3 +115,102 @@ async def test_recall_still_works_after_delete(service: MemoryService) -> None:
     ids = {h.get("id") for h in hits}
     assert keep["id"] in ids
     assert drop["id"] not in ids
+
+
+# ----------------------------------------------- encode supersedes retire
+async def test_encode_supersedes_retires_stale_episode(service: MemoryService) -> None:
+    """A corrective store deletes the episode it replaces."""
+    old = await service.encode_episode("we deploy with fabric scripts", "s1")
+    new = await service.encode_episode(
+        "we deploy with terraform now, fabric is retired",
+        "s1",
+        supersedes=old["id"],
+    )
+
+    assert new["superseded"] == old["id"]
+    assert await service.episodic.get_documents({"id": old["id"]}) == []
+    assert await service.episodic.get_documents({"id": new["id"]}) != []
+
+
+async def test_encode_supersedes_unknown_id_raises(service: MemoryService) -> None:
+    with pytest.raises(ValidationError, match="not found"):
+        await service.encode_episode("orphan correction", "s1", supersedes=999_999)
+
+
+async def test_encode_supersedes_negative_id_raises(service: MemoryService) -> None:
+    with pytest.raises(ValidationError, match="non-negative"):
+        await service.encode_episode("bad target", "s1", supersedes=-3)
+
+
+async def test_encode_supersedes_skips_retire_on_self_dedup(service: MemoryService) -> None:
+    """Content that dedups onto the superseded episode keeps it: deleting
+    the dedup target would destroy the only remaining copy of the trace."""
+    old = await service.encode_episode("the staging database password rotates monthly", "s1")
+    again = await service.encode_episode(
+        "the staging database password rotates monthly",
+        "s1",
+        supersedes=old["id"],
+    )
+
+    assert again["deduped"] is True
+    assert again["id"] == old["id"]
+    assert again["superseded"] is None
+    assert await service.episodic.get_documents({"id": old["id"]}) != []
+
+
+async def test_encode_supersedes_retires_whole_segment_group(service: MemoryService) -> None:
+    """Superseding any member of a theta-segmented episode retires the group."""
+    long_text = (
+        "First we set up the environment carefully. "
+        "Then we ran the migration against staging. "
+        "After that the rollout proceeded to production. "
+        "Finally we verified the dashboards were green."
+    )
+    old = await service.encode_episode(long_text, "s1")
+    group_id = old.get("group_id", old["id"])
+    member_ids = sorted(int(m["id"]) for m in await service.fetch_episode_group(group_id)) or [
+        int(old["id"])
+    ]
+
+    new = await service.encode_episode(
+        "rollouts are fully automated now", "s1", supersedes=member_ids[-1]
+    )
+
+    assert new["superseded"] == member_ids[-1]
+    for mid in member_ids:
+        assert await service.episodic.get_documents({"id": mid}) == []
+    assert await service.episodic.get_documents({"id": new["id"]}) != []
+
+
+# ----------------------------------------------------- dry-run preview
+async def test_delete_episode_dry_run_previews_without_deleting(
+    service: MemoryService,
+) -> None:
+    r = await service.encode_episode("a trace we might remove", "s1")
+    out = await service.delete_episode(r["id"], dry_run=True)
+
+    assert out["dry_run"] is True
+    assert r["id"] in out["candidate_ids"]
+    assert "deleted_ids" not in out
+    assert await service.episodic.get_documents({"id": r["id"]}) != []
+
+
+async def test_delete_episode_dry_run_lists_whole_group(service: MemoryService) -> None:
+    long_text = (
+        "First we set up the environment carefully. "
+        "Then we ran the migration against staging. "
+        "After that the rollout proceeded to production. "
+        "Finally we verified the dashboards were green."
+    )
+    r = await service.encode_episode(long_text, "s1")
+    group_id = r.get("group_id", r["id"])
+    member_ids = sorted(int(m["id"]) for m in await service.fetch_episode_group(group_id)) or [
+        int(r["id"])
+    ]
+
+    out = await service.delete_episode(member_ids[-1], dry_run=True)
+
+    assert out["dry_run"] is True
+    assert set(member_ids).issubset(set(out["candidate_ids"]))
+    for mid in member_ids:
+        assert await service.episodic.get_documents({"id": mid}) != []

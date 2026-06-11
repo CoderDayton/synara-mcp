@@ -102,6 +102,7 @@ _TOOL_HEADLINES: dict[str, str] = {
     "store_episode": "encode an episodic trace",
     "recall_episodes": "ranked episodic recall",
     "get_episode": "fetch full episode by id",
+    "remove_episode": "targeted episode delete",
     "consolidate_episodes": "cluster traces → schemas",
     "forget_episodes": "power-law decay prune",
     "reflect_session": "summarise a session",
@@ -204,8 +205,16 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "schema headline selection. Not a recall filter.\n"
             "salience: 0..1, default 0.5. Higher = slower power-law "
             "decay + preferred as schema headline. Use >0.7 for "
-            "critical traces. After a run of stores, reflect_session "
-            "distils them into what to carry forward."
+            "critical traces.\n"
+            "supersedes: optional id of an existing episode this one "
+            "corrects/replaces. When set, that episode (and its segment "
+            "group) is deleted after the new one is stored, so a "
+            "correction retires the stale trace instead of layering. "
+            "Errors if the id does not exist; the response echoes "
+            "superseded=<id> (null when the new content merged into the "
+            "superseded episode itself, which is kept). After a run of "
+            "stores, reflect_session distils them into what to carry "
+            "forward."
         ),
     )
     @_instrument(metrics, "store_episode")
@@ -216,20 +225,24 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         session_id: str | None = None,
         tags: list[str] | None = None,
         salience: float = 0.5,
+        supersedes: int | None = None,
     ) -> dict[str, Any]:
         await _ensure_warmed(embedder, ctx)
         sid = session_id or _DEFAULT_SESSION_ID
-        await ctx.debug(f"store_episode: session_id={sid!r} salience={salience}")
+        await ctx.debug(
+            f"store_episode: session_id={sid!r} salience={salience} supersedes={supersedes}"
+        )
         result = await service.encode_episode(
             content=content,
             session_id=sid,
             tags=tags,
             salience=salience,
+            supersedes=supersedes,
         )
-        if result.get("deduped"):
-            await ctx.info(f"deduped onto existing episode id={result['id']}")
-        else:
-            await ctx.info(f"encoded episode id={result['id']}")
+        verb = "deduped onto existing" if result.get("deduped") else "encoded"
+        retired = result.get("superseded")
+        suffix = f"; retired id={retired}" if retired is not None else ""
+        await ctx.info(f"{verb} episode id={result['id']}{suffix}")
         return result
 
     @mcp.tool(
@@ -344,6 +357,39 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         await ctx.debug(f"get_episode: id={episode_id} session_id={session_id!r}")
         result = await service.get_episode(episode_id, session_id=session_id)
         await ctx.info(f"fetched episode id={episode_id} ({result['content_chars']} chars)")
+        return result
+
+    @mcp.tool(
+        name="remove_episode",
+        description=(
+            "Permanently delete one episode (and its whole segment group) "
+            "by id — the targeted companion to forget_episodes' bulk decay "
+            "pruning. Destructive and irreversible: confirm with the user "
+            "before deleting a memory you did not just create. Always "
+            "preview first: dry_run defaults to true.\n"
+            "episode_id: required; the id from a recall hit or get_episode.\n"
+            f"{_SID} Optional; restricts the segment-group walk to that "
+            "namespace.\n"
+            "dry_run: default true — returns candidate_ids (every id that "
+            "would be deleted, including segment siblings) without "
+            "deleting. Set false to actually delete; the response then "
+            "carries deleted_ids."
+        ),
+    )
+    @_instrument(metrics, "remove_episode")
+    @_translate_errors
+    async def remove_episode(
+        episode_id: int,
+        ctx: Context,
+        session_id: str | None = None,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        await ctx.debug(
+            f"remove_episode: id={episode_id} session_id={session_id!r} dry_run={dry_run}"
+        )
+        result = await service.delete_episode(episode_id, session_id=session_id, dry_run=dry_run)
+        verb = "would delete" if dry_run else "deleted"
+        await ctx.info(f"{verb} {result['count']} episode record(s)")
         return result
 
     @mcp.tool(

@@ -145,7 +145,7 @@ first use, so a swapped-out model that no longer matches fails fast
 instead of silently corrupting stored vectors. With OpenAI-compatible
 remotes that support it (e.g. `text-embedding-3-*`), the value is also
 sent as the `dimensions` request field to truncate the vector. Integer,
-`1` to `1000000`.
+`1` to `65536`.
 
 ```bash
 SYNARA_EMBEDDING_DIM=768
@@ -155,7 +155,7 @@ SYNARA_EMBEDDING_DIM=768
 
 How many texts are embedded per request/forward pass. Default `64`.
 Larger batches are faster but use more memory (and may exceed a remote
-provider's per-request limit). Integer, `1` to `1000000`.
+provider's per-request limit). Integer, `1` to `4096`.
 
 ```bash
 SYNARA_EMBEDDING_BATCH_SIZE=32
@@ -166,7 +166,7 @@ SYNARA_EMBEDDING_BATCH_SIZE=32
 Maximum tokens the local model processes per text; longer inputs are
 truncated before embedding. Unset uses the model's own default. Has no
 effect in remote mode (the remote service controls truncation). Integer,
-`1` to `1000000`.
+`1` to `32768`.
 
 ```bash
 SYNARA_EMBEDDING_MAX_SEQ_LENGTH=8192

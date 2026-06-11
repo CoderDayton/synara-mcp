@@ -607,8 +607,13 @@ class MemoryService:
         episode_id: int,
         *,
         session_id: str | None = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Delete an episode (and its theta-segment group) from the store.
+
+        ``dry_run=True`` previews instead: returns the ids that *would*
+        be deleted (``candidate_ids`` — the whole segment group) without
+        touching the store, mirroring ``forget``'s preview contract.
 
         Removes the episodic documents via ``delete_by_ids``. Durable
         SR/plasticity edges (``coll.edges``) have an ``ON DELETE
@@ -631,8 +636,10 @@ class MemoryService:
         member_ids = {int(r["id"]) for r in members}
         member_ids.add(int(episode_id))
         ordered = sorted(member_ids)
+        if dry_run:
+            return {"candidate_ids": ordered, "count": len(ordered), "dry_run": True}
         await self._evict_and_delete(ordered)
-        return {"deleted_ids": ordered, "count": len(ordered)}
+        return {"deleted_ids": ordered, "count": len(ordered), "dry_run": False}
 
     async def delete_semantic(self, semantic_id: int) -> dict[str, Any]:
         """Delete a semantic memory (consolidated schema or user-asserted entry).
@@ -756,8 +763,12 @@ class MemoryService:
         *,
         tags: Sequence[str] | None = None,
         salience: float | None = None,
+        supersedes: int | None = None,
     ) -> dict[str, Any]:
         await self._ensure_sr_loaded()
+        # Validate the retire target before the encode so a bad id fails
+        # the whole call up-front (mirrors store_semantic_memory).
+        await self._validate_episode_supersedes(supersedes)
         result = await _encode_mod.run(
             self,
             content=content,
@@ -765,12 +776,62 @@ class MemoryService:
             tags=tags,
             salience=salience,
         )
+        if supersedes is not None:
+            result["superseded"] = await self._retire_superseded_episode(supersedes, result)
         await self._emit(
             "encode",
             session_id=session_id,
             payload={"id": result.get("id"), "deduped": bool(result.get("deduped"))},
         )
         return result
+
+    async def _validate_episode_supersedes(self, supersedes: int | None) -> None:
+        """Reject a ``supersedes`` episode target that is malformed or absent."""
+        if supersedes is None:
+            return
+        if supersedes < 0:
+            raise ValidationError("supersedes must be a non-negative id")
+        if not await self.episodic.get_documents({"id": supersedes}):
+            raise ValidationError(f"supersedes id {supersedes} not found in episodic store")
+
+    async def _retire_superseded_episode(
+        self, supersedes: int, result: dict[str, Any]
+    ) -> int | None:
+        """Delete the episode (and its theta-segment group) the encode replaces.
+
+        Returns the retired id, or ``None`` when the retire was skipped
+        because the new content deduped onto the superseded episode itself
+        (or one of its group siblings) — deleting then would destroy the
+        only remaining copy of the trace. A target that vanished between
+        validation and retire counts as retired (the goal state holds).
+        If the delete fails after a fresh insert, the insert is rolled
+        back and the error re-raised so the pre-call state is restored
+        (mirrors ``store_semantic_memory``'s supersedes rollback); a
+        dedup-merge result is left in place since its retrieval bump is
+        harmless.
+        """
+        new_id = int(result.get("id", -1))
+        if result.get("deduped"):
+            target = await self.episodic.get_documents({"id": supersedes})
+            if not target:
+                return supersedes
+            group_id = int(target[0][2].get("episode_group_id", supersedes))
+            members = await self.fetch_episode_group(group_id)
+            member_ids = {int(m["id"]) for m in members} | {supersedes}
+            if new_id in member_ids:
+                return None
+        try:
+            await self.delete_episode(supersedes)
+        except ValidationError:
+            return supersedes
+        except Exception:
+            if not result.get("deduped"):
+                ids = sorted({new_id, *(int(s) for s in (result.get("segment_ids") or []))} - {-1})
+                if ids:
+                    with contextlib.suppress(Exception):
+                        await self._evict_and_delete(ids)
+            raise
+        return supersedes
 
     async def recall(
         self,
