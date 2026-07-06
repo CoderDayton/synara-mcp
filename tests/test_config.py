@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from synara.config import Settings
+from synara.config import Settings, default_db_path
 from synara.features.dashboard.config import DashboardConfig
 
 _DASH_VARS = (
@@ -198,3 +200,42 @@ def test_trust_remote_code_bad_value_rejected(
     monkeypatch.setenv("SYNARA_EMBEDDING_TRUST_REMOTE_CODE", "maybe")
     with pytest.raises(ValueError, match="SYNARA_EMBEDDING_TRUST_REMOTE_CODE"):
         Settings.from_env()
+
+
+def test_default_db_path_uses_xdg_data_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "empty-cache"))
+    assert default_db_path() == str(tmp_path / "synara-mcp" / "synara.db")
+
+
+def test_default_db_path_falls_back_to_legacy_cache_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    data_home = tmp_path / "data"
+    cache_home = tmp_path / "cache"
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+    legacy_db = cache_home / "synara-mcp" / "synara.db"
+    legacy_db.parent.mkdir(parents=True)
+    legacy_db.touch()
+
+    assert default_db_path() == str(legacy_db)
+
+
+def test_default_db_path_prefers_new_path_once_it_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    data_home = tmp_path / "data"
+    cache_home = tmp_path / "cache"
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+    legacy_db = cache_home / "synara-mcp" / "synara.db"
+    legacy_db.parent.mkdir(parents=True)
+    legacy_db.touch()
+    new_db = data_home / "synara-mcp" / "synara.db"
+    new_db.parent.mkdir(parents=True)
+    new_db.touch()
+
+    assert default_db_path() == str(new_db)

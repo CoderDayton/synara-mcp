@@ -106,7 +106,7 @@ Every variable is optional and read from the process environment at startup — 
 | --- | --- | --- |
 | `SYNARA_TRANSPORT` | `stdio` | `stdio` \| `http` \| `sse` \| `streamable-http` |
 | `SYNARA_LOG_LEVEL` | `INFO` | Log verbosity |
-| `SYNARA_DB_PATH` | `$XDG_CACHE_HOME/synara-mcp/synara.db` | Store path; `:memory:` for ephemeral |
+| `SYNARA_DB_PATH` | `$XDG_DATA_HOME/synara-mcp/synara.db` | Store path; `:memory:` for ephemeral |
 | `SYNARA_EMBEDDING_MODEL` | local HF model | Embedding model id |
 | `SYNARA_EMBEDDING_URL` | _(unset)_ | Set to an OpenAI-compatible base URL for remote embeddings |
 | `SYNARA_DASHBOARD` | `false` | Enable the parallel web admin console (`[dashboard]` extra) |
@@ -131,7 +131,7 @@ Recall is ranked by cosine similarity plus a successor representation — a tran
 
 ## Good to know
 
-**Storage is local.** Memory lives in a `simplevecdb` file under your cache directory and embeddings run on-device by default. If `SYNARA_EMBEDDING_URL` is set, that endpoint is the only external service that sees your text; the API key is read from the environment and never logged. Set `SYNARA_DB_PATH=:memory:` for an ephemeral store.
+**Storage is local.** Memory lives in a `simplevecdb` file under your XDG data directory (not the cache directory — this store is durable and shouldn't be swept by a cache clean) and embeddings run on-device by default. If `SYNARA_EMBEDDING_URL` is set, that endpoint is the only external service that sees your text; the API key is read from the environment and never logged. Set `SYNARA_DB_PATH=:memory:` for an ephemeral store.
 
 **Defaults are safe.** Invalid configuration fails at startup rather than silently degrading. `forget_episodes` is dry-run by default, so deletions are previewed before they apply. Tool inputs and remote embedding responses are size-capped, and invalid input is rejected with an actionable message the agent can act on.
 

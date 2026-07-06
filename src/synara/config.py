@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass, field
@@ -32,15 +33,50 @@ _EMBEDDING_BATCH_SIZE_MAX = 4_096
 _EMBEDDING_MAX_SEQ_LENGTH_MAX = 32_768
 _EMBEDDING_DIM_MAX = 65_536
 
+_logger = logging.getLogger(__name__)
 
-def default_db_path() -> str:
-    """Per-user vector DB path: XDG_CACHE_HOME or ~/.cache.
 
-    Directory created lazily by the consumer.
+def _legacy_cache_db_path() -> Path:
+    """Pre-migration DB location: XDG_CACHE_HOME or ~/.cache.
+
+    Synara used to store its (durable) DB under the XDG *cache* dir.
+    Kept only so ``default_db_path`` can find a DB an existing install
+    already wrote there before the XDG_DATA_HOME switch.
     """
     base = os.environ.get("XDG_CACHE_HOME")
     cache_root = Path(base) if base else Path.home() / ".cache"
-    return str((cache_root / "synara-mcp" / "synara.db").resolve())
+    return (cache_root / "synara-mcp" / "synara.db").resolve()
+
+
+def default_db_path() -> str:
+    """Per-user vector DB path: XDG_DATA_HOME or ~/.local/share.
+
+    Directory created lazily by the consumer. Uses the XDG *data* dir
+    rather than the cache dir since this store is durable, user-owned
+    memory, not disposable cache — a routine ``.cache`` wipe should not
+    take it out.
+
+    An existing install may already have a DB under the old cache-dir
+    location (pre-migration default). If nothing has been written yet
+    under the new data-dir path, fall back to that legacy path instead
+    of silently starting from an empty store; a first run under the new
+    default only claims the new path once it actually has data there.
+    """
+    base = os.environ.get("XDG_DATA_HOME")
+    data_root = Path(base) if base else Path.home() / ".local" / "share"
+    data_path = (data_root / "synara-mcp" / "synara.db").resolve()
+    if not data_path.exists():
+        legacy_path = _legacy_cache_db_path()
+        if legacy_path.exists():
+            _logger.warning(
+                "using legacy DB path %s (pre-migration default); move it to %s "
+                "and set SYNARA_DB_PATH to silence this, or delete it to start "
+                "fresh under the new default",
+                legacy_path,
+                data_path,
+            )
+            return str(legacy_path)
+    return str(data_path)
 
 
 @dataclass(frozen=True, slots=True)

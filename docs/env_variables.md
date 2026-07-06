@@ -2,7 +2,7 @@
 
 Every Synara setting is an environment variable. All are optional — with
 nothing set, Synara runs a local embedding model and stores memories in
-your user cache directory.
+your user data directory.
 
 Variables are read **once, from the process environment, at startup**.
 Synara does not auto-load a `.env` file: export the variables in your
@@ -21,7 +21,7 @@ or an unknown transport raises at startup instead of silently degrading.
 | --- | --- | --- | --- |
 | `SYNARA_TRANSPORT` | `stdio` | `stdio` \| `http` \| `sse` \| `streamable-http` | always |
 | `SYNARA_LOG_LEVEL` | `INFO` | `DEBUG` `INFO` `WARNING` `ERROR` `CRITICAL` | always |
-| `SYNARA_DB_PATH` | `$XDG_CACHE_HOME/synara-mcp/synara.db` | filesystem path or `:memory:` | always |
+| `SYNARA_DB_PATH` | `$XDG_DATA_HOME/synara-mcp/synara.db` | filesystem path or `:memory:` | always |
 | `SYNARA_EMBEDDING_MODEL` | `jinaai/jina-embeddings-v5-text-nano` | HF model id (local) or remote model name | always |
 | `SYNARA_EMBEDDING_URL` | _(unset)_ | OpenAI-compatible base URL | switches to remote |
 | `SYNARA_EMBEDDING_API_KEY` | _(unset)_ | bearer token string | remote only |
@@ -62,10 +62,11 @@ SYNARA_LOG_LEVEL=DEBUG
 
 ### `SYNARA_DB_PATH`
 
-Where memories are persisted. Defaults to a per-user cache file:
+Where memories are persisted. Defaults to a per-user data file (not the
+cache directory — this store is durable, not disposable):
 
-- `$XDG_CACHE_HOME/synara-mcp/synara.db` if `XDG_CACHE_HOME` is set,
-- otherwise `~/.cache/synara-mcp/synara.db`.
+- `$XDG_DATA_HOME/synara-mcp/synara.db` if `XDG_DATA_HOME` is set,
+- otherwise `~/.local/share/synara-mcp/synara.db`.
 
 The parent directory is created automatically. The path is resolved
 (symlinks and `..` segments are normalized) before the directory is
@@ -233,7 +234,7 @@ SYNARA_DASHBOARD_TOKEN=$(openssl rand -hex 32)
 ## Recipes
 
 **Default — zero config, fully local.** Set nothing. Synara downloads
-the Jina nano model on first run and stores memory under `~/.cache`.
+the Jina nano model on first run and stores memory under `~/.local/share`.
 
 **Local Ollama for embeddings:**
 
