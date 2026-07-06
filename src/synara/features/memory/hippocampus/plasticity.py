@@ -188,16 +188,16 @@ class PlasticityGraph:
 
         Steady-state memory is bounded by ``prune_floor`` deletion:
         edges that fall below the floor (and are not habits) are removed
-        each cycle, so the table is self-limiting in production. The
-        ``max_scan`` parameter is a defensive cap for pathological
-        tables (cold start, very long run without dreams) — ``None``
-        preserves the original semantics. A hard cap *will* starve the
-        *least-recently-touched* edges in that pass (``get_edges``
-        orders by ``last_touch DESC``, and we cannot easily filter on
-        virtual time here: the catalog column tracks wall clock, while
-        ``ltd_pass(now=...)`` is called with the same virtual clock the
-        rest of the system uses). Operators who regularly hit this cap
-        should raise it rather than lowering it.
+        each cycle, so the table is self-limiting in production.
+
+        ``max_scan`` bounds the per-pass read-modify-write work — the
+        expensive serial part; the key fetch is one query either way.
+        The budget is spent on the *stalest* edges first (ordered by the
+        catalog's ``last_touch``, a wall-clock approximation of the
+        authoritative ``last_touch_virt``) because they carry the most
+        pending decay; fresh edges can safely wait for a later pass, so
+        the sweep converges across dreams instead of starving the very
+        edges LTD targets. ``None`` (or 0) scans everything.
         """
         rate = self.ltd_decay_per_idle_day
         if rate <= 0.0:
@@ -208,7 +208,9 @@ class PlasticityGraph:
         # key list keeps memory bounded and avoids stale-snapshot
         # decisions (prune vs. update) that would otherwise resurrect
         # an edge ``reinforce`` just bumped.
-        edges = await self._coll.get_edges(kind=self.kind, limit=max_scan)
+        edges = await self._coll.get_edges(kind=self.kind)
+        if max_scan is not None and 0 < max_scan < len(edges):
+            edges = sorted(edges, key=lambda e: float(e.last_touch))[:max_scan]
         edge_keys = [(int(e.src_id), int(e.dst_id)) for e in edges]
         pruned = 0
         for i, j in edge_keys:

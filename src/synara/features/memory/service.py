@@ -47,7 +47,7 @@ from .basal_ganglia.events import EventKind as _EventKind
 from .basal_ganglia.events import InteractionEvent as _Event
 from .basal_ganglia.events import TriggerPolicy as _Policy
 from .basal_ganglia.events import now_seconds as _now_real
-from .config import MemoryConfig
+from .config import MemoryConfig, validate_tags
 from .hippocampus.plasticity import PlasticityGraph as _Plasticity
 from .hippocampus.separate import DGProjector as _DGProjector
 from .hippocampus.successor import SuccessorRepresentation as _SR
@@ -348,7 +348,14 @@ class MemoryService:
         """
         t = _now_real()
         async with self._dream_lock:
-            pruned = await self._plasticity.ltd_pass(now=t)
+            # Bound the LTD sweep with the same knob that sizes replay's
+            # scan, so a large edge table cannot turn one dream into an
+            # unbounded serial read-modify-write pass. ltd_pass spends
+            # the budget on the stalest edges first (they carry the most
+            # pending decay), so the sweep still converges across dreams.
+            pruned = await self._plasticity.ltd_pass(
+                now=t, max_scan=self.config.dream_replay_max_scan or None
+            )
             replayed = await _replay_mod.run(self, now=t)
         await self._emit(
             "dream",
@@ -403,10 +410,13 @@ class MemoryService:
     async def _run_reactor_guarded(self, coro: Coroutine[Any, Any, None], *, name: str) -> None:
         try:
             await coro
+        except asyncio.CancelledError:
+            _LOG.warning("background reactor task %s cancelled (drain timeout)", name)
+            raise
         except Exception:
             _LOG.exception("background reactor task %s failed", name)
 
-    async def drain_reactor_tasks(self) -> None:
+    async def drain_reactor_tasks(self, *, timeout: float | None = None) -> None:
         """Await every in-flight background reactor task.
 
         For tests that assert on reactor side-effects and for graceful
@@ -415,8 +425,29 @@ class MemoryService:
         but loop until the set is empty anyway so a task spawned by a
         user op racing the drain is awaited too. Task failures are
         already logged by the guard; they never propagate here.
+
+        ``timeout`` bounds the total wait (seconds): tasks still running
+        at the deadline are cancelled so shutdown cannot hang behind a
+        long consolidation. The guard logs the cancellation; a cancelled
+        consolidate simply leaves its episodes UNCONSOLIDATED for the
+        next pass.
         """
+        if timeout is None:
+            while self._reactor_tasks:
+                await asyncio.gather(*tuple(self._reactor_tasks), return_exceptions=True)
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         while self._reactor_tasks:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            done, _pending = await asyncio.wait(set(self._reactor_tasks), timeout=remaining)
+            if not done:
+                break
+        if self._reactor_tasks:
+            for task in tuple(self._reactor_tasks):
+                task.cancel()
             await asyncio.gather(*tuple(self._reactor_tasks), return_exceptions=True)
 
     async def event_log(self) -> list[Any]:
@@ -769,6 +800,19 @@ class MemoryService:
             "consolidate_epoch": int(self._consolidate_epoch),
         }
         out.update(cast("dict[str, int]", self._hygiene_counters))
+        # Cheap in-memory observability: SR graph mass, reactor trigger
+        # state, and in-flight background work — so "why did recall
+        # return nothing" or "when did it last consolidate" is one
+        # memory_stats call instead of guesswork. Counters rehydrate
+        # from the durable event log on first touch.
+        await self._bus.ensure_state_loaded()
+        st = self._bus.state
+        out["sr_edges"] = int(self._sr.total_edges) if self._sr is not None else 0
+        out["novel_encodes_since_consolidate"] = int(st.novel_encodes_since_consolidate)
+        out["events_since_dream"] = int(st.events_since_dream)
+        out["last_consolidate_at"] = int(st.last_consolidate_at)
+        out["last_dream_at"] = int(st.last_dream_at)
+        out["reactor_tasks_inflight"] = len(self._reactor_tasks)
         return out
 
     # --------------------------------------------------- operation delegates
@@ -826,7 +870,15 @@ class MemoryService:
                 # hits the index; count() reads the catalog). Rebuild from
                 # stored embeddings whenever the index trails the catalog;
                 # this subsumes the empty-index case (size 0 < cnt).
-                if coll._collection._index.size < cnt:
+                index = getattr(getattr(coll, "_collection", None), "_index", None)
+                index_size = getattr(index, "size", None)
+                if index_size is None:
+                    # simplevecdb's internals moved (the index handle is
+                    # double-private); fall back to the library's own
+                    # reconciliation heuristic instead of crashing the
+                    # recovery path on an upgrade.
+                    await coll.rebuild_if_needed()
+                elif int(index_size) < cnt:
                     await coll.rebuild_index()
         except Exception:
             self._index_ready = False
@@ -1105,14 +1157,7 @@ class MemoryService:
             raise ValidationError("confidence must be in [0, 1]")
         if not kind or not kind.strip():
             raise ValidationError("kind must be non-empty")
-        if self.config.max_tags and tags is not None and len(tags) > self.config.max_tags:
-            raise ValidationError(f"too many tags (>{self.config.max_tags})")
-        if self.config.max_tag_chars and tags is not None:
-            for tag in tags:
-                if isinstance(tag, str) and len(tag) > self.config.max_tag_chars:
-                    raise ValidationError(
-                        f"tag exceeds max_tag_chars ({self.config.max_tag_chars})"
-                    )
+        validate_tags(self.config, tags)
         await self._validate_supersedes(supersedes)
         # Scope axis: resolve_scope owns the whole policy — explicit
         # ``scope`` wins (validated), a bare session_id means
@@ -1121,7 +1166,7 @@ class MemoryService:
         eff_scope = resolve_scope(scope, session_id)
 
         now = now_seconds()
-        tag_list = sorted({t for t in (tags or []) if isinstance(t, str) and t})
+        tag_list = sorted({t for t in (tags or []) if t})
         metadata: dict[str, Any] = {
             "kind": kind,
             "source_episode_ids": [],

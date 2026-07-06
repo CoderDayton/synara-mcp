@@ -12,8 +12,10 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import numpy as np
+import pytest
 import pytest_asyncio
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 from simplevecdb import AsyncVectorDB
 
 from synara.features.memory.config import MemoryConfig
@@ -159,12 +161,12 @@ async def test_forget_episodes_tool_dry_run_and_delete(
         )
         dry = await client.call_tool(
             "forget_episodes",
-            {"strength_floor": 0.99, "decay_tau_seconds": 1.0, "dry_run": True},
+            {"strength_floor": 0.99, "dry_run": True},
         )
         assert "candidate_ids" in dry.data
         wet = await client.call_tool(
             "forget_episodes",
-            {"strength_floor": 0.99, "decay_tau_seconds": 1.0, "dry_run": False},
+            {"strength_floor": 0.99, "dry_run": False},
         )
         assert wet.data["dry_run"] is False
         assert "removed" in wet.data
@@ -191,7 +193,7 @@ async def test_forget_episodes_log_reports_real_removed_count(
         )
         res = await client.call_tool(
             "forget_episodes",
-            {"strength_floor": 0.99, "decay_tau_seconds": 1.0, "dry_run": False},
+            {"strength_floor": 0.99, "dry_run": False},
         )
     assert res.data["removed"] == 1
     assert "pruned 1 episode(s)" in messages
@@ -604,22 +606,16 @@ def test_log_scope_cap_flags_saturated_under_return(caplog: Any) -> None:
     assert not any("capped" in r.getMessage() for r in caplog.records)
 
 
-async def test_recall_scope_session_without_session_id_warns(
+async def test_recall_scope_session_without_session_id_rejected(
     wired: tuple[FastMCP, _FakeEmbedder],
 ) -> None:
-    """scope_session=true with no session_id can't filter — it is a silent
-    no-op. The tool must warn so the caller isn't misled into thinking
-    scoping took effect; recall still returns cross-session results."""
+    """scope_session=true with no session_id can't filter — it used to be
+    a warn-and-proceed no-op; now the tool rejects it so the caller can't
+    be misled into thinking scoping took effect."""
     mcp, _ = wired
-    logs: list[tuple[str, str]] = []
-
-    async def capture(msg: Any) -> None:
-        logs.append((str(msg.level), str(msg.data)))
-
-    async with Client(mcp, log_handler=capture) as client:
-        await client.call_tool("store_episode", {"content": "scope warn probe", "session_id": "s1"})
-        res = await client.call_tool(
-            "recall_episodes", {"query": "scope warn probe", "scope_session": True}
-        )
-    assert res.data  # still cross-session (no-op), not an error
-    assert any(level == "warning" and "scope_session" in data for level, data in logs)
+    async with Client(mcp) as client:
+        await client.call_tool("store_episode", {"content": "scope probe", "session_id": "s1"})
+        with pytest.raises(ToolError, match="scope_session"):
+            await client.call_tool(
+                "recall_episodes", {"query": "scope probe", "scope_session": True}
+            )

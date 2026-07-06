@@ -23,6 +23,7 @@ from ..amygdala.signals import (
     derive_salience,
     derive_signals,
 )
+from ..config import validate_tags
 from ..memory_types import SCOPE_SESSION
 from ..service import UNCONSOLIDATED, now_seconds
 from .segment import split_into_segments
@@ -82,12 +83,7 @@ def _check_input_caps(
             f"content exceeds max_content_chars ({cfg.max_content_chars}); "
             "split it before storing so the embedding represents the full text"
         )
-    if cfg.max_tags and tags is not None and len(tags) > cfg.max_tags:
-        raise ValidationError(f"too many tags (>{cfg.max_tags})")
-    if cfg.max_tag_chars and tags is not None:
-        for tag in tags:
-            if len(tag) > cfg.max_tag_chars:
-                raise ValidationError(f"tag exceeds max_tag_chars ({cfg.max_tag_chars})")
+    validate_tags(cfg, tags)
 
 
 async def run(

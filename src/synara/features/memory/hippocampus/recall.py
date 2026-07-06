@@ -21,9 +21,11 @@ import numpy as np
 
 from synara.core.errors import ValidationError
 
+from ..config import validate_tags
 from ..memory_types import in_session_scope
 from ..service import now_seconds
 from ..timestamps import created_at as _created_at
+from ..timestamps import last_accessed as _last_accessed_ts
 from ..tracing import current_context as _trace_current
 from ..tracing import record_span as _trace_span
 from . import complete as _complete_mod
@@ -47,7 +49,14 @@ _MAX_COSINE_DISTANCE = 2.0
 
 
 def _validate_recall_inputs(
-    service: MemoryService, *, query: str, session_id: str | None, k: int, mode: str
+    service: MemoryService,
+    *,
+    query: str,
+    session_id: str | None,
+    k: int,
+    mode: str,
+    scope_session: bool | None = None,
+    tags: list[str] | None = None,
 ) -> None:
     if not query.strip():
         raise ValidationError("query must be non-empty")
@@ -66,6 +75,17 @@ def _validate_recall_inputs(
         )
     if mode not in _VALID_MODES:
         raise ValidationError(f"unknown recall mode: {mode}")
+    # An explicit scope_session=true with nothing to scope to would be a
+    # silent no-op (recall stays cross-session) — the exact opposite of
+    # what the caller asked for. Reject it rather than warn-and-proceed.
+    if scope_session is True and session_id is None:
+        raise ValidationError(
+            "scope_session=true requires a session_id to scope to; "
+            "pass one or leave scope_session unset"
+        )
+    # Tags are untrusted input on recall exactly as they are on encode;
+    # same caps, same single home (config.validate_tags).
+    validate_tags(cfg, tags)
 
 
 def elbow_cutoff(
@@ -320,7 +340,15 @@ async def run(
     # how many results were requested. Returning ``[]`` for ``k <= 0``
     # is a convenience for callers who compute ``k`` from a budget that
     # may legitimately go to zero.
-    _validate_recall_inputs(service, query=query, session_id=session_id, k=k, mode=mode)
+    _validate_recall_inputs(
+        service,
+        query=query,
+        session_id=session_id,
+        k=k,
+        mode=mode,
+        scope_session=scope_session,
+        tags=tags,
+    )
     if k <= 0:
         return []
 
@@ -509,7 +537,14 @@ async def run_semantic(
     an actively-recalled schema is never evicted as cold; recall stays
     write-free otherwise.
     """
-    _validate_recall_inputs(service, query=query, session_id=session_id, k=k, mode="semantic")
+    _validate_recall_inputs(
+        service,
+        query=query,
+        session_id=session_id,
+        k=k,
+        mode="semantic",
+        scope_session=scope_session,
+    )
     if k <= 0:
         return []
     if await service.semantic.count() == 0:
@@ -531,6 +566,7 @@ async def run_semantic(
     wide = kind is not None or scope_active or gating
     fetch_k = max(k * 4, 32) if wide else k
     hits = await service.semantic.similarity_search(q, k=fetch_k)
+    t_now = now_seconds()
     out: list[dict[str, Any]] = []
     for doc, dist in hits:
         md = dict(doc.metadata)
@@ -544,6 +580,9 @@ async def run_semantic(
                 "content": doc.page_content,
                 "distance": float(dist),
                 "metadata": md,
+                # Same recency surface as the hybrid path: stale facts
+                # should be as visible as stale traces.
+                **_recency_fields(md, source="semantic", now=t_now),
             }
         )
     # Adaptive relevance gate over the semantic candidates, then cap to
@@ -555,8 +594,7 @@ async def run_semantic(
     # forget_schema_unused_seconds > 0) treats a recently-recalled
     # schema as alive.
     if out and cfg.forget_schema_unused_seconds > 0:
-        now = now_seconds()
-        hit_bumps = [(int(r["id"]), {"last_accessed": now}) for r in out if int(r["id"]) >= 0]
+        hit_bumps = [(int(r["id"]), {"last_accessed": t_now}) for r in out if int(r["id"]) >= 0]
         if hit_bumps:
             await service.semantic.update_metadata(hit_bumps)
     return out
@@ -611,27 +649,40 @@ def _cosine_score_from_distance(dist: float | None) -> float:
     return max(0.0, min(1.0, s))
 
 
+def _age_days(ts: float | None, *, now: float) -> float | None:
+    return None if ts is None else max(0.0, (now - ts) / 86_400.0)
+
+
 def _recency_fields(md: dict[str, Any], *, source: str, now: float) -> dict[str, Any]:
-    """Promote an episodic hit's group lineage and recency to top-level
-    fields so a caller can tell old memories from new and reassemble a
-    segmented episode (via ``group_id`` -> ``get_episode``) without
-    digging through the raw metadata blob. Semantic gists carry none of
-    these, so they pass through unchanged."""
+    """Promote a hit's recency (and, for episodic hits, group lineage) to
+    top-level fields so a caller can tell old memories from new — and
+    reassemble a segmented episode (via ``group_id`` -> ``get_episode``)
+    — without digging through the raw metadata blob. Semantic gists get
+    the recency stamps too (staleness matters as much for a fact as for
+    a trace) but carry no group lineage."""
+    created_f = _created_at(md)
     if source != "episodic":
-        return {}
+        upd = md.get("updated_at")
+        stamps = [
+            float(v)
+            for v in (upd if isinstance(upd, (int, float)) else None, _last_accessed_ts(md))
+            if v is not None
+        ]
+        updated = max(stamps) if stamps else created_f
+        return {
+            "created_at": created_f,
+            "updated_at": updated,
+            "age_days": _age_days(created_f, now=now),
+            "updated_age_days": _age_days(updated, now=now),
+        }
     gid = md.get("episode_group_id")
     seg_count = int(md.get("segment_count", 1))
-    created_f = _created_at(md)
     stamps = [
         float(v)
         for v in (md.get("last_accessed"), md.get("last_reconsolidated_at"))
         if isinstance(v, (int, float))
     ]
     updated = max(stamps) if stamps else created_f
-
-    def _age_days(ts: float | None) -> float | None:
-        return None if ts is None else max(0.0, (now - ts) / 86_400.0)
-
     return {
         # ``episode_group_id`` is set even for a standalone episode (to its
         # own id); surface it only when actually segmented, so a non-null
@@ -640,8 +691,8 @@ def _recency_fields(md: dict[str, Any], *, source: str, now: float) -> dict[str,
         "segment_count": seg_count,
         "created_at": created_f,
         "updated_at": updated,
-        "age_days": _age_days(created_f),
-        "updated_age_days": _age_days(updated),
+        "age_days": _age_days(created_f, now=now),
+        "updated_age_days": _age_days(updated, now=now),
     }
 
 

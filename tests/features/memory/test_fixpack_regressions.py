@@ -1,4 +1,7 @@
-"""Regression tests for the scope / GC-liveness / segmentation fix pack.
+"""Regression tests for the scope / GC-liveness / segmentation fix pack
+and the production-hardening pass that followed it (tag-validation
+parity, scope_session strictness, recency on semantic hits, stats
+observability, bounded LTD sweep, bounded shutdown drain).
 
 One test per fixed behaviour:
 
@@ -14,6 +17,7 @@ One test per fixed behaviour:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 
@@ -183,3 +187,136 @@ async def test_forget_scan_window_rotates_across_passes(db: AsyncVectorDB) -> No
     assert r5["scanned"] == 1  # partial page -> wrap
     r6 = await svc.forget(dry_run=False, max_scan=2)
     assert r6["scan_offset"] == 0
+
+
+# ===================== production-hardening pass (second batch) =====
+
+
+# ------------------------------------------ tag-validation parity
+async def test_tag_validation_is_uniform_across_entry_points(db: AsyncVectorDB) -> None:
+    """encode, semantic store, and recall share one tag validator:
+    non-string tags are a clean ValidationError (never a TypeError),
+    and the size caps apply to recall's filter input too."""
+    cfg = MemoryConfig(max_tags=2, max_tag_chars=5)
+    svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
+    with pytest.raises(ValidationError, match="tags must be strings"):
+        await svc.encode_episode("a note", "s1", tags=["ok", 123])  # type: ignore[list-item]
+    with pytest.raises(ValidationError, match="tags must be strings"):
+        await svc.store_semantic_memory("a fact", session_id="s1", tags=[None])  # type: ignore[list-item]
+    with pytest.raises(ValidationError, match="too many tags"):
+        await svc.recall(query="a note", session_id="s1", tags=["a", "b", "c"])
+    with pytest.raises(ValidationError, match="max_tag_chars"):
+        await svc.recall(query="a note", session_id="s1", tags=["toolong"])
+
+
+# ------------------------------------- scope_session strictness
+async def test_scope_session_true_without_session_id_rejected(db: AsyncVectorDB) -> None:
+    """An explicit scope_session=true with nothing to scope to used to be
+    a warn-and-proceed no-op; it must now be rejected on both recall
+    paths so the caller cannot silently get cross-session results."""
+    svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+    await svc.encode_episode("some trace", "s1")
+    with pytest.raises(ValidationError, match="scope_session"):
+        await svc.recall(query="some trace", scope_session=True)
+    with pytest.raises(ValidationError, match="scope_session"):
+        await svc.recall_semantic_memory("some trace", scope_session=True)
+
+
+# --------------------------------------------- stats observability
+async def test_memory_stats_exposes_reactor_and_sr_state(db: AsyncVectorDB) -> None:
+    svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+    await svc.encode_episode("one novel trace", "s1")
+    stats = await svc.stats()
+    for key in (
+        "sr_edges",
+        "novel_encodes_since_consolidate",
+        "events_since_dream",
+        "last_consolidate_at",
+        "last_dream_at",
+        "reactor_tasks_inflight",
+    ):
+        assert key in stats
+    assert stats["novel_encodes_since_consolidate"] >= 1
+    assert stats["events_since_dream"] >= 1
+    assert stats["reactor_tasks_inflight"] == 0
+
+
+# --------------------------------------- recency on semantic hits
+async def test_semantic_hits_carry_recency_fields(db: AsyncVectorDB) -> None:
+    cfg = MemoryConfig(recall_relevance_gate=False)
+    svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
+    await svc.store_semantic_memory("the sky is blue", kind="fact", scope="global")
+    hybrid = await svc.recall(query="the sky is blue", k=8, mode="hybrid")
+    sem = next(r for r in hybrid if r["source"] == "semantic")
+    assert sem["created_at"] is not None
+    assert sem["age_days"] is not None
+    assert sem["age_days"] >= 0.0
+    direct = await svc.recall_semantic_memory("the sky is blue", k=8)
+    assert direct
+    assert direct[0]["created_at"] is not None
+    assert direct[0]["updated_age_days"] is not None
+
+
+# --------------------------------------------- bounded LTD sweep
+async def test_ltd_pass_bounds_per_pass_work(db: AsyncVectorDB) -> None:
+    """``max_scan`` caps the per-pass read-modify-write work; the rest of
+    the table is reached by later passes instead of one unbounded sweep."""
+    svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+    for i in range(4):
+        await svc.encode_episode(f"edge endpoint trace {i}", "s1")
+    rows = await svc.episodic.get_documents({"session_id": "s1"})
+    ids = [int(r[0]) for r in rows[:4]]
+    # Three bonus-only edges whose transient potentiation is far below
+    # the prune floor once decayed — every one is prunable.
+    for j in ids[1:4]:
+        await svc._plasticity.reinforce(ids[0], j, score=0.001, now=0.0)
+    assert await svc._plasticity.ltd_pass(now=1e7, max_scan=1) == 1
+    assert await svc._plasticity.ltd_pass(now=1e7) == 2
+
+
+# --------------------------------------------- bounded shutdown drain
+async def test_drain_reactor_tasks_timeout_cancels_stragglers(db: AsyncVectorDB) -> None:
+    svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+    svc._spawn_reactor_task(asyncio.sleep(30), name="test-hang")
+    assert len(svc._reactor_tasks) == 1
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await svc.drain_reactor_tasks(timeout=0.1)
+    assert loop.time() - t0 < 5.0  # did not wait out the 30 s sleep
+    assert not svc._reactor_tasks  # cancelled task removed itself
+
+
+# ------------------------------------- segmentation fuzz invariant
+@pytest.mark.parametrize("seed", range(8))
+def test_split_into_segments_lossless_fuzz(seed: int) -> None:
+    """Losslessness must hold for arbitrary shapes: prose, code, unicode,
+    odd whitespace, and boundary-free blobs — not just tidy sentences."""
+    rng = np.random.default_rng(seed)
+    vocab = (
+        "Alpha beta gamma.",
+        " x = compute(1); y = 2\n",
+        "Ünïcode büffer, ér? Gó! ",
+        "```\ndef f():\n    return 1\n```\n",
+        "   \t ",
+        "noboundaryblob" * 25,
+        "Tail! Next (one). 'Quoted.' ",
+    )
+    content = "".join(
+        vocab[int(rng.integers(0, len(vocab)))] for _ in range(int(rng.integers(5, 60)))
+    )
+    for max_chars, max_items in ((64, 5), (128, 7), (1024, 7)):
+        segs = split_into_segments(content, max_chars=max_chars, max_items=max_items)
+        assert 1 <= len(segs) <= max_items
+        assert "".join(segs) == content
+
+
+# --------------------------------------- group dedup: negative case
+async def test_different_long_content_is_not_deduped_onto_group(db: AsyncVectorDB) -> None:
+    svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
+    a = " ".join(f"Alpha topic sentence {i} about one shared subject." for i in range(40))
+    b = " ".join(f"Different theme {i} regarding weather and tides." for i in range(40))
+    r1 = await svc.encode_episode(a, "s1")
+    r2 = await svc.encode_episode(b, "s1")
+    assert r1["deduped"] is False
+    assert r2["deduped"] is False
+    assert r2["group_id"] != r1["group_id"]

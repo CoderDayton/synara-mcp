@@ -7,9 +7,33 @@ config without pulling each other.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from synara.core.errors import ValidationError
+
 from .memory_types import MemoryTypeRegistry
+
+
+def validate_tags(cfg: MemoryConfig, tags: Sequence[object] | None) -> None:
+    """Reject malformed or oversized ``tags`` input.
+
+    The single home for tag validation, shared by every entry point that
+    accepts tags (episodic encode, semantic store, recall filtering) so
+    the rules cannot drift between them. Non-string tags are always
+    rejected — they would crash length checks or silently vanish
+    downstream; the size caps honour the ``0 disables`` convention.
+    """
+    if tags is None:
+        return
+    if cfg.max_tags and len(tags) > cfg.max_tags:
+        raise ValidationError(f"too many tags (>{cfg.max_tags})")
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise ValidationError("tags must be strings")
+        if cfg.max_tag_chars and len(tag) > cfg.max_tag_chars:
+            raise ValidationError(f"tag exceeds max_tag_chars ({cfg.max_tag_chars})")
+
 
 # Neutral salience base shared by the consolidate floor, the dream-replay
 # floor, and the auto-salience default. Equal to the ``derive_salience``

@@ -82,9 +82,11 @@ def build_server(settings: Settings) -> FastMCP:
             try:
                 # Drain in-flight background reactor tasks (auto-consolidate
                 # / dream) before teardown so none of them runs against a
-                # closed DB. Never raises: task failures are contained by
-                # the service's guard.
-                await service.drain_reactor_tasks()
+                # closed DB. Bounded: a long consolidation is cancelled at
+                # the deadline rather than hanging shutdown (a cancelled
+                # pass just leaves its episodes for the next one). Never
+                # raises: failures are contained by the service's guard.
+                await service.drain_reactor_tasks(timeout=10.0)
             finally:
                 # Close the DB even if the embedder teardown raises, so a
                 # failing ``aclose`` can't leak the SQLite handle.

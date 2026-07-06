@@ -267,8 +267,8 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "still get a small ranking bonus. Set scope_session=false to "
             "opt back into cross-session recall.\n"
             "scope_session: optional bool. Default (unset) = scope when a "
-            "session_id is given; true = force scoping (needs session_id); "
-            "false = cross-session (the old default).\n"
+            "session_id is given; true = force scoping (errors without a "
+            "session_id); false = cross-session (the old default).\n"
             "tags: optional list[str]; when set, keep only episodic hits "
             "whose stored tags include every listed tag.\n"
             "k: max results, default 4 (ascending distance). Kept small "
@@ -287,13 +287,13 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "is reduced to {id, kind, content} — the metadata, distance, "
             "source, and recency fields are dropped for a minimal payload "
             "(snippet truncation still applies to content).\n"
-            "Each episodic hit also carries created_at/updated_at (unix "
-            "seconds) and age_days/updated_age_days so you can tell old "
-            "memories from new, plus group_id/segment_count: a non-null "
-            "group_id means the hit is one segment of a larger episode — "
-            "call get_episode(group_id) for the reassembled whole. Sibling "
-            "segments of one episode collapse to a single best-ranked hit "
-            "by default."
+            "Every hit carries created_at/updated_at (unix seconds) and "
+            "age_days/updated_age_days so you can tell old memories (and "
+            "stale facts) from new. Episodic hits additionally carry "
+            "group_id/segment_count: a non-null group_id means the hit is "
+            "one segment of a larger episode — call get_episode(group_id) "
+            "for the reassembled whole. Sibling segments of one episode "
+            "collapse to a single best-ranked hit by default."
         ),
     )
     @_instrument(metrics, "recall_episodes")
@@ -316,14 +316,6 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             f"scope_session={scope_session} tags={tags} max_chars={max_chars} "
             f"full={full} content_only={content_only}"
         )
-        if scope_session is True and session_id is None:
-            # An explicit scope_session=true needs a session_id to scope to;
-            # without one it is a silent no-op (recall stays cross-session).
-            # Surface that rather than letting the caller assume scoping took
-            # effect. (scope_session left unset simply means "no scoping".)
-            await ctx.warning(
-                "scope_session=true ignored: no session_id to scope to; recall stays cross-session"
-            )
         results = await service.recall(
             query=query,
             session_id=session_id,
@@ -446,8 +438,6 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "strength_floor: 0..1, default 0.05. Episodes whose "
             "power-law strength falls below this become candidates. "
             "Raise to prune more aggressively.\n"
-            "decay_tau_seconds: accepted but has no effect on decay "
-            "rate (kept for backward compat). Safe to omit.\n"
             "dry_run: default true. Set false to actually delete.\n"
             "Each pass scans one bounded window of the store and rotates "
             "forward on the next non-dry-run pass; the response's "
@@ -460,16 +450,11 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
     async def forget_episodes(
         ctx: Context,
         strength_floor: float = 0.05,
-        decay_tau_seconds: float | None = None,
         dry_run: bool = True,
     ) -> dict[str, Any]:
-        await ctx.debug(
-            f"forget_episodes: strength_floor={strength_floor} "
-            f"decay_tau_seconds={decay_tau_seconds} dry_run={dry_run}"
-        )
+        await ctx.debug(f"forget_episodes: strength_floor={strength_floor} dry_run={dry_run}")
         result = await service.forget(
             strength_floor=strength_floor,
-            decay_tau_seconds=decay_tau_seconds,
             dry_run=dry_run,
         )
         verb = "would prune" if dry_run else "pruned"
@@ -599,9 +584,12 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "schemas plus global ones by default; scope_session=false opts "
             "back into cross-session results.\n"
             "scope_session: optional bool, same semantics as on "
-            "recall_episodes (unset = scope when session_id given).\n"
+            "recall_episodes (unset = scope when session_id given; true "
+            "errors without a session_id).\n"
             "content_only: opt-in bool, default false. When true, each hit "
-            "is reduced to {id, kind, content}, dropping distance/metadata."
+            "is reduced to {id, kind, content}, dropping distance/metadata.\n"
+            "Each hit carries created_at/updated_at (unix seconds) and "
+            "age_days/updated_age_days so stale facts are visible."
         ),
     )
     @_instrument(metrics, "recall_semantic_memory")
@@ -636,7 +624,13 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "diagnosing recall returning nothing, or to surface a "
             "health-check count. Returns {episodic_count, "
             "semantic_count, schema_candidate_count, "
-            "consolidate_epoch, ...hygiene counters}. No params."
+            "consolidate_epoch, ...hygiene counters} plus live health "
+            "fields: sr_edges (successor-graph mass), "
+            "novel_encodes_since_consolidate and events_since_dream "
+            "(reactor trigger pressure), last_consolidate_at/"
+            "last_dream_at (unix seconds, 0 = never), and "
+            "reactor_tasks_inflight (background consolidate/dream still "
+            "running). No params."
         ),
     )
     @_instrument(metrics, "memory_stats")
