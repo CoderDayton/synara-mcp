@@ -65,10 +65,12 @@ Ontology hygiene knobs (all optional, all default off / back-compat):
 * ``forget_schema_unused_seconds`` — cold-schema eviction in
   ``forget.run``: semantic schemas whose ``last_accessed`` is older than
   this are deleted. ``last_accessed`` is set at schema creation, bumped
-  on every absorb-merge, and bumped on every ``recall_semantic_memory``
-  hit (only when the knob is enabled, to keep recall write-free
-  otherwise). Legacy schemas predating field unification carry
-  ``last_hit_at`` instead; the timestamps helper reads either.
+  on every absorb-merge, and bumped on every semantic recall hit — both
+  the semantic leg of hybrid ``recall_episodes`` and
+  ``recall_semantic_memory`` (only when the knob is enabled, to keep
+  recall write-free otherwise). Legacy schemas predating field
+  unification carry ``last_hit_at`` instead; the timestamps helper reads
+  either.
 """
 
 from __future__ import annotations

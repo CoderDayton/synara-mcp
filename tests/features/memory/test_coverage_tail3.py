@@ -39,7 +39,9 @@ async def test_absorb_skips_episode_too_far_from_any_schema(
     # A schema plus an unrelated episode: hash embeddings make them
     # near-orthogonal (distance ~1.0 > consolidate_absorb_distance), so
     # the ``dist > absorb_dist`` continue branch fires for every episode.
-    await service.store_semantic_memory("totally unrelated schema topic", kind="schema")
+    await service.store_semantic_memory(
+        "totally unrelated schema topic", kind="schema", scope="global"
+    )
     await service.encode_episode("a different unconnected episodic note", "s1")
     await service.encode_episode("yet another unrelated episodic note", "s1")
     formed = await service.consolidate(session_id="s1", min_cluster_size=2)
@@ -56,7 +58,9 @@ async def test_absorb_skips_when_schema_already_lists_episode() -> None:
         ep_id = int(rows[0][0])
         # Schema whose source list already contains ep_id -> the absorb
         # pass computes no new sources and hits the continue at L166.
-        sem = await svc.store_semantic_memory("shared content for absorb test", kind="schema")
+        sem = await svc.store_semantic_memory(
+            "shared content for absorb test", kind="schema", scope="global"
+        )
         await svc.semantic.update_metadata([(int(sem["id"]), {"source_episode_ids": [ep_id]})])
         await svc.encode_episode("second filler episode here", "s1")
         formed = await svc.consolidate(session_id="s1", min_cluster_size=1)
@@ -80,7 +84,5 @@ async def test_gather_candidates_filters_negative_ids(
         ids=[1],
         metadatas=[{"session_id": "s1"}],
     )
-    X = await complete_mod._gather_candidates(
-        service, hash_embed("doc with no id metadata"), ep_filter=None, k=4
-    )
+    X = await complete_mod._gather_candidates(service, hash_embed("doc with no id metadata"), k=4)
     assert X.shape == (0,)

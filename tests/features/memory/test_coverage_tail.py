@@ -41,9 +41,7 @@ async def service() -> AsyncIterator[MemoryService]:
 
 
 async def test_completion_run_zero_iters_returns_q0(service: MemoryService) -> None:
-    res = await complete_mod.run(
-        service, [1.0, 0.0], ep_filter=None, k_inner=4, iters=0, beta=8.0, eta0=0.6
-    )
+    res = await complete_mod.run(service, [1.0, 0.0], k_inner=4, iters=0, beta=8.0, eta0=0.6)
     assert res.converged is True
     assert res.scores == []
     assert res.query == [1.0, 0.0]
@@ -52,9 +50,7 @@ async def test_completion_run_zero_iters_returns_q0(service: MemoryService) -> N
 async def test_completion_run_breaks_on_empty_candidates(
     service: MemoryService,
 ) -> None:
-    res = await complete_mod.run(
-        service, [1.0, 0.0], ep_filter=None, k_inner=4, iters=3, beta=8.0, eta0=0.6
-    )
+    res = await complete_mod.run(service, [1.0, 0.0], k_inner=4, iters=3, beta=8.0, eta0=0.6)
     assert res.converged is False
     assert res.scores == []
 
@@ -62,7 +58,7 @@ async def test_completion_run_breaks_on_empty_candidates(
 async def test_gather_candidates_empty_stores_returns_empty(
     service: MemoryService,
 ) -> None:
-    X = await complete_mod._gather_candidates(service, [0.1] * 32, ep_filter=None, k=4)
+    X = await complete_mod._gather_candidates(service, [0.1] * 32, k=4)
     assert X.shape == (0,)
 
 
@@ -75,7 +71,7 @@ async def test_completion_run_converges_early_on_stable_store() -> None:
             await svc.encode_episode(f"stable cluster member {i}", "s1")
         q = await svc.query_arg("stable cluster member 0")
         assert isinstance(q, list)
-        res = await complete_mod.run(svc, q, ep_filter=None, k_inner=8, iters=6, beta=8.0, eta0=0.6)
+        res = await complete_mod.run(svc, q, k_inner=8, iters=6, beta=8.0, eta0=0.6)
         # Either it converged (delta < eps) or ran the full trace; both
         # exercise the iteration body and the score-delta check.
         assert res.scores
@@ -87,7 +83,7 @@ async def test_completion_run_converges_early_on_stable_store() -> None:
 
 
 async def test_recall_hybrid_merges_semantic_hits(service: MemoryService) -> None:
-    await service.store_semantic_memory("semantic fact alpha", kind="fact")
+    await service.store_semantic_memory("semantic fact alpha", kind="fact", scope="global")
     await service.encode_episode("episodic note alpha", "s1")
     out = await service.recall(query="alpha", session_id="s1", k=8, mode="hybrid")
     assert any(r["source"] == "semantic" for r in out)

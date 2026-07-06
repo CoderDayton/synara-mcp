@@ -11,6 +11,11 @@ The splitter is deliberately dependency-free. Sentence boundaries take
 precedence; a single sentence longer than the per-segment budget is
 character-windowed; the segment count is capped at ``max_items`` by
 folding overflow into the final bucket so no content is dropped.
+
+Segments are exact contiguous slices of the input — each sentence keeps
+its trailing separator — so whenever a split happens,
+``"".join(segments) == content`` byte-for-byte. ``get_episode`` relies on
+this invariant to reassemble the original text losslessly.
 """
 
 from __future__ import annotations
@@ -33,8 +38,8 @@ def split_into_segments(
     """Split content into ordered segments, respecting sentence boundaries.
 
     Returns [content] if splitting is disabled or content fits budget.
-    Otherwise returns 2..max_items segments. Concatenation preserves
-    original content (modulo whitespace). List is never empty.
+    Otherwise returns 2..max_items exact contiguous slices of ``content``
+    whose concatenation reproduces it unchanged. List is never empty.
     """
     if max_chars <= 0 or max_items <= 1:
         return [content]
@@ -42,25 +47,24 @@ def split_into_segments(
     if not stripped or len(stripped) <= max_chars:
         return [content]
 
-    sentences = [s.strip() for s in _SENTENCE_BOUNDARY.split(stripped) if s.strip()]
-    if not sentences:
+    pieces = _sentence_pieces(content)
+    if not pieces:
         return [content]
 
     segments: list[str] = []
     buf = ""
-    for sent in sentences:
-        if len(sent) > max_chars:
+    for piece in pieces:
+        if len(piece) > max_chars:
             if buf:
                 segments.append(buf)
                 buf = ""
-            segments.extend(_window(sent, max_chars))
+            segments.extend(_window(piece, max_chars))
             continue
-        candidate = f"{buf} {sent}".strip() if buf else sent
-        if len(candidate) > max_chars and buf:
+        if buf and len(buf) + len(piece) > max_chars:
             segments.append(buf)
-            buf = sent
+            buf = piece
         else:
-            buf = candidate
+            buf += piece
     if buf:
         segments.append(buf)
 
@@ -68,10 +72,24 @@ def split_into_segments(
         return [content]
     if len(segments) > max_items:
         head = segments[: max_items - 1]
-        tail = " ".join(segments[max_items - 1 :])
-        head.append(tail)
+        head.append("".join(segments[max_items - 1 :]))
         segments = head
     return segments
+
+
+def _sentence_pieces(content: str) -> list[str]:
+    """Sentence pieces as exact slices: each piece runs from the end of
+    the previous boundary match through its own trailing separator, so
+    no character is dropped or rewritten and ``"".join(pieces)`` always
+    reproduces ``content``."""
+    pieces: list[str] = []
+    start = 0
+    for m in _SENTENCE_BOUNDARY.finditer(content):
+        pieces.append(content[start : m.end()])
+        start = m.end()
+    if start < len(content):
+        pieces.append(content[start:])
+    return pieces
 
 
 def _window(text: str, size: int) -> list[str]:

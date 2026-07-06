@@ -93,14 +93,19 @@ class ReactorState:
     """Mutable bookkeeping the policy reads to decide on triggers.
 
     :class:`TriggerPolicy` reads ``last_consolidate_at`` / ``last_dream_at``
-    / ``novel_encodes_since_consolidate`` / ``events_since_dream``.
-    ``last_event_at`` and ``total_events`` are inspection-only lifetime
-    tallies that no trigger consults; like the rest of the state they
-    reflect only the ``log_capacity`` rehydration window after a restart,
-    so treat them as approximate.
+    / ``novel_encodes_since_consolidate`` / ``events_since_dream`` /
+    ``prev_event_at`` (the timestamp of the event *before* the current
+    one — the only way an event-driven system can observe an idle gap,
+    since ``record`` has already stamped ``last_event_at`` with the
+    current event by the time ``react`` runs). ``last_event_at`` and
+    ``total_events`` are inspection-only lifetime tallies that no trigger
+    consults; like the rest of the state they reflect only the
+    ``log_capacity`` rehydration window after a restart, so treat them
+    as approximate.
     """
 
     last_event_at: float = 0.0  # inspection-only; not read by the policy
+    prev_event_at: float = 0.0  # event before the current one; feeds the idle gate
     last_consolidate_at: float = 0.0
     last_dream_at: float = 0.0
     novel_encodes_since_consolidate: int = 0
@@ -143,9 +148,17 @@ class TriggerPolicy:
             return False
         if self.dream_after_events > 0 and state.events_since_dream >= self.dream_after_events:
             return True
+        # Idle gate: awake replay fires in the pauses *between* activity
+        # (Carr et al 2011), so "idle" is the gap between this event and
+        # the previous one — the dream runs on the first event after a
+        # quiet window, not periodically during continuous activity
+        # (which the old ``now - last_dream_at`` form amounted to). The
+        # ``prev_event_at > 0`` guard keeps a fresh store (no prior
+        # event on record) from dreaming on its very first interaction.
         return (
             self.dream_after_idle_seconds > 0
-            and (now - state.last_dream_at) >= self.dream_after_idle_seconds
+            and state.prev_event_at > 0.0
+            and (now - state.prev_event_at) >= self.dream_after_idle_seconds
         )
 
 
@@ -287,6 +300,7 @@ class EventBus:
         bookkeeping.
         """
         st = self.state
+        st.prev_event_at = st.last_event_at
         st.last_event_at = event.timestamp
         st.total_events += 1
         st.events_since_dream += 1

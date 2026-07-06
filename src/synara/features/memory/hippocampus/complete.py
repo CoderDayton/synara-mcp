@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -108,18 +108,17 @@ async def _gather_candidates(
     service: MemoryService,
     q: list[float],
     *,
-    ep_filter: dict[str, Any] | None,
     k: int,
 ) -> np.ndarray:
     """Search episodic + semantic stores; return stacked unit-norm embeddings.
 
     Returns empty (0,)-shape array if no hits."""
     rows: list[np.ndarray] = []
-    for coll, flt in ((service.episodic, ep_filter), (service.semantic, None)):
+    for coll in (service.episodic, service.semantic):
         if await coll.count() == 0:
             continue
         try:
-            hits = await coll.similarity_search(q, k=k, filter=flt)
+            hits = await coll.similarity_search(q, k=k)
             ids = [int(d.metadata.get("id", -1)) for d, _ in hits]
             ids = [i for i in ids if i >= 0]
             if not ids:
@@ -149,7 +148,6 @@ async def run(
     service: MemoryService,
     q0: list[float],
     *,
-    ep_filter: dict[str, Any] | None,
     k_inner: int,
     iters: int,
     beta: float,
@@ -182,7 +180,7 @@ async def run(
     scores: list[float] = []
 
     for _ in range(iters):
-        X = await _gather_candidates(service, q.tolist(), ep_filter=ep_filter, k=k_inner)
+        X = await _gather_candidates(service, q.tolist(), k=k_inner)
         if X.shape[0] == 0:
             break
         q_next, score = attractor_step(q, X, beta=beta, q0=q0_arr, eta0=eta0)

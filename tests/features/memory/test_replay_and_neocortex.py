@@ -184,7 +184,9 @@ async def test_reflect_rejects_bad_args(service: MemoryService) -> None:
 
 
 async def test_reflect_seeds_semantic_search_from_tag(service: MemoryService) -> None:
-    await service.store_semantic_memory("ruff is the linter", kind="fact", tags=["tooling"])
+    await service.store_semantic_memory(
+        "ruff is the linter", kind="fact", tags=["tooling"], scope="global"
+    )
     await service.encode_episode("used the linter today", "s1", tags=["tooling"])
     out = await service.reflect(session_id="s1", k=5)
     assert out["session_id"] == "s1"

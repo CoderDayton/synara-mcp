@@ -147,7 +147,7 @@ async def test_recall_semantic_memory_breaks_at_k() -> None:
         cfg = MemoryConfig(recall_relevance_gate=False)
         svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(6):
-            await svc.store_semantic_memory(f"fact number {i}", kind="fact")
+            await svc.store_semantic_memory(f"fact number {i}", kind="fact", scope="global")
         out = await svc.recall_semantic_memory(query="fact number 1", k=2)
         assert len(out) == 2
     finally:

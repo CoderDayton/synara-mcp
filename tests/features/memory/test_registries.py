@@ -140,7 +140,10 @@ def test_resolve_scope_explicit_and_inferred() -> None:
     assert resolve_scope("session", "s1") == SCOPE_SESSION
     # Unset: inferred from session_id presence.
     assert resolve_scope(None, "s1") == SCOPE_SESSION
-    assert resolve_scope(None, None) == SCOPE_GLOBAL
+    # Global is opt-in: a bare call (no scope, no session_id) is rejected
+    # rather than silently defaulting to a global write.
+    with pytest.raises(ValidationError):
+        resolve_scope(None, None)
 
 
 def test_resolve_scope_rejects_unknown() -> None:

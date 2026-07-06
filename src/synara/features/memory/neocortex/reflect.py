@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 from synara.core.errors import ValidationError
 
+from ..memory_types import in_session_scope
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..port import MemoryServicePort as MemoryService
 
@@ -54,15 +56,26 @@ async def run(
         # nothing. Mirrors the guard ``recall`` runs at its top.
         await service._ensure_index_ready()
         seed_q = await service.query_arg(seed)
-        for doc, dist in await service.semantic.similarity_search(seed_q, k=k):
+        # Scope axis: reflect is a session-oriented op, so its schema leg
+        # honours the same rule as recall — this session's schemas plus
+        # global ones. Over-fetch and post-filter in Python (mirroring
+        # recall's over-fetch strategy) so cosine order stays the final
+        # arbiter and out-of-scope schemas don't consume ``k`` slots.
+        fetch_k = max(k * 4, 32)
+        for doc, dist in await service.semantic.similarity_search(seed_q, k=fetch_k):
+            md = dict(doc.metadata)
+            if not in_session_scope(md, session_id=session_id):
+                continue
             sem_results.append(
                 {
-                    "id": int(doc.metadata.get("id", -1)),
+                    "id": int(md.get("id", -1)),
                     "summary": doc.page_content,
                     "distance": float(dist),
-                    "tags": list(doc.metadata.get("tags") or []),
+                    "tags": list(md.get("tags") or []),
                 }
             )
+            if len(sem_results) >= k:
+                break
 
     return {
         "session_id": session_id,

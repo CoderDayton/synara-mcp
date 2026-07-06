@@ -153,7 +153,7 @@ async def test_semantic_insert_preserves_original_error_when_cleanup_also_fails(
     service.semantic.delete_by_ids = fail_delete
 
     with pytest.raises(RuntimeError, match="original-cause"):
-        await service.store_semantic_memory("a fact", kind="fact")
+        await service.store_semantic_memory("a fact", kind="fact", scope="global")
 
     service.semantic.update_metadata = original_update
     service.semantic.delete_by_ids = original_delete
@@ -174,7 +174,7 @@ async def test_semantic_insert_rolls_back_on_id_patch_failure(
 
     service.semantic.update_metadata = boom
     with pytest.raises(RuntimeError, match="boom"):
-        await service.store_semantic_memory("a fact", kind="fact")
+        await service.store_semantic_memory("a fact", kind="fact", scope="global")
 
     service.semantic.update_metadata = original
     rows = await service.semantic.get_documents({"kind": "fact"})

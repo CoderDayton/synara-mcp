@@ -73,8 +73,11 @@ def test_segment_long_single_sentence_flushes_buffer_then_windows() -> None:
     longsent = "X" * 50  # one token, no sentence boundary, > max_chars
     content = f"{short} {longsent}"
     segs = split_into_segments(content, max_chars=20, max_items=10)
-    assert segs[0] == short
-    assert "".join(segs[1:]).replace(" ", "") == longsent
+    # Segments are exact contiguous slices: the first sentence keeps its
+    # trailing separator, and concatenation reproduces the input.
+    assert segs[0] == f"{short} "
+    assert "".join(segs[1:]) == longsent
+    assert "".join(segs) == content
     assert all(len(s) <= 20 for s in segs[1:])
 
 

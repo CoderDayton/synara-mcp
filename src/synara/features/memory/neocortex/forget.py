@@ -106,7 +106,16 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
         raise ValidationError("decay_tau_seconds must be a positive, finite number")
 
     now = now_seconds()
-    rows = await service.episodic.get_documents(filter_dict=None, limit=max_scan)
+    # Rotating scan window (``service._forget_cursor``): id-ordered pages
+    # of ``max_scan`` rows per pass, so a store larger than one window is
+    # swept across passes instead of only ever evaluating the oldest
+    # ``max_scan`` rows (which would permanently starve everything
+    # beyond them). The cursor advances only on a non-dry-run pass, so a
+    # dry-run preview and the delete that follows it see the same window.
+    scan_offset = service._forget_cursor
+    rows = await service.episodic.get_documents(
+        filter_dict=None, limit=max_scan, offset=scan_offset
+    )
     weak: list[int] = []
     for ep_id, _text, md in rows:
         access_times = access_times_from_meta(md, fallback_now=now)
@@ -138,6 +147,11 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
         # rationale).
         await service._evict_and_delete(weak)
         removed = len(weak)
+    if not dry_run:
+        # Advance (or wrap on a partial page) the episodic scan cursor.
+        # Deletions shift later rows into this window — the same accepted
+        # imprecision as replay's cursor; the sweep still converges.
+        service._forget_cursor = 0 if len(rows) < max_scan else scan_offset + max_scan
 
     # Cold-schema eviction: optional ontology garbage-collector. Off by
     # default (forget_schema_unused_seconds == 0). When enabled, deletes
@@ -150,8 +164,14 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
     schemas_removed = 0
     schemas_scanned = 0
     cold_schema_ids: list[int] = []
+    schema_scan_offset = service._forget_schema_cursor
     if cold_threshold > 0.0:
-        sem_rows = await service.semantic.get_documents(filter_dict=None, limit=max_scan)
+        # Same rotating-window treatment as the episodic scan above, with
+        # its own cursor: without it, schemas beyond the first ``max_scan``
+        # ids would never be evaluated for cold eviction.
+        sem_rows = await service.semantic.get_documents(
+            filter_dict=None, limit=max_scan, offset=schema_scan_offset
+        )
         schemas_scanned = len(sem_rows)
         for sch_id, _text, smd in sem_rows:
             last_hit = _last_accessed(smd)
@@ -170,13 +190,21 @@ async def run(  # noqa: PLR0912 -- branches mirror distinct decay/eviction gates
             counters["schemas_evicted_unused"] = (
                 counters.get("schemas_evicted_unused", 0) + schemas_removed
             )
+        if not dry_run:
+            service._forget_schema_cursor = (
+                0 if len(sem_rows) < max_scan else schema_scan_offset + max_scan
+            )
 
     return {
         "candidate_ids": weak,
         "removed": removed,
         "dry_run": dry_run,
         "scanned": len(rows),
+        # Where this pass's windows started, so a caller can tell "few
+        # candidates" from "few candidates in this window".
+        "scan_offset": scan_offset,
         "schemas_scanned": schemas_scanned,
+        "schema_scan_offset": schema_scan_offset,
         "cold_schema_candidate_ids": cold_schema_ids,
         "schemas_removed": schemas_removed,
     }

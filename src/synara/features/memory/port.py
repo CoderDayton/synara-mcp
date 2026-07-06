@@ -137,6 +137,8 @@ class MemoryServicePort(Protocol):
     _plasticity: PlasticityGraph
     _dg: DGProjector | None
     _replay_cursor: int
+    _forget_cursor: int
+    _forget_schema_cursor: int
     _consolidate_epoch: int
     _hygiene_counters: HygieneCounters
 

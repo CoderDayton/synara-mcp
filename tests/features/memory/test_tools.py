@@ -101,7 +101,7 @@ async def test_recall_content_only_projects_id_kind_content(
         await client.call_tool("store_episode", {"content": "alpha beta gamma", "session_id": "s1"})
         await client.call_tool(
             "store_semantic_memory",
-            {"content": "prefer ruff over flake8", "kind": "preference"},
+            {"content": "prefer ruff over flake8", "kind": "preference", "scope": "global"},
         )
 
         ep = await client.call_tool(
@@ -229,6 +229,7 @@ async def test_semantic_store_and_recall_tools(
                 "kind": "preference",
                 "tags": ["tooling"],
                 "confidence": 0.9,
+                "scope": "global",
             },
         )
         assert stored.data["id"] >= 0
@@ -451,12 +452,17 @@ async def test_store_semantic_memory_supersedes_retires_stale_entry(
     async with Client(mcp) as client:
         old = await client.call_tool(
             "store_semantic_memory",
-            {"content": "use flake8 for linting", "kind": "preference"},
+            {"content": "use flake8 for linting", "kind": "preference", "scope": "global"},
         )
         old_id = old.data["id"]
         new = await client.call_tool(
             "store_semantic_memory",
-            {"content": "use ruff for linting", "kind": "preference", "supersedes": old_id},
+            {
+                "content": "use ruff for linting",
+                "kind": "preference",
+                "supersedes": old_id,
+                "scope": "global",
+            },
         )
         assert new.data["superseded"] == old_id
         # The stale entry no longer surfaces; only the correction does.
@@ -549,7 +555,7 @@ async def test_store_semantic_supersedes_rolls_back_new_on_retire_failure() -> N
     try:
         service = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
         old = await service.store_semantic_memory(
-            content="use flake8 for linting", kind="preference"
+            content="use flake8 for linting", kind="preference", scope="global"
         )
         old_id = old["id"]
         assert await service.semantic.count() == 1
@@ -565,7 +571,7 @@ async def test_store_semantic_supersedes_rolls_back_new_on_retire_failure() -> N
         service.semantic.delete_by_ids = selective_delete
         with pytest.raises(RuntimeError, match="retire failed"):
             await service.store_semantic_memory(
-                content="use ruff for linting", kind="preference", supersedes=old_id
+                content="use ruff for linting", kind="preference", supersedes=old_id, scope="global"
             )
         service.semantic.delete_by_ids = orig_delete
 

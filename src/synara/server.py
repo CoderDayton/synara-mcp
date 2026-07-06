@@ -79,12 +79,19 @@ def build_server(settings: Settings) -> FastMCP:
                     await stack.enter_async_context(run_dashboard(dash_app, settings.dashboard))
                 yield {"db": db, "embedder": embedder, "settings": settings}
         finally:
-            # Close the DB even if the embedder teardown raises, so a
-            # failing ``aclose`` can't leak the SQLite handle.
             try:
-                await embedder.aclose()
+                # Drain in-flight background reactor tasks (auto-consolidate
+                # / dream) before teardown so none of them runs against a
+                # closed DB. Never raises: task failures are contained by
+                # the service's guard.
+                await service.drain_reactor_tasks()
             finally:
-                await db.close()
+                # Close the DB even if the embedder teardown raises, so a
+                # failing ``aclose`` can't leak the SQLite handle.
+                try:
+                    await embedder.aclose()
+                finally:
+                    await db.close()
 
     mcp = FastMCP(
         name="synara-mcp",

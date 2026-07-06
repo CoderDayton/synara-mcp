@@ -210,7 +210,7 @@ async def test_semantic_delete_roundtrip(
     ctx: tuple[httpx.AsyncClient, MemoryService],
 ) -> None:
     client, service = ctx
-    stored = await service.store_semantic_memory("comets are icy", kind="fact")
+    stored = await service.store_semantic_memory("comets are icy", kind="fact", scope="global")
     sem_id = stored["id"]
 
     dele = await client.request("DELETE", f"/api/semantic/{sem_id}")
@@ -227,7 +227,7 @@ async def test_semantic_delete_route_calls_service_method(
 ) -> None:
     """Guard against inlined logic: the route must call delete_semantic."""
     client, service = ctx
-    stored = await service.store_semantic_memory("spy semantic target", kind="fact")
+    stored = await service.store_semantic_memory("spy semantic target", kind="fact", scope="global")
     seen: dict[str, int] = {}
     real = service.delete_semantic
 

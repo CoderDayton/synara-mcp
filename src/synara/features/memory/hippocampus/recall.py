@@ -326,7 +326,6 @@ async def run(
 
     # The SR window key is still ``session_id`` regardless of scoping, so
     # cross-session bridges keep forming in the caller's context.
-    ep_filter: dict[str, Any] | None = None
     # Scope axis (default-on). A supplied ``session_id`` scopes recall to
     # that session plus any global records; ``scope_session=False`` opts
     # back into cross-session results, ``scope_session=True`` forces
@@ -362,7 +361,6 @@ async def run(
             result = await _complete_mod.run(
                 service,
                 q,
-                ep_filter=ep_filter,
                 k_inner=max(k, 8),
                 iters=iters,
                 beta=service.config.recall_completion_beta,
@@ -376,7 +374,7 @@ async def run(
             q = completed
 
     with _trace_span("merge_hits"):
-        merged = await _merge_hits(service, q, mode=mode, k=fetch_k, ep_filter=ep_filter)
+        merged = await _merge_hits(service, q, mode=mode, k=fetch_k)
     if filtering:
         ep_before = sum(1 for row in merged if row[4] == "episodic")
         merged = [
@@ -407,9 +405,61 @@ async def run(
         merged = _gate_merged(merged, service.config)
 
     t_now = now_seconds()
+    # Cold-schema GC liveness: hybrid recall is the primary consumer of
+    # schemas, so returned semantic hits must refresh ``last_accessed`` or
+    # a schema recalled only through recall_episodes would eventually be
+    # evicted as cold. Only when the GC knob is on and the recall
+    # reinforces — a read-only recall stays write-free.
+    bump_schemas = reinforce and service.config.forget_schema_unused_seconds > 0
+    out, bumps, sem_bumps, observed_episodic = _assemble_output(
+        merged, k=k, reinforce=reinforce, bump_schemas=bump_schemas, now=t_now
+    )
+    if bumps:
+        # Hits within one recall are distinct doc ids, so their
+        # read-append-write sections are independent (per-doc locks never
+        # contend) — run them concurrently instead of paying k sequential
+        # round-trips on the hot path.
+        await asyncio.gather(*(service.bump_retrieval(d, m) for d, m in bumps))
+    if sem_bumps:
+        # Plain last-write-wins metadata patch (mirrors ``run_semantic``);
+        # no per-doc lock needed for a single timestamp field.
+        await service.semantic.update_metadata(sem_bumps)
+
+    await _reinforce_recall_set(
+        service,
+        out=out,
+        observed_episodic=observed_episodic,
+        session_id=session_id,
+        q=q,
+        now=t_now,
+    )
+    return out
+
+
+def _assemble_output(
+    merged: list[_Hit],
+    *,
+    k: int,
+    reinforce: bool,
+    bump_schemas: bool,
+    now: float,
+) -> tuple[
+    list[dict[str, Any]],
+    list[tuple[int, dict[str, Any]]],
+    list[tuple[int, dict[str, Any]]],
+    list[tuple[str, int]],
+]:
+    """Shape the top-``k`` merged rows into hit dicts, collecting the
+    write-backs recall owes: episodic retrieval bumps, semantic
+    ``last_accessed`` bumps (cold-schema GC liveness), and the
+    (session, id) pairs the SR observes.
+
+    Returns ``(out, bumps, sem_bumps, observed_episodic)``.
+    """
     out: list[dict[str, Any]] = []
-    observed_episodic: list[tuple[str, int]] = []
     bumps: list[tuple[int, dict[str, Any]]] = []
+    sem_bumps: list[tuple[int, dict[str, Any]]] = []
+    observed_episodic: list[tuple[str, int]] = []
     for doc_id, text, md, dist, source in merged[:k]:
         hit: dict[str, Any] = {
             "id": doc_id,
@@ -423,31 +473,92 @@ async def run(
             "source": source,
             "metadata": md,
         }
-        hit.update(_recency_fields(md or {}, source=source, now=t_now))
+        hit.update(_recency_fields(md or {}, source=source, now=now))
         out.append(hit)
         # ``reinforce=False`` (ambient resource reads) makes recall a
         # pure read: no retrieval_count bump and — since the SR block
-        # below guards on ``observed_episodic`` — no SR/plasticity update.
+        # in ``run`` guards on ``observed_episodic`` — no SR/plasticity
+        # update.
         if reinforce and source == "episodic" and doc_id >= 0:
             bumps.append((doc_id, md))
             sid = str(md.get("session_id", "")) if md else ""
             if sid:
                 observed_episodic.append((sid, doc_id))
-    if bumps:
-        # Hits within one recall are distinct doc ids, so their
-        # read-append-write sections are independent (per-doc locks never
-        # contend) — run them concurrently instead of paying k sequential
-        # round-trips on the hot path.
-        await asyncio.gather(*(service.bump_retrieval(d, m) for d, m in bumps))
+        elif bump_schemas and source == "semantic" and doc_id >= 0:
+            sem_bumps.append((doc_id, {"last_accessed": now}))
+    return out, bumps, sem_bumps, observed_episodic
 
-    await _reinforce_recall_set(
-        service,
-        out=out,
-        observed_episodic=observed_episodic,
-        session_id=session_id,
-        q=q,
-        now=t_now,
+
+async def run_semantic(
+    service: MemoryService,
+    *,
+    query: str,
+    k: int = 8,
+    kind: str | None = None,
+    session_id: str | None = None,
+    scope_session: bool | None = None,
+) -> list[dict[str, Any]]:
+    """Semantic-only recall: cosine over the semantic store with the same
+    validation, scope filter, and relevance gate as the hybrid path.
+
+    Lives here (not on the service) so the semantic and hybrid recall
+    paths share one home — ``_validate_recall_inputs``, the over-fetch
+    policy, ``in_session_scope``, and ``gate_relevance`` — and cannot
+    drift apart. Bumps ``last_accessed`` on returned schemas when the
+    cold-schema GC is enabled (``forget_schema_unused_seconds > 0``) so
+    an actively-recalled schema is never evicted as cold; recall stays
+    write-free otherwise.
+    """
+    _validate_recall_inputs(service, query=query, session_id=session_id, k=k, mode="semantic")
+    if k <= 0:
+        return []
+    if await service.semantic.count() == 0:
+        return []
+    await service._ensure_index_ready()
+    q = await service.query_arg(query)
+    cfg = service.config
+    # Scope filter: a supplied session_id scopes to that session (plus
+    # global schemas) by default; scope_session=False opts out.
+    scope_active = scope_session is not False and session_id is not None
+    # When a kind or scope filter is requested, over-fetch and filter in
+    # Python so cosine ranking still drives the final order; the semantic
+    # store is small (gist-level) so the over-fetch is cheap. Also
+    # over-fetch when the relevance gate is on, so the knee is estimated
+    # over a real candidate distribution, not just k.
+    gating = cfg.recall_relevance_gate and (
+        cfg.recall_elbow_cutoff or cfg.recall_max_distance_alpha > 0 or cfg.recall_gap_cut > 0
     )
+    wide = kind is not None or scope_active or gating
+    fetch_k = max(k * 4, 32) if wide else k
+    hits = await service.semantic.similarity_search(q, k=fetch_k)
+    out: list[dict[str, Any]] = []
+    for doc, dist in hits:
+        md = dict(doc.metadata)
+        if (kind is not None and str(md.get("kind", "")) != kind) or (
+            scope_active and not in_session_scope(md, session_id=session_id)
+        ):
+            continue
+        out.append(
+            {
+                "id": int(md.get("id", -1)),
+                "content": doc.page_content,
+                "distance": float(dist),
+                "metadata": md,
+            }
+        )
+    # Adaptive relevance gate over the semantic candidates, then cap to
+    # k. Drops the low-relevance plateau so a weak query returns few (or
+    # no) schemas instead of k tenuous ones (see ``gate_relevance``).
+    out = gate_relevance(out, cfg)[:k]
+    # Bump ``last_accessed`` on the schemas we actually returned so the
+    # cold-schema eviction path (forget.run with
+    # forget_schema_unused_seconds > 0) treats a recently-recalled
+    # schema as alive.
+    if out and cfg.forget_schema_unused_seconds > 0:
+        now = now_seconds()
+        hit_bumps = [(int(r["id"]), {"last_accessed": now}) for r in out if int(r["id"]) >= 0]
+        if hit_bumps:
+            await service.semantic.update_metadata(hit_bumps)
     return out
 
 
@@ -717,7 +828,6 @@ async def _merge_hits(
     *,
     mode: str,
     k: int,
-    ep_filter: dict[str, Any] | None,
 ) -> list[_Hit]:
     want_sem = mode in {"auto", "semantic", "hybrid"}
     want_ep = mode in {"auto", "episodic", "hybrid"}
@@ -730,9 +840,7 @@ async def _merge_hits(
         service.semantic.similarity_search(q, k=k) if want_sem and sem_count > 0 else _empty_hits()
     )
     ep_hits_co = (
-        service.episodic.similarity_search(q, k=k, filter=ep_filter)
-        if want_ep and ep_count > 0
-        else _empty_hits()
+        service.episodic.similarity_search(q, k=k) if want_ep and ep_count > 0 else _empty_hits()
     )
     sem_hits, ep_hits = await asyncio.gather(sem_hits_co, ep_hits_co)
     merged: list[_Hit] = []

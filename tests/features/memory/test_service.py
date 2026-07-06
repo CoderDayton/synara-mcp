@@ -266,6 +266,7 @@ async def test_store_semantic_memory_persists_with_metadata(
         kind="preference",
         tags=["testing", "python"],
         confidence=0.9,
+        scope="global",
     )
     assert out["id"] >= 0
     assert out["kind"] == "preference"
@@ -299,7 +300,7 @@ async def test_recall_semantic_memory_returns_only_semantic_hits(
     # Episode in episodic store + same-text semantic memory in semantic store.
     # recall_semantic_memory must only see the semantic side.
     await service.encode_episode("alpha episode", "s1", salience=0.5)
-    sem = await service.store_semantic_memory("alpha truth", kind="fact")
+    sem = await service.store_semantic_memory("alpha truth", kind="fact", scope="global")
     hits = await service.recall_semantic_memory("alpha", k=5)
     assert hits, "expected at least one semantic hit"
     assert all("kind" in h["metadata"] for h in hits)
@@ -309,8 +310,10 @@ async def test_recall_semantic_memory_returns_only_semantic_hits(
 async def test_recall_semantic_memory_filters_by_kind(
     service: MemoryService,
 ) -> None:
-    await service.store_semantic_memory("alpha fact", kind="fact")
-    pref = await service.store_semantic_memory("alpha preference", kind="preference")
+    await service.store_semantic_memory("alpha fact", kind="fact", scope="global")
+    pref = await service.store_semantic_memory(
+        "alpha preference", kind="preference", scope="global"
+    )
     hits = await service.recall_semantic_memory("alpha", k=5, kind="preference")
     assert hits
     assert {h["id"] for h in hits} == {pref["id"]}
@@ -948,15 +951,21 @@ async def test_semantic_memory_scope_and_global() -> None:
 
 
 async def test_store_semantic_memory_scope_defaults_and_validation() -> None:
-    """scope is inferred from session_id when unset; an explicit 'session'
-    scope without a session_id is rejected."""
+    """A session_id yields session scope; global is opt-in via an explicit
+    scope='global'. A bare call (no session_id, no scope) and an explicit
+    'session' scope without a session_id are both rejected."""
     db = AsyncVectorDB(":memory:")
     try:
         svc = MemoryService(db, config=MemoryConfig(), embed_fn=hash_embed)
         with_sid = await svc.store_semantic_memory("fact one", session_id="proj-a")
         assert with_sid["scope"] == "session"
-        no_sid = await svc.store_semantic_memory("fact two")
-        assert no_sid["scope"] == "global"
+        # Global is opt-in: an explicit scope='global' is honoured.
+        explicit_global = await svc.store_semantic_memory("fact two", scope="global")
+        assert explicit_global["scope"] == "global"
+        # A bare call (no session_id, no scope) is refused rather than
+        # silently written global.
+        with pytest.raises(ValidationError):
+            await svc.store_semantic_memory("fact bare")
         with pytest.raises(ValidationError):
             await svc.store_semantic_memory("fact three", scope="session")
     finally:
@@ -1080,9 +1089,13 @@ async def test_failed_reactor_consolidate_is_isolated_and_resets_counter(
         # but the user-facing call must still succeed.
         result = await svc.encode_episode("trigger reactor", "s1")
         assert result["id"] >= 0
-        # C4: counter was advanced before the failing work, so it is not
-        # left saturated (which would re-trigger on every later encode).
+        # C4: counter was advanced at schedule time, before the failing
+        # work, so it is not left saturated (which would re-trigger on
+        # every later encode).
         assert svc._bus.state.novel_encodes_since_consolidate == 0
+        # Drain the background task: its failure must stay contained in
+        # the guard (logged, never raised), not leak into the drain.
+        await svc.drain_reactor_tasks()
     finally:
         await db.close()
 

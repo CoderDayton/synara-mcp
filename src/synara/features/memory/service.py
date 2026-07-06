@@ -35,7 +35,7 @@ import itertools
 import logging
 import time
 import weakref
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from typing import Any, cast
 
 from simplevecdb import AsyncVectorDB
@@ -56,7 +56,6 @@ from .memory_types import (
     MemoryType,
     MemoryTypeRegistry,
     default_registry,
-    in_session_scope,
     resolve_scope,
 )
 from .port import HygieneCounters
@@ -198,6 +197,21 @@ class MemoryService:
         # memory only (rebuilt on restart), which is fine because the
         # power-law strength signal converges across many cycles.
         self._replay_cursor: int = 0
+        # Rotating scan cursors for the forget pass, same rationale:
+        # a fixed ``limit=max_scan`` without an offset would only ever
+        # evaluate the oldest ``max_scan`` rows and permanently starve
+        # everything beyond the window (episodic decay pruning and
+        # cold-schema GC alike). Advanced only by a non-dry-run pass so
+        # a dry-run preview and the delete that follows it see the same
+        # window. Process-local like ``_replay_cursor``: the sweep
+        # converges across cycles.
+        self._forget_cursor: int = 0
+        self._forget_schema_cursor: int = 0
+        # In-flight background reactor tasks (auto-consolidate / dream).
+        # Strong references so the event loop cannot GC a running task;
+        # each task discards itself on completion. Tests and shutdown
+        # paths drain via :meth:`drain_reactor_tasks`.
+        self._reactor_tasks: set[asyncio.Task[None]] = set()
         # Lazy HNSW reconciliation flag. See ``_ensure_index_ready``: we
         # flush+rebuild on first recall to recover from an
         # encode-without-consolidate desync or a crashed-process index.
@@ -274,8 +288,8 @@ class MemoryService:
                 dream_after_idle_seconds=self.config.reactor_dream_after_idle_seconds,
             ),
             log_capacity=self.config.reactor_event_log_capacity,
-            on_consolidate=self._reactor_consolidate if _learning else None,
-            on_dream=self._reactor_dream if _learning else None,
+            on_consolidate=self._schedule_consolidate if _learning else None,
+            on_dream=self._schedule_dream if _learning else None,
         )
 
     # -------------------------------------------- event emission / reactor
@@ -341,6 +355,69 @@ class MemoryService:
             session_id=None,
             payload={"pruned_edges": pruned, "replayed": replayed},
         )
+
+    async def _schedule_consolidate(self, event: Any) -> None:
+        """Reactor hook: run consolidation as a background task.
+
+        The trigger gate is advanced *synchronously*, before the task is
+        spawned: ``react`` re-evaluates the policy on every subsequent
+        event, and without the immediate reset a burst of encodes
+        landing before the task's first await would each re-fire a
+        duplicate pass. ``_reactor_consolidate`` re-applies the same
+        reset idempotently when it actually runs.
+        """
+        st = self._bus.state
+        st.last_consolidate_at = _now_real()
+        st.novel_encodes_since_consolidate = 0
+        self._spawn_reactor_task(self._reactor_consolidate(event), name="reactor-consolidate")
+
+    async def _schedule_dream(self, event: Any) -> None:
+        """Reactor hook: run the dream pass as a background task.
+
+        Mirrors :meth:`_schedule_consolidate`: the dream counters are
+        reset synchronously so back-to-back events cannot double-schedule
+        a pass while the first task waits to run (the trailing ``dream``
+        event re-applies the same reset when the task completes).
+        """
+        st = self._bus.state
+        st.last_dream_at = _now_real()
+        st.events_since_dream = 0
+        self._spawn_reactor_task(self._reactor_dream(event), name="reactor-dream")
+
+    def _spawn_reactor_task(self, coro: Coroutine[Any, Any, None], *, name: str) -> None:
+        """Run a reactor follow-up off the caller's request path.
+
+        Consolidation (embedding round-trips + K-Means) and dreams (LTD
+        over the whole edge table + replay) can take seconds; awaiting
+        them inside the user op that happened to trip the trigger turns
+        a tens-of-ms tool call into a multi-second one and mis-attributes
+        the latency in the tool metrics. The internal locks
+        (``_consolidate_lock`` / ``_dream_lock``) already serialise the
+        work, so backgrounding is safe within the single-writer process.
+        Failures are logged, never raised into any user op.
+        """
+        task = asyncio.create_task(self._run_reactor_guarded(coro, name=name), name=name)
+        self._reactor_tasks.add(task)
+        task.add_done_callback(self._reactor_tasks.discard)
+
+    async def _run_reactor_guarded(self, coro: Coroutine[Any, Any, None], *, name: str) -> None:
+        try:
+            await coro
+        except Exception:
+            _LOG.exception("background reactor task %s failed", name)
+
+    async def drain_reactor_tasks(self) -> None:
+        """Await every in-flight background reactor task.
+
+        For tests that assert on reactor side-effects and for graceful
+        shutdown. A reactor task's trailing ``_emit`` can never schedule
+        another reactor task (``react`` skips reactor-produced events),
+        but loop until the set is empty anyway so a task spawned by a
+        user op racing the drain is awaited too. Task failures are
+        already logged by the guard; they never propagate here.
+        """
+        while self._reactor_tasks:
+            await asyncio.gather(*tuple(self._reactor_tasks), return_exceptions=True)
 
     async def event_log(self) -> list[Any]:
         """Return a snapshot of the recent interaction events (for inspection)."""
@@ -1037,9 +1114,10 @@ class MemoryService:
                         f"tag exceeds max_tag_chars ({self.config.max_tag_chars})"
                     )
         await self._validate_supersedes(supersedes)
-        # Scope axis: explicit ``scope`` wins; otherwise a record is
-        # session-scoped when a session_id is supplied and global when not.
-        # resolve_scope rejects an explicit 'session' scope with no session.
+        # Scope axis: resolve_scope owns the whole policy — explicit
+        # ``scope`` wins (validated), a bare session_id means
+        # session-scoped, and a bare call (no scope, no session_id) is
+        # rejected so a write can never silently default to global.
         eff_scope = resolve_scope(scope, session_id)
 
         now = now_seconds()
@@ -1105,69 +1183,21 @@ class MemoryService:
         session_id: str | None = None,
         scope_session: bool | None = None,
     ) -> list[dict[str, Any]]:
-        if not query.strip():
-            raise ValidationError("query must be non-empty")
-        if self.config.max_content_chars and len(query) > self.config.max_content_chars:
-            raise ValidationError(
-                f"query exceeds max_content_chars ({self.config.max_content_chars})"
-            )
-        if k <= 0:
-            return []
-        if self.config.max_recall_k and k > self.config.max_recall_k:
-            raise ValidationError(f"k exceeds max_recall_k ({self.config.max_recall_k})")
-        if await self.semantic.count() == 0:
-            return []
-        await self._ensure_index_ready()
-        q = await self.query_arg(query)
-        # Scope filter: a supplied session_id scopes to that session (plus
-        # global schemas) by default; scope_session=False opts out.
-        scope_active = scope_session is not False and session_id is not None
-        # When a kind or scope filter is requested, over-fetch and filter in
-        # Python so cosine ranking still drives the final order; the semantic
-        # store is small (gist-level) so the over-fetch is cheap.
-        # Over-fetch when filtering *or* when the elbow gate is on, so the
-        # knee is estimated over a real candidate distribution, not just k.
-        gating = self.config.recall_relevance_gate and (
-            self.config.recall_elbow_cutoff
-            or self.config.recall_max_distance_alpha > 0
-            or self.config.recall_gap_cut > 0
+        """Semantic-only recall; thin delegate like every other operation.
+
+        Validation, the over-fetch policy, the scope filter, the
+        relevance gate, and the cold-schema access bump all live in
+        ``hippocampus.recall.run_semantic`` so the semantic and hybrid
+        recall paths share one home and cannot drift apart.
+        """
+        return await _recall_mod.run_semantic(
+            self,
+            query=query,
+            k=k,
+            kind=kind,
+            session_id=session_id,
+            scope_session=scope_session,
         )
-        wide = kind is not None or scope_active or gating
-        fetch_k = max(k * 4, 32) if wide else k
-        hits = await self.semantic.similarity_search(q, k=fetch_k)
-        out: list[dict[str, Any]] = []
-        hit_bumps: list[tuple[int, dict[str, Any]]] = []
-        for doc, dist in hits:
-            md = dict(doc.metadata)
-            if (kind is not None and str(md.get("kind", "")) != kind) or (
-                scope_active and not in_session_scope(md, session_id=session_id)
-            ):
-                continue
-            out.append(
-                {
-                    "id": int(md.get("id", -1)),
-                    "content": doc.page_content,
-                    "distance": float(dist),
-                    "metadata": md,
-                }
-            )
-        # Adaptive relevance gate over the semantic candidates, then cap to
-        # k. Drops the low-relevance plateau so a weak query returns few (or
-        # no) schemas instead of k tenuous ones (see recall.gate_relevance).
-        out = _recall_mod.gate_relevance(out, self.config)[:k]
-        # Bump ``last_accessed`` on the schemas we actually returned so the
-        # cold-schema eviction path (forget.run with
-        # forget_schema_unused_seconds > 0) treats a recently-recalled
-        # schema as alive.
-        if out and self.config.forget_schema_unused_seconds > 0:
-            now = now_seconds()
-            for r in out:
-                sid = int(r["id"])
-                if sid >= 0:
-                    hit_bumps.append((sid, {"last_accessed": now}))
-            if hit_bumps:
-                await self.semantic.update_metadata(hit_bumps)
-        return out
 
 
 # Late imports avoid a top-of-file cycle: each sub-module needs

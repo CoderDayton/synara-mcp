@@ -146,7 +146,9 @@ async def test_search_semantic_branch_for_semantic_kind(
     """Semantic search routes through ``recall_semantic_memory`` and
     still supports substring fallback."""
     client, service = ctx
-    await service.store_semantic_memory("Users authenticate with JWTs", kind="schema")
+    await service.store_semantic_memory(
+        "Users authenticate with JWTs", kind="schema", scope="global"
+    )
     r = await client.get("/api/memories", params={"kind": "semantic", "q": "JWTs"})
     assert r.status_code == 200
     body = r.json()

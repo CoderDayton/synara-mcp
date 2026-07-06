@@ -75,7 +75,9 @@ async def test_delete_missing_raises(service: MemoryService) -> None:
 
 
 async def test_delete_semantic_removes_entry(service: MemoryService) -> None:
-    r = await service.store_semantic_memory("prefer ruff over flake8", kind="preference")
+    r = await service.store_semantic_memory(
+        "prefer ruff over flake8", kind="preference", scope="global"
+    )
     sem_id = r["id"]
     before = (await service.stats())["semantic_count"]
 
@@ -94,7 +96,7 @@ async def test_delete_semantic_missing_raises(service: MemoryService) -> None:
 async def test_delete_semantic_keeps_source_episodes(service: MemoryService) -> None:
     """Semantic delete must not cascade into the episodic store."""
     ep = await service.encode_episode("an otter trace to consolidate", "s1")
-    sch = await service.store_semantic_memory("otters are aquatic", kind="fact")
+    sch = await service.store_semantic_memory("otters are aquatic", kind="fact", scope="global")
 
     await service.delete_semantic(sch["id"])
 

@@ -179,9 +179,10 @@ class MemoryConfig:
     # Cold-schema eviction in the forget pass: semantic schemas whose
     # ``last_accessed`` is older than this many seconds are deleted. A
     # schema's ``last_accessed`` is set at creation and bumped by every
-    # absorb-merge and every ``recall_semantic_memory`` hit (legacy schemas
-    # predating field unification carry ``last_hit_at``; the timestamps
-    # helper reads either). 0.0 = off
+    # absorb-merge and every semantic recall hit — both the semantic leg
+    # of ``recall_episodes`` (hybrid) and ``recall_semantic_memory``
+    # (legacy schemas predating field unification carry ``last_hit_at``;
+    # the timestamps helper reads either). 0.0 = off
     # (no schema lifecycle pruning); set to e.g. 60*60*24*30 (30 days)
     # for a slow ontology garbage-collector.
     forget_schema_unused_seconds: float = 0.0
@@ -468,9 +469,13 @@ class MemoryConfig:
     #   length without being so loose that every burst re-fires.
     # dream_after_idle: awake hippocampal replay fires during brief
     #   pauses (Carr, Jadhav & Frank 2011, Nat Neurosci), not only
-    #   during sleep. 10 min matches a single user coffee-break,
-    #   keeping replay tied to agent idle windows rather than to
-    #   biological sleep-cycle gating.
+    #   during sleep. "Idle" is the gap between two consecutive
+    #   interaction events: the dream fires on the first event that
+    #   arrives after a quiet window of at least this many seconds
+    #   (an event-driven system can only observe idleness in
+    #   hindsight). 10 min matches a single user coffee-break,
+    #   keeping replay tied to agent idle windows rather than firing
+    #   periodically during continuous activity.
     reactor_consolidate_after_novel: int = 32
     reactor_consolidate_cooldown_seconds: float = 600.0
     reactor_dream_after_events: int = 128

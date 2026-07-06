@@ -179,6 +179,7 @@ async def run(
         salience=salience,
         encoded_at=encoded_at,
         signals=signals,
+        dg_support=new_support if (use_dg and new_support) else None,
     )
 
 
@@ -230,6 +231,34 @@ async def _maybe_surprise_boost(
     return salience
 
 
+async def _group_head_meta(
+    service: MemoryService,
+    md: Mapping[str, Any],
+    *,
+    cache: dict[int, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    """Resolve a segment candidate to its group head's metadata.
+
+    The head (first segment) carries the whole episode's ``dg_support``
+    as the group's dedup identity. Returns ``None`` when the candidate
+    is not part of a segment group, is itself the head (its own missing
+    support is authoritative), or the head row is gone. Cached per group
+    id so sibling candidates in one dedup pass cost one lookup.
+    """
+    gid_raw = md.get("episode_group_id")
+    if gid_raw is None:
+        return None
+    gid = int(gid_raw)
+    if int(md.get("id", -1)) == gid:
+        return None
+    if gid in cache:
+        return cache[gid]
+    rows = await service.episodic.get_documents({"id": gid})
+    head = dict(rows[0][2]) if rows else None
+    cache[gid] = head
+    return head
+
+
 async def _dedup_jaccard(
     service: MemoryService,
     new_emb: list[float],
@@ -237,29 +266,46 @@ async def _dedup_jaccard(
     session_id: str,
 ) -> dict[str, Any] | None:
     """Return a dedup result if any candidate's stored support has
-    Jaccard overlap >= ``dg_jaccard_threshold`` with ``new_support``."""
+    Jaccard overlap >= ``dg_jaccard_threshold`` with ``new_support``.
+
+    A candidate that is one segment of a theta-segmented episode carries
+    no support of its own; it resolves to its group head (whose
+    ``dg_support`` was computed from the whole original content) before
+    comparing — so re-storing the same long content dedups onto the
+    existing group instead of inserting a duplicate group. The returned
+    ``id`` is then the group head's, so the retrieval bump and any
+    ``supersedes`` bookkeeping address the group, not a fragment.
+    """
     cands = await service.episodic.similarity_search(
         new_emb,
         k=service.config.dg_dedup_candidates,
         filter={"session_id": session_id},
     )
+    head_cache: dict[int, dict[str, Any] | None] = {}
     best_j = 0.0
-    best_doc: Any = None
+    best_md: dict[str, Any] | None = None
     best_dist = 0.0
     for doc, dist in cands:
-        cand_support = doc.metadata.get("dg_support") or []
+        md: dict[str, Any] = dict(doc.metadata)
+        cand_support = md.get("dg_support") or []
         if not cand_support:
-            continue
+            head_md = await _group_head_meta(service, md, cache=head_cache)
+            if head_md is None:
+                continue
+            cand_support = head_md.get("dg_support") or []
+            if not cand_support:
+                continue
+            md = head_md
         j = _dg_jaccard(new_support, cand_support)
         if j > best_j:
             best_j = j
-            best_doc = doc
+            best_md = md
             best_dist = float(dist)
-    if best_doc is None or best_j < service.config.dg_jaccard_threshold:
+    if best_md is None or best_j < service.config.dg_jaccard_threshold:
         return None
-    doc_id = int(best_doc.metadata.get("id", -1))
+    doc_id = int(best_md.get("id", -1))
     if doc_id >= 0:
-        await service.bump_retrieval(doc_id, best_doc.metadata)
+        await service.bump_retrieval(doc_id, best_md)
     return {
         "id": doc_id,
         "deduped": True,
@@ -336,12 +382,17 @@ async def _insert_segmented(
     salience: float,
     encoded_at: float,
     signals: Mapping[str, Any] | None,
+    dg_support: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     """Encode each segment as a sub-record sharing ``episode_group_id``.
 
     The first segment's auto-assigned id doubles as the group id, so we
     avoid an external id allocator. Subsequent segments are written
-    with that group id already set in their metadata.
+    with that group id already set in their metadata. ``dg_support``
+    (computed from the whole original content) is stored on the first
+    segment only: it is the group's dedup identity, letting a later
+    re-store of the same long content match the group via
+    ``_dedup_jaccard`` instead of inserting a duplicate group.
     """
     segment_embs = await service.vectorise(segments)
     tags_list = list(tags) if tags else []
@@ -373,6 +424,8 @@ async def _insert_segmented(
         if safe:
             m.update(safe)
         seg_metas.append(m)
+    if dg_support:
+        seg_metas[0]["dg_support"] = list(dg_support)
     seg_ids_raw = await service.episodic.add_texts(
         list(segments),
         metadatas=seg_metas,

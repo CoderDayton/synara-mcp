@@ -151,8 +151,11 @@ def resolve_scope(scope: str | None, session_id: str | None) -> str:
     """Normalise an explicit ``scope`` against session presence.
 
     An explicit value wins (and is validated); otherwise a record is
-    session-scoped when it carries a ``session_id`` and global when it
-    does not -- the rule applied at every write site.
+    session-scoped when it carries a ``session_id`` -- the rule applied
+    at every write site. Global is opt-in: a global record surfaces in
+    every future session, so promoting a write to global is a deliberate
+    act, never a silent default. A bare call (no scope, no session_id)
+    is therefore rejected rather than falling back to a global write.
     """
     if scope is not None:
         if scope not in (SCOPE_SESSION, SCOPE_GLOBAL):
@@ -162,7 +165,12 @@ def resolve_scope(scope: str | None, session_id: str | None) -> str:
         if scope == SCOPE_SESSION and not session_id:
             raise ValidationError("session-scoped memory requires a session_id")
         return scope
-    return SCOPE_SESSION if session_id else SCOPE_GLOBAL
+    if session_id:
+        return SCOPE_SESSION
+    raise ValidationError(
+        "pass a session_id for a session-scoped memory, or scope='global' "
+        "to write a global one; refusing to default to a global write"
+    )
 
 
 def in_session_scope(md: Mapping[str, Any] | None, *, session_id: str | None) -> bool:

@@ -395,6 +395,9 @@ async def test_reactor_consolidate_fires_after_threshold() -> None:
         svc = MemoryService(db, config=cfg, embed_fn=hash_embed)
         for i in range(4):
             await svc.encode_episode(f"item-{i}", "s1")
+        # Consolidation runs as a background task; drain before reading
+        # the log so the assertion is deterministic, not a scheduling race.
+        await svc.drain_reactor_tasks()
         log = await svc.event_log()
         kinds = [e.kind for e in log]
         assert kinds.count("consolidate") >= 1
