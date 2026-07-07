@@ -122,7 +122,7 @@ The memory feature is organised by brain region:
 
 - **Hippocampus** — encoding, pattern separation and completion, ranked recall, and dream replay.
 - **Neocortex** — consolidation into semantic schemas, forgetting, session reflection.
-- **Basal ganglia** — the reactor that decides when consolidation and dream cycles fire.
+- **Basal ganglia** — the reactor that decides when consolidation and dream cycles fire. Maintenance runs as background tasks triggered by activity thresholds and idle pauses, so it never blocks a tool call.
 - **Amygdala** — salience tagging that decides what consolidates fastest.
 
 Recall is ranked by cosine similarity plus a successor representation — a transition graph built from which memories are accessed together — and spreading activation over learned associations. Every record carries a scope, `session` or `global`: episodes always belong to their session, while semantic memories are session-scoped when stored with a `session_id` and global otherwise.
@@ -136,6 +136,8 @@ Recall is ranked by cosine similarity plus a successor representation — a tran
 **Defaults are safe.** Invalid configuration fails at startup rather than silently degrading. `forget_episodes` is dry-run by default, so deletions are previewed before they apply. Tool inputs and remote embedding responses are size-capped, and invalid input is rejected with an actionable message the agent can act on.
 
 **Results are bounded.** Recall returns a few snippet-length hits by default so results never blow your context budget; truncated hits say so, and `get_episode` fetches the complete text on demand.
+
+**Multiple clients coexist.** Concurrent stdio sessions elect a single leader process that owns the store; the others proxy to it transparently and re-elect automatically if the leader dies, so several agents can share one memory without write conflicts.
 
 ---
 
