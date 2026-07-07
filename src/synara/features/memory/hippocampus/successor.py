@@ -163,19 +163,26 @@ class SuccessorRepresentation:
                 # the discounted closure for this graph (see the two-pass
                 # rationale above) — emitted at DEBUG so the approximation
                 # degrading at scale is observable without a Bellman solve.
-                mass_first = sum(abs(v) for row in self._M.values() for v in row.values())
+                # The two L1 mass sums walk every M entry, so they only
+                # run when DEBUG logging is actually enabled.
+                debug = _log.isEnabledFor(logging.DEBUG)
+                mass_first = (
+                    sum(abs(v) for row in self._M.values() for v in row.values()) if debug else 0.0
+                )
                 for i, j in pass_items:
                     self._td_update(i, j)
-                mass_second = sum(abs(v) for row in self._M.values() for v in row.values())
                 self._loaded = True
-                delta = abs(mass_second - mass_first)
-                _log.debug(
-                    "SR rebuild: %d edges, %d M-rows; pass-2 L1 mass delta=%.4g (%.2f%% of total)",
-                    len(pass_items),
-                    len(self._M),
-                    delta,
-                    100.0 * delta / (mass_second or 1.0),
-                )
+                if debug:
+                    mass_second = sum(abs(v) for row in self._M.values() for v in row.values())
+                    delta = abs(mass_second - mass_first)
+                    _log.debug(
+                        "SR rebuild: %d edges, %d M-rows; "
+                        "pass-2 L1 mass delta=%.4g (%.2f%% of total)",
+                        len(pass_items),
+                        len(self._M),
+                        delta,
+                        100.0 * delta / (mass_second or 1.0),
+                    )
 
     async def flush(self) -> None:
         """Persist any pending edge updates to ``coll.edges``.
@@ -308,28 +315,37 @@ class SuccessorRepresentation:
         # (which would later surface as a zero-weight successor row and
         # leak into ``boost``/eviction bookkeeping).
         Mj = self._M.get(j)
-        empty: dict[int, float] = {}
-        Mj_view = Mj if Mj is not None else empty
-        # dict.keys() is already set-like and supports `|` directly,
-        # so we skip the two extra `set(...)` allocations and union
-        # the views once. ``{j}`` ensures the e_j basis entry lands in
-        # the key set even when neither row references j yet.
-        keys: set[int] = Mi.keys() | Mj_view.keys() | {j}
+        if Mj is Mi:
+            # Degenerate self-edge (observe never produces one, but load()
+            # replays whatever the edge table holds): snapshot the row so
+            # the bootstrap target reads pre-decay values, matching the
+            # old union-loop semantics.
+            Mj = dict(Mj)
         a = self.alpha
-        g = self.gamma
         one_minus_a = 1.0 - a
-        # Bind dict.get to a local: skips the per-iteration attribute
-        # lookup, which dominates this Python-bound inner loop when
-        # rows are dense (hundreds of entries).
-        Mi_get = Mi.get
-        Mj_get = Mj_view.get
-        for k in keys:
-            target = (1.0 if k == j else 0.0) + g * Mj_get(k, 0.0)
-            new_val = one_minus_a * Mi_get(k, 0.0) + a * target
-            if new_val == 0.0:
-                Mi.pop(k, None)
-            else:
-                Mi[k] = new_val
+        # In-place TD step in O(|Mi| + |Mj|) with no key-set union
+        # allocation: decay every existing entry once, then accumulate
+        # the bootstrap contributions from Mj, then the e_j basis term.
+        # Row values are non-negative, so the decay can never create an
+        # exact zero; ``alpha == 1`` zeroes the whole row, which the
+        # ``clear()`` keeps sparse (the old per-key pop-on-zero, batched).
+        if one_minus_a == 0.0:
+            Mi.clear()
+        else:
+            # items() + assignment instead of ``*=``: one dict lookup per
+            # key, not two.
+            for k, v in Mi.items():
+                Mi[k] = v * one_minus_a
+        if Mj:
+            ag = a * self.gamma
+            if ag != 0.0:
+                # Bind dict.get to a local: skips the per-iteration
+                # attribute lookup in this Python-bound inner loop.
+                Mi_get = Mi.get
+                for k, v in Mj.items():
+                    if v:
+                        Mi[k] = Mi_get(k, 0.0) + ag * v
+        Mi[j] = Mi.get(j, 0.0) + a
 
     # ------------------------------------------------------------------ readers
 

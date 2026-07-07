@@ -31,6 +31,7 @@ Habits persist at zero weight so the savings flag survives long disuse.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import math
 import weakref
 from typing import TYPE_CHECKING, Any
@@ -210,7 +211,9 @@ class PlasticityGraph:
         # an edge ``reinforce`` just bumped.
         edges = await self._coll.get_edges(kind=self.kind)
         if max_scan is not None and 0 < max_scan < len(edges):
-            edges = sorted(edges, key=lambda e: float(e.last_touch))[:max_scan]
+            # nsmallest is O(E log k) vs the full sort's O(E log E), and
+            # returns the same stalest-first prefix.
+            edges = heapq.nsmallest(max_scan, edges, key=lambda e: float(e.last_touch))
         edge_keys = [(int(e.src_id), int(e.dst_id)) for e in edges]
         pruned = 0
         for i, j in edge_keys:

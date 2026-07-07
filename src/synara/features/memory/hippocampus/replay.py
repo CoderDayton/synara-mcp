@@ -22,6 +22,7 @@ relational structure faster than routine ones.
 
 from __future__ import annotations
 
+import heapq
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
@@ -103,8 +104,10 @@ async def run(service: MemoryService, *, now: float) -> int:
 
     if not scored:
         return 0
-    scored.sort(key=lambda r: -r[0])
-    selected = scored[:top_k]
+    # Top-k selection in O(C log k) instead of sorting the full candidate
+    # window; ``nlargest`` matches ``sorted(..., reverse=True)[:k]``
+    # including tie order.
+    selected = heapq.nlargest(top_k, scored, key=lambda r: r[0])
 
     # Group the replay set by originating session. The strongest trace
     # in each group is the reactivation anchor; co-encoded episodes are
