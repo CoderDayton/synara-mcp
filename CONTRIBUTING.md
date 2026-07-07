@@ -57,7 +57,12 @@ source lives in `dashboard/`; its **built bundle is committed** into
 `src/synara/features/dashboard/static/` so the Python package can
 ship without a Node toolchain at install time.
 
-Requires [bun](https://bun.sh/) (or Node ≥ 20 with adjustments).
+Requires [bun](https://bun.sh/), or Node ≥ 20 with npm — `npm ci`
+installs against the committed `package-lock.json`, and the same
+scripts run via `npm run …`. Note: `package.json` carries an
+`overrides` entry forcing `openapi-typescript`'s TypeScript peer to
+the project's TypeScript 6 pin; strict npm peer resolution refuses to
+install without it.
 
 ```bash
 cd dashboard

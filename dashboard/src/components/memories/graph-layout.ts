@@ -67,6 +67,12 @@ const GROUP_GAP = 60;
 const PACK_LINK_PULL = 0.7;
 /** Padding between dot edges in the de-overlap passes. */
 const NODE_PAD = 4;
+/** Disc count past which tangent packing (which enumerates placed-disc
+ *  pairs per insertion, ~O(D³) overall) falls back to a spiral seed +
+ *  bounded de-overlap. The tangent packer is designed for the tens of
+ *  session discs a normal view holds; hundreds of singleton sessions
+ *  would otherwise stall the layout for seconds. */
+const PACK_TANGENT_MAX_DISCS = 160;
 
 type SimNode = { key: string; r: number; x: number; y: number };
 type SimEdge = { a: number; b: number; w: number };
@@ -242,6 +248,27 @@ function packDiscs(
   const order = [...discs].sort((a, b) => b.r - a.r || a.key.localeCompare(b.key));
   const placed: Array<{ key: string; x: number; y: number; r: number }> = [];
   const out = new Map<string, { x: number; y: number }>();
+  if (order.length > PACK_TANGENT_MAX_DISCS) {
+    // Deterministic golden-angle spiral, radius scaled by cumulative
+    // packed area (1.8× slack so the seed starts mostly clear), then the
+    // bounded pairwise de-overlap clears residuals: O(D²) worst case
+    // instead of the tangent packer's per-insertion pair enumeration.
+    // Quality degrades gracefully (no connectivity pull) — acceptable at
+    // a scale where individual disc adjacency is unreadable anyway.
+    let area = 0;
+    const seeded = order.map((d, i) => {
+      area += d.r * d.r;
+      const rad = 1.8 * Math.sqrt(area);
+      const a = i * GOLDEN_ANGLE;
+      return { key: d.key, pos: { x: rad * Math.cos(a), y: rad * Math.sin(a) }, r: d.r };
+    });
+    relaxPairs(
+      seeded.map((s) => ({ p: s.pos, r: s.r })),
+      40,
+    );
+    for (const s of seeded) out.set(s.key, s.pos);
+    return out;
+  }
   for (const d of order) {
     const myLinks = links.get(d.key);
     let pos: { x: number; y: number } | null = null;
@@ -336,9 +363,12 @@ function relaxPairs(
         let dist = Math.hypot(dx, dy);
         if (dist >= minDist) continue;
         if (dist < 1e-6) {
-          dx = ((i * 7 + j) % 11) - 5;
+          // "|| 1" mirrors the settle-pass guard: both residues can be 0
+          // for some (i, j), and a zero displacement vector would leave
+          // the pair coincident through every pass.
+          dx = (((i * 7 + j) % 11) - 5) || 1;
           dy = ((i * 5 + j) % 13) - 6;
-          dist = Math.hypot(dx, dy) || 1;
+          dist = Math.hypot(dx, dy);
         }
         const shift = (minDist - dist) / 2;
         const ux = dx / dist;
@@ -384,16 +414,23 @@ export function computeLayout(
   for (const nd of data.nodes) {
     if (nd.kind === "episodic") epSession.set(nd.key, sessionOf(nd));
   }
-  const schemaGroup = (key: string): string => {
-    const tally = new Map<string, number>();
-    for (const e of data.consolidation_edges) {
-      if (e.dst !== key) continue;
-      const s = epSession.get(`ep:${e.src}`);
-      if (s !== undefined) tally.set(s, (tally.get(s) ?? 0) + 1);
+  // Bucket consolidation edges by schema once: schemaGroup runs per
+  // schema node, and rescanning every edge per call is O(schemas · edges).
+  const schemaTallies = new Map<string, Map<string, number>>();
+  for (const e of data.consolidation_edges) {
+    const s = epSession.get(`ep:${e.src}`);
+    if (s === undefined) continue;
+    let tally = schemaTallies.get(e.dst);
+    if (!tally) {
+      tally = new Map();
+      schemaTallies.set(e.dst, tally);
     }
+    tally.set(s, (tally.get(s) ?? 0) + 1);
+  }
+  const schemaGroup = (key: string): string => {
     let best = ORPHAN;
     let bestN = 0;
-    for (const [s, c] of tally) {
+    for (const [s, c] of schemaTallies.get(key) ?? []) {
       if (c > bestN || (c === bestN && s.localeCompare(best) < 0)) {
         best = s;
         bestN = c;

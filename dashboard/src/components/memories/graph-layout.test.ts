@@ -105,4 +105,39 @@ describe("computeLayout (session-clustered)", () => {
   it("returns an empty layout for empty data", async () => {
     expect((await computeLayout(undefined)).size).toBe(0);
   });
+
+  it("lays out hundreds of singleton sessions deterministically without overlap", async () => {
+    // 220 discs exceeds PACK_TANGENT_MAX_DISCS, exercising the spiral
+    // fallback instead of the per-insertion tangent-pair enumeration.
+    const nodes = Array.from({ length: 220 }, (_, i) => ({
+      id: i + 1,
+      key: `ep:${i + 1}`,
+      kind: "episodic",
+      session_id: `s${i + 1}`,
+      salience: 0.5,
+      retrieval_count: 0,
+      embedding: null,
+    }));
+    const data = normalizeGraph({
+      omega: 0.3,
+      consolidation_edges: [],
+      nodes,
+      sr_edges: [],
+      plasticity_edges: [],
+    });
+    const pos = await computeLayout(data);
+    const pos2 = await computeLayout(data);
+    for (const n of data.nodes) {
+      expect(pos.has(n.key)).toBe(true);
+      expect(pos.get(n.key)).toEqual(pos2.get(n.key));
+    }
+    const items = data.nodes.map((n) => ({ p: pos.get(n.key)!, r: nodeRadius(n) }));
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        expect(dist(items[i].p, items[j].p)).toBeGreaterThan(
+          items[i].r + items[j].r - 1,
+        );
+      }
+    }
+  });
 });
