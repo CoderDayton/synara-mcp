@@ -265,6 +265,67 @@ async def test_plasticity_spreading_one_hop_picks_up_durable_neighbour(
     assert out[3] == 0.0
 
 
+class _EdgeCountingColl:
+    """Delegating wrapper counting ``get_edges`` calls (spreading pays one
+    per frontier node per hop)."""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        self.get_edges_calls = 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def get_edges(self, *args: object, **kwargs: object) -> object:
+        self.get_edges_calls += 1
+        return await self._inner.get_edges(*args, **kwargs)  # type: ignore[attr-defined]
+
+
+async def test_spreading_prunes_dominated_cycle_reexpansion(db: AsyncVectorDB) -> None:
+    """On a 2-cycle the frontier must empty once no value improves: two
+    expansions total (anchor, then its neighbour), not one per hop."""
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2])
+    g = _make_graph(coll, l_ltp_threshold_hits=1)
+    for now in (0.0, 1.0):
+        await g.reinforce(1, 2, score=1.0, now=now)
+        await g.reinforce(2, 1, score=1.0, now=now)
+    s12 = await g.edge_state(1, 2)
+    assert s12 is not None
+    wrapped = _EdgeCountingColl(coll)
+    g2 = _make_graph(wrapped, l_ltp_threshold_hits=1)
+    out = await g2.spreading(1, [2], hops=8, gamma=0.5)
+    # Hop 1 expands the anchor, hop 2 expands node 2; node 1's re-entry
+    # value (~0.25 * w^2) is dominated by best[1] == 1.0, so the frontier
+    # empties instead of bouncing around the cycle for all 8 hops.
+    assert wrapped.get_edges_calls == 2
+    assert out[2] == pytest.approx(0.5 * s12["weight"])
+
+
+async def test_spreading_diamond_keeps_max_product_across_hops(db: AsyncVectorDB) -> None:
+    """A stronger 2-hop path must still overwrite a weak direct edge's
+    score at the later hop — pruning only drops *dominated* re-entries."""
+    coll = db.collection("ep")
+    await _seed_docs(coll, [1, 2, 3])
+    g = _make_graph(coll, l_ltp_threshold_hits=1)
+    for now in (0.0, 1.0, 2.0):
+        await g.reinforce(1, 2, score=1.0, now=now)
+        await g.reinforce(2, 3, score=1.0, now=now)
+    await g.reinforce(1, 3, score=0.1, now=0.0)
+    s12, s23, s13 = (
+        await g.edge_state(1, 2),
+        await g.edge_state(2, 3),
+        await g.edge_state(1, 3),
+    )
+    assert s12 is not None
+    assert s23 is not None
+    assert s13 is not None
+    out = await g.spreading(1, [2, 3], hops=2, gamma=0.9)
+    expected_3 = max(0.9 * s13["weight"], 0.9 * s12["weight"] * 0.9 * s23["weight"])
+    assert out[3] == pytest.approx(expected_3)
+    assert out[2] == pytest.approx(0.9 * s12["weight"])
+
+
 async def test_plasticity_persists_across_graph_instances(db: AsyncVectorDB) -> None:
     """A second PlasticityGraph over the same collection sees stored edges."""
     coll = db.collection("ep")

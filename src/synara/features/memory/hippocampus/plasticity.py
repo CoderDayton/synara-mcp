@@ -347,10 +347,19 @@ class PlasticityGraph:
                     dst = int(e.dst_id)
                     if contrib > next_frontier.get(dst, 0.0):
                         next_frontier[dst] = contrib
+            # Label-correcting prune: only nodes whose best-known value
+            # improved re-enter the frontier. A dominated re-entry
+            # (value <= best[j]) can only emit contributions that j's
+            # earlier, larger expansion already made — max-product
+            # contributions are monotone in the frontier value — so
+            # re-expanding it costs a get_edges round-trip for nothing,
+            # and on a cycle the unpruned frontier keeps bouncing for
+            # the full hop budget.
+            frontier = {}
             for j, v in next_frontier.items():
                 if v > best.get(j, 0.0):
                     best[j] = v
-            frontier = next_frontier
+                    frontier[j] = v
             if not frontier:
                 break
         return {j: float(best.get(j, 0.0)) for j in targets if j != anchor or anchor in target_set}
