@@ -157,6 +157,46 @@ async def test_promotion_writes_leader_info_with_pid_and_url() -> None:
         await r.aclose()
 
 
+async def test_promotion_erases_stale_leader_info_before_bind() -> None:
+    """A dead leader's leader.json must vanish the moment the new winner
+    holds the lock: pollers check "file present + lock held", so a stale
+    file would validate against the winner's own flock for the whole
+    bind window and route callers to the dead URL."""
+    discovery.write_leader_info(
+        discovery.LeaderInfo(
+            pid=1,
+            mcp_url="http://127.0.0.1:1/mcp/",
+            dashboard_url="",
+            started_at=0.0,
+        )
+    )  # nobody holds the lock: the previous leader is dead
+
+    runner_fake = _FakeRunner()
+    seen_during_bind: list[discovery.LeaderInfo | None] = []
+
+    async def _recording_runner(mcp: Any, host: str, port: int, *, stateless_http: bool) -> None:
+        # Runs inside _promote, after lock acquisition, before publish.
+        seen_during_bind.append(discovery.read_leader_info())
+        await runner_fake(mcp, host, port, stateless_http=stateless_http)
+
+    picked_port = _free_loopback_port()
+    r = router.LeaderRouter(
+        settings=_fake_settings(),
+        build_server=object,
+        port_picker=lambda: picked_port,
+        server_runner=_recording_runner,
+    )
+    try:
+        url = await r.resolve_url()
+        assert url == f"http://127.0.0.1:{picked_port}/mcp/"
+        assert seen_during_bind == [None], "stale leader.json must be erased before the bind"
+        info = discovery.read_leader_info()
+        assert info is not None
+        assert info.mcp_url == url
+    finally:
+        await r.aclose()
+
+
 async def test_does_not_double_promote_when_already_leader() -> None:
     """Repeated resolve_url() calls do not start a second HTTP task."""
     runner_fake = _FakeRunner()

@@ -217,6 +217,13 @@ class LeaderRouter:
 
         # We won — promote.
         try:
+            # Erase any stale leader.json from the previous (dead) leader
+            # first: from this instant the flock is held, so a poller's
+            # "file present + lock held" liveness check would otherwise
+            # validate the dead leader's URL for the entire bind window
+            # (seconds). With the file gone, pollers keep polling until
+            # we publish our own info at the end of the promotion.
+            discovery.info_path().unlink(missing_ok=True)
             url = await self._promote(leadership)
         except BaseException:
             leadership.close()

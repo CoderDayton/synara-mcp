@@ -370,7 +370,7 @@ def _fmt_health(label: str, pre: SchemaHealth, post: SchemaHealth | None) -> lis
             f"median_ep={h.median_ep:.1f} "
             f"pure={h.pure} mixed={h.mixed} untagged={h.untagged} "
             f"max_per_topic={h.max_per_topic} "
-            f"per_topic={{{', '.join(f'{t}:{c}' for t, c in sorted(pre.per_topic.items()))}}}"
+            f"per_topic={{{', '.join(f'{t}:{c}' for t, c in sorted(h.per_topic.items()))}}}"
         )
 
     rows = [f"  pre  {line(pre)}"]

@@ -29,7 +29,10 @@ _FALLBACK_BASE = Path(tempfile.gettempdir())
 def runtime_dir() -> Path:
     """Resolve the synara coordination directory under XDG_RUNTIME_DIR."""
     raw = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(raw) if raw else _FALLBACK_BASE / f"synara-mcp-{os.getuid()}"
+    # geteuid, not getuid: must match ensure_runtime_dir's fallback parent
+    # and _validate_owner_and_perms, or a setuid launch creates one dir and
+    # opens the lock under another.
+    base = Path(raw) if raw else _FALLBACK_BASE / f"synara-mcp-{os.geteuid()}"
     return base / "synara-mcp"
 
 
