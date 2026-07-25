@@ -25,6 +25,7 @@ from simplevecdb import AsyncVectorDB, Quantization
 
 from synara import __version__
 from synara.config import Settings
+from synara.core.argument_normalization import ArgumentNormalizationMiddleware
 from synara.features import memory
 from synara.features.embedding import build_embedder
 from synara.features.memory import ToolMetrics
@@ -103,5 +104,10 @@ def build_server(settings: Settings) -> FastMCP:
         ),
         lifespan=app_lifespan,
     )
+    # Runs ahead of pydantic validation, so a near-miss call shape (a
+    # comma-joined string for a list parameter, a synonym for a declared
+    # parameter name) is rewritten instead of rejected. Server-wide and
+    # schema-driven: every feature's tools inherit it without opting in.
+    mcp.add_middleware(ArgumentNormalizationMiddleware())
     service = memory.register(mcp, db, embedder=embedder, metrics=tool_metrics)
     return mcp
