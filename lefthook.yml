@@ -24,19 +24,19 @@ pre-commit:
       run: uv run --no-sync python scripts/check_dashboard_build.py
 
     - name: dashboard-api-fresh
-      run: bun --cwd dashboard run gen:api:check
+      run: bun run --cwd dashboard gen:api:check
 
     - name: dashboard-typecheck
       glob: "dashboard/**/*.{ts,tsx}"
-      run: bun --cwd dashboard run typecheck
+      run: bun run --cwd dashboard typecheck
 
     - name: dashboard-lint
       glob: "dashboard/**/*.{ts,tsx}"
-      run: bun --cwd dashboard run lint
+      run: bun run --cwd dashboard lint
 
     - name: dashboard-test
       glob: "dashboard/**/*.{ts,tsx}"
-      run: bun --cwd dashboard run test
+      run: bun run --cwd dashboard test
 
     - name: pytest
       run: uv run --no-sync pytest -q
@@ -60,16 +60,16 @@ pre-push:
       run: uv run --no-sync python scripts/check_dashboard_build.py
 
     - name: dashboard-api-fresh
-      run: bun --cwd dashboard run gen:api:check
+      run: bun run --cwd dashboard gen:api:check
 
     - name: dashboard-typecheck
-      run: bun --cwd dashboard run typecheck
+      run: bun run --cwd dashboard typecheck
 
     - name: dashboard-lint
-      run: bun --cwd dashboard run lint
+      run: bun run --cwd dashboard lint
 
     - name: dashboard-test
-      run: bun --cwd dashboard run test
+      run: bun run --cwd dashboard test
 
     - name: pytest
       run: uv run --no-sync pytest
