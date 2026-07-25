@@ -115,6 +115,27 @@ class MemoryConfig:
     # ``content_chars`` so a caller can re-fetch with ``full=true``. The
     # tool's ``max_chars`` argument overrides this; 0 disables truncation.
     recall_snippet_chars: int = 600
+    # A recall that finds nothing returns a miss report — the dominant
+    # cause, the counters behind it, and the retry that would address it
+    # — instead of a bare empty list. Measured over three days of real
+    # transcripts, 29% of recalls returned empty, and an empty array
+    # cannot distinguish "the store is empty" from "session scoping
+    # excluded every match" from "no near neighbours", which have three
+    # different fixes. Set false to restore the bare ``[]``.
+    recall_miss_report: bool = True
+    # When ``recall_semantic_memory`` finds nothing, probe the episodic
+    # store with the same query and attach any hits under
+    # ``episodic_fallback``. The semantic store is thin relative to the
+    # episodic one (schemas only appear after consolidation), so a
+    # semantic miss frequently sits next to a perfectly good raw trace.
+    # The probe is read-only — it must not bump retrieval counts or the
+    # SR graph, because the caller asked for schemas, not episodes.
+    recall_semantic_episodic_fallback: bool = True
+    # Hit cap on that fallback probe. Deliberately smaller than the
+    # semantic ``k`` default: the fallback is a pointer to
+    # ``recall_episodes``, not a substitute for it, and it rides along
+    # with a result the caller did not ask for.
+    recall_semantic_fallback_k: int = 3
     # Power-law (Wickelgren/Wixted) decay exponent used by ``forget``:
     #   S(t) = salience * sum_k (1 + (t - t_k))^(-d)
     # Wixted & Ebbesen 1991 / 1997 fit individual episodic retention curves

@@ -23,6 +23,7 @@ from synara.core.errors import ValidationError
 
 from ..config import validate_tags
 from ..memory_types import in_session_scope
+from ..recall_report import RecallDiagnostics
 from ..service import now_seconds
 from ..timestamps import created_at as _created_at
 from ..timestamps import last_accessed as _last_accessed_ts
@@ -324,6 +325,39 @@ def _gate_merged(merged: list[_Hit], cfg: MemoryConfig) -> list[_Hit]:
     return merged
 
 
+def _filter_candidates(
+    merged: list[_Hit],
+    *,
+    scope_active: bool,
+    session_id: str | None,
+    tagset: frozenset[str] | None,
+    diagnostics: RecallDiagnostics | None,
+) -> list[_Hit]:
+    """Apply the scope and tag post-filters, counting each reason apart.
+
+    The two constraints are counted separately rather than combined into
+    one predicate because they have different fixes — "belongs to another
+    session" is answered by ``scope_session=false`` and "lacks a required
+    tag" by dropping the tag — and a miss report that cannot tell them
+    apart sends the caller down the wrong retry.
+    """
+    kept: list[_Hit] = []
+    dropped_scope = 0
+    dropped_tags = 0
+    for row in merged:
+        if scope_active and not in_session_scope(row[2], session_id=session_id):
+            dropped_scope += 1
+            continue
+        if row[4] == "episodic" and not _passes_tags(row[2], tagset):
+            dropped_tags += 1
+            continue
+        kept.append(row)
+    if diagnostics is not None:
+        diagnostics.dropped_by_scope = dropped_scope
+        diagnostics.dropped_by_tags = dropped_tags
+    return kept
+
+
 async def run(
     service: MemoryService,
     *,
@@ -334,6 +368,7 @@ async def run(
     scope_session: bool | None = None,
     tags: list[str] | None = None,
     reinforce: bool,
+    diagnostics: RecallDiagnostics | None = None,
 ) -> list[dict[str, Any]]:
     # Validate before the ``k <= 0`` short-circuit: an empty/oversized
     # query or unknown mode is always a programmer error, regardless of
@@ -402,15 +437,18 @@ async def run(
             q = completed
 
     with _trace_span("merge_hits"):
-        merged = await _merge_hits(service, q, mode=mode, k=fetch_k)
+        merged = await _merge_hits(service, q, mode=mode, k=fetch_k, diagnostics=diagnostics)
+    if diagnostics is not None:
+        diagnostics.note_candidates([row[3] for row in merged])
     if filtering:
         ep_before = sum(1 for row in merged if row[4] == "episodic")
-        merged = [
-            row
-            for row in merged
-            if (not scope_active or in_session_scope(row[2], session_id=session_id))
-            and (row[4] != "episodic" or _passes_tags(row[2], tagset))
-        ]
+        merged = _filter_candidates(
+            merged,
+            scope_active=scope_active,
+            session_id=session_id,
+            tagset=tagset,
+            diagnostics=diagnostics,
+        )
         _log_scope_cap(
             fetch_k=fetch_k,
             ep_before=ep_before,
@@ -430,7 +468,10 @@ async def run(
     # sharply-peaked query returns only its real hits instead of padding
     # to ``k`` with noise (per-source, post-rank — see ``elbow_cutoff``).
     with _trace_span("relevance_gate"):
+        before_gate = len(merged)
         merged = _gate_merged(merged, service.config)
+        if diagnostics is not None:
+            diagnostics.dropped_by_gate = before_gate - len(merged)
 
     t_now = now_seconds()
     # Cold-schema GC liveness: hybrid recall is the primary consumer of
@@ -525,6 +566,7 @@ async def run_semantic(
     kind: str | None = None,
     session_id: str | None = None,
     scope_session: bool | None = None,
+    diagnostics: RecallDiagnostics | None = None,
 ) -> list[dict[str, Any]]:
     """Semantic-only recall: cosine over the semantic store with the same
     validation, scope filter, and relevance gate as the hybrid path.
@@ -547,7 +589,10 @@ async def run_semantic(
     )
     if k <= 0:
         return []
-    if await service.semantic.count() == 0:
+    stored = await service.semantic.count()
+    if diagnostics is not None:
+        diagnostics.stored = stored
+    if stored == 0:
         return []
     await service._ensure_index_ready()
     q = await service.query_arg(query)
@@ -567,12 +612,21 @@ async def run_semantic(
     fetch_k = max(k * 4, 32) if wide else k
     hits = await service.semantic.similarity_search(q, k=fetch_k)
     t_now = now_seconds()
+    if diagnostics is not None:
+        diagnostics.note_candidates([float(dist) for _doc, dist in hits])
     out: list[dict[str, Any]] = []
     for doc, dist in hits:
         md = dict(doc.metadata)
-        if (kind is not None and str(md.get("kind", "")) != kind) or (
-            scope_active and not in_session_scope(md, session_id=session_id)
-        ):
+        # Split per-reason (rather than the single combined guard this
+        # replaces) so a miss report can name which filter emptied the
+        # result — kind and scope have different retries.
+        if kind is not None and str(md.get("kind", "")) != kind:
+            if diagnostics is not None:
+                diagnostics.dropped_by_kind += 1
+            continue
+        if scope_active and not in_session_scope(md, session_id=session_id):
+            if diagnostics is not None:
+                diagnostics.dropped_by_scope += 1
             continue
         out.append(
             {
@@ -588,7 +642,12 @@ async def run_semantic(
     # Adaptive relevance gate over the semantic candidates, then cap to
     # k. Drops the low-relevance plateau so a weak query returns few (or
     # no) schemas instead of k tenuous ones (see ``gate_relevance``).
-    out = gate_relevance(out, cfg)[:k]
+    gated = gate_relevance(out, cfg)
+    if diagnostics is not None:
+        # Measured before the ``[:k]`` cap: truncating a full result set
+        # to k is not a relevance drop and must not read as one.
+        diagnostics.dropped_by_gate = len(out) - len(gated)
+    out = gated[:k]
     # Bump ``last_accessed`` on the schemas we actually returned so the
     # cold-schema eviction path (forget.run with
     # forget_schema_unused_seconds > 0) treats a recently-recalled
@@ -879,6 +938,7 @@ async def _merge_hits(
     *,
     mode: str,
     k: int,
+    diagnostics: RecallDiagnostics | None = None,
 ) -> list[_Hit]:
     want_sem = mode in {"auto", "semantic", "hybrid"}
     want_ep = mode in {"auto", "episodic", "hybrid"}
@@ -887,6 +947,11 @@ async def _merge_hits(
         service.semantic.count() if want_sem else _zero(),
         service.episodic.count() if want_ep else _zero(),
     )
+    # These counts already guard the fetch below, so recording them for
+    # miss diagnostics costs nothing extra — and they are mode-aware,
+    # which a whole-database count would not be.
+    if diagnostics is not None:
+        diagnostics.stored = sem_count + ep_count
     sem_hits_co = (
         service.semantic.similarity_search(q, k=k) if want_sem and sem_count > 0 else _empty_hits()
     )

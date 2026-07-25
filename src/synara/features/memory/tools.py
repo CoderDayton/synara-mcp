@@ -35,6 +35,7 @@ from synara.core.errors import ValidationError
 from synara.features.embedding import Embedder
 
 from .metrics import ToolMetrics
+from .recall_report import RecallDiagnostics, RecallRequest, build_miss_report
 from .service import MemoryService
 
 _R = TypeVar("_R")
@@ -178,6 +179,48 @@ def _project_content_only(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+async def _episodic_fallback(
+    service: MemoryService,
+    *,
+    query: str,
+    k: int,
+    session_id: str | None,
+    scope_session: bool | None,
+    content_only: bool,
+) -> list[dict[str, Any]]:
+    """Probe the episodic store after a semantic recall found nothing.
+
+    The semantic store only fills once episodes consolidate, so early in
+    a project a semantic miss routinely sits beside a perfectly relevant
+    raw trace. Rather than report "nothing found" and let the caller
+    conclude memory is empty, surface those traces as leads.
+
+    Uses the non-reinforcing path deliberately: the caller asked for
+    distilled facts, so these hits must not bump retrieval counts or
+    rewrite the successor graph as though episodes had been requested.
+    Snippet truncation always applies — a fallback rides along with a
+    result the caller did not ask for and must not dominate its budget.
+    """
+    cfg = service.config
+    if not cfg.recall_semantic_episodic_fallback or cfg.recall_semantic_fallback_k <= 0:
+        return []
+    if k <= 0:
+        # The caller asked for no results. Volunteering fallback traces
+        # would override that, not help it.
+        return []
+    hits = await service.recall_readonly(
+        query=query,
+        session_id=session_id,
+        k=cfg.recall_semantic_fallback_k,
+        mode="episodic",
+        scope_session=scope_session,
+    )
+    if not hits:
+        return []
+    hits = _apply_snippet(hits, max_chars=cfg.recall_snippet_chars, full=False)
+    return _project_content_only(hits) if content_only else hits
+
+
 def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per MCP tool
     mcp: FastMCP,
     service: MemoryService,
@@ -287,6 +330,12 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "is reduced to {id, kind, content} — the metadata, distance, "
             "source, and recency fields are dropped for a minimal payload "
             "(snippet truncation still applies to content).\n"
+            "Returns a JSON array of hits. On zero hits it returns an "
+            "OBJECT instead — {results: [], miss: {reason, scope, "
+            "searched, suggestions}} — naming what emptied the result "
+            "(empty store / session scope / tags / relevance gate) and "
+            "the retry that would fix it. Read miss.reason before "
+            "concluding nothing is stored.\n"
             "Every hit carries created_at/updated_at (unix seconds) and "
             "age_days/updated_age_days so you can tell old memories (and "
             "stale facts) from new. Episodic hits additionally carry "
@@ -309,13 +358,15 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         max_chars: int | None = None,
         full: bool = False,
         content_only: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         await _ensure_warmed(embedder, ctx)
         await ctx.debug(
             f"recall_episodes: session_id={session_id!r} k={k} mode={mode!r} "
             f"scope_session={scope_session} tags={tags} max_chars={max_chars} "
             f"full={full} content_only={content_only}"
         )
+        report_misses = service.config.recall_miss_report
+        diagnostics = RecallDiagnostics() if report_misses else None
         results = await service.recall(
             query=query,
             session_id=session_id,
@@ -323,7 +374,21 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             mode=mode,
             scope_session=scope_session,
             tags=tags,
+            diagnostics=diagnostics,
         )
+        if not results and diagnostics is not None:
+            await ctx.info("recall returned 0 hit(s); returning miss report")
+            return build_miss_report(
+                diagnostics,
+                RecallRequest(
+                    query=query,
+                    k=k,
+                    mode=mode,
+                    session_id=session_id,
+                    scope_session=scope_session,
+                    tags=tags,
+                ),
+            )
         limit = service.config.recall_snippet_chars if max_chars is None else max_chars
         results = _apply_snippet(results, max_chars=limit, full=full)
         n_trunc = sum(1 for h in results if h.get("truncated"))
@@ -589,7 +654,15 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
             "content_only: opt-in bool, default false. When true, each hit "
             "is reduced to {id, kind, content}, dropping distance/metadata.\n"
             "Each hit carries created_at/updated_at (unix seconds) and "
-            "age_days/updated_age_days so stale facts are visible."
+            "age_days/updated_age_days so stale facts are visible.\n"
+            "Returns a JSON array of hits. On zero hits it returns an "
+            "OBJECT instead — {results: [], miss: {reason, scope, "
+            "searched, suggestions}} — naming what emptied the result. "
+            "The semantic store only fills once episodes consolidate, so "
+            "a miss also probes the episodic store and attaches any raw "
+            "traces under episodic_fallback: those are UNDISTILLED "
+            "traces, not confirmed facts — treat them as leads and call "
+            "recall_episodes for the full set."
         ),
     )
     @_instrument(metrics, "recall_semantic_memory")
@@ -602,16 +675,47 @@ def register_tools(  # noqa: PLR0915 -- flat aggregator: one nested handler per 
         session_id: str | None = None,
         scope_session: bool | None = None,
         content_only: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         await _ensure_warmed(embedder, ctx)
         await ctx.debug(
             f"recall_semantic_memory: k={k} kind={kind!r} "
             f"session_id={session_id!r} scope_session={scope_session} "
             f"content_only={content_only}"
         )
+        diagnostics = RecallDiagnostics() if service.config.recall_miss_report else None
         results = await service.recall_semantic_memory(
-            query=query, k=k, kind=kind, session_id=session_id, scope_session=scope_session
+            query=query,
+            k=k,
+            kind=kind,
+            session_id=session_id,
+            scope_session=scope_session,
+            diagnostics=diagnostics,
         )
+        if not results and diagnostics is not None:
+            fallback = await _episodic_fallback(
+                service,
+                query=query,
+                k=k,
+                session_id=session_id,
+                scope_session=scope_session,
+                content_only=content_only,
+            )
+            await ctx.info(
+                f"semantic recall returned 0 hit(s); miss report with "
+                f"{len(fallback)} episodic fallback hit(s)"
+            )
+            return build_miss_report(
+                diagnostics,
+                RecallRequest(
+                    query=query,
+                    k=k,
+                    session_id=session_id,
+                    scope_session=scope_session,
+                    kind=kind,
+                ),
+                semantic_only=True,
+                episodic_fallback=fallback,
+            )
         await ctx.info(f"semantic recall returned {len(results)} hit(s)")
         if content_only:
             results = _project_content_only(results)

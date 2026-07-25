@@ -241,12 +241,16 @@ async def test_semantic_store_and_recall_tools(
         )
         assert isinstance(hit.data, list)
         assert any("ruff" in (h.get("content") or "") for h in hit.data)
-        # kind filter that excludes the only row -> empty
+        # kind filter that excludes the only row -> miss report naming
+        # the kind filter as the cause (full envelope is pinned in
+        # test_recall_miss_report.py).
         miss = await client.call_tool(
             "recall_semantic_memory",
             {"query": "prefer ruff over flake8", "kind": "fact"},
         )
-        assert miss.data == []
+        assert miss.data["results"] == []
+        assert miss.data["miss"]["searched"]["dropped_by_kind"] == 1
+        assert "kind filter" in miss.data["miss"]["reason"]
 
 
 async def test_memory_stats_tool(

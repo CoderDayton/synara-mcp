@@ -59,6 +59,7 @@ from .memory_types import (
     resolve_scope,
 )
 from .port import HygieneCounters
+from .recall_report import RecallDiagnostics
 from .tracing import start_request as _start_request
 
 _LOG = logging.getLogger(__name__)
@@ -971,6 +972,7 @@ class MemoryService:
         mode: str = "auto",
         scope_session: bool | None = None,
         tags: list[str] | None = None,
+        diagnostics: RecallDiagnostics | None = None,
     ) -> list[dict[str, Any]]:
         return await self._recall(
             query=query,
@@ -980,6 +982,7 @@ class MemoryService:
             scope_session=scope_session,
             tags=tags,
             reinforce=True,
+            diagnostics=diagnostics,
         )
 
     async def recall_readonly(
@@ -1021,6 +1024,7 @@ class MemoryService:
         reinforce: bool,
         scope_session: bool | None = None,
         tags: list[str] | None = None,
+        diagnostics: RecallDiagnostics | None = None,
     ) -> list[dict[str, Any]]:
         await self._ensure_sr_loaded()
         await self._ensure_index_ready()
@@ -1038,6 +1042,7 @@ class MemoryService:
                     scope_session=scope_session,
                     tags=tags,
                     reinforce=reinforce,
+                    diagnostics=diagnostics,
                 )
             if self.config.tracing_enabled:
                 self.last_trace = _trace_ctx.as_dict()
@@ -1227,6 +1232,7 @@ class MemoryService:
         kind: str | None = None,
         session_id: str | None = None,
         scope_session: bool | None = None,
+        diagnostics: RecallDiagnostics | None = None,
     ) -> list[dict[str, Any]]:
         """Semantic-only recall; thin delegate like every other operation.
 
@@ -1242,6 +1248,7 @@ class MemoryService:
             kind=kind,
             session_id=session_id,
             scope_session=scope_session,
+            diagnostics=diagnostics,
         )
 
 
