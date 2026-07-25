@@ -35,3 +35,10 @@ updates:
       dashboard:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # TypeScript 7 (the native port) is ahead of its linter: every
+      # released typescript-eslint still declares `typescript <6.1.0` as
+      # its peer, and `eslint .` hard-crashes inside typescript-estree
+      # under TS 7. Lift this once typescript-eslint ships TS 7 support.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
