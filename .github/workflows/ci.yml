@@ -215,3 +215,10 @@ jobs:
         with:
           fail-on-severity: high
           comment-summary-in-pr: on-failure
+          # GHSA-qwww-vcr4-c8h2 (react-router) has no fix inside the 7.x
+          # line — it is first patched in 8.3.0, which is a major
+          # migration off react-router-dom. The advisory is an RSC-mode
+          # CSRF bypass and the dashboard is a plain SPA that never runs
+          # RSC, so it is not reachable here. Every other advisory still
+          # gates; remove this line with the v8 migration.
+          allow-ghsas: GHSA-qwww-vcr4-c8h2
