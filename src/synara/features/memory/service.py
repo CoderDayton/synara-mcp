@@ -41,6 +41,7 @@ from typing import Any, cast
 from simplevecdb import AsyncVectorDB
 
 from synara.core.errors import ValidationError
+from synara.storage import STORE_EMBEDDINGS
 
 from .basal_ganglia.events import EventBus as _EventBus
 from .basal_ganglia.events import EventKind as _EventKind
@@ -48,6 +49,7 @@ from .basal_ganglia.events import InteractionEvent as _Event
 from .basal_ganglia.events import TriggerPolicy as _Policy
 from .basal_ganglia.events import now_seconds as _now_real
 from .config import MemoryConfig, validate_tags
+from .hippocampus.background import BackgroundReference as _BackgroundReference
 from .hippocampus.plasticity import PlasticityGraph as _Plasticity
 from .hippocampus.separate import DGProjector as _DGProjector
 from .hippocampus.successor import SuccessorRepresentation as _SR
@@ -130,6 +132,7 @@ class MemoryService:
         *,
         embed_fn: EmbedFn | None = None,
         embed_batch_fn: EmbedBatchFn | None = None,
+        embed_asymmetric: bool = False,
     ) -> None:
         self.config = config or MemoryConfig()
         self.db = db
@@ -155,10 +158,11 @@ class MemoryService:
                 schema_candidate_collection=self.config.schema_candidate_collection,
             )
         )
-        # store_embeddings=True keeps vectors at hand for cluster()/rebuild
-        # even after process restarts.
+        # STORE_EMBEDDINGS keeps vectors at hand for cluster()/rebuild even
+        # after process restarts. It lives in synara.storage because the
+        # offline scripts must agree with us on it.
         self._collections: dict[MemoryType, Any] = {
-            spec.type: db.collection(spec.collection, store_embeddings=True)
+            spec.type: db.collection(spec.collection, store_embeddings=STORE_EMBEDDINGS)
             for spec in self.memory_types
         }
         # Convenience handles for the two legacy kinds — preserves the
@@ -169,6 +173,10 @@ class MemoryService:
         # tuning consolidate_min_recurrence at runtime doesn't require
         # a schema migration. Present unconditionally on the service.
         self.schema_candidates = self._collections[MemoryType.SCHEMA_CANDIDATE]
+        # Background "unrelated" distance per collection, backing the
+        # recall relevance ceiling. Samples lazily on first use, so a
+        # service that never recalls never pays for it.
+        self.background = _BackgroundReference(self.config)
         self._embed = _normalise_embed_fn(embed_fn) if embed_fn is not None else None
         # Optional batch hook. Only consulted by ``vectorise`` (which
         # always has multiple texts available); ``query_arg`` and the
@@ -182,6 +190,12 @@ class MemoryService:
                 "call the single-text embedder",
             )
         self._embed_batch: EmbedBatchFn | None = embed_batch_fn
+        # Does the embedder encode a query differently from a document
+        # (task prefixes)? Only consumers that mix a query vector with
+        # stored vectors care -- see ``hippocampus/recall._document_space``
+        # -- and they use this to skip a redundant second encode on the
+        # symmetric models where both sides are the same vector.
+        self.embed_asymmetric = embed_asymmetric
         # Lazily constructed once we observe the embedding dimension.
         self._dg: _DGProjector | None = None
         # First-class embedding dim: explicit override beats the lazy

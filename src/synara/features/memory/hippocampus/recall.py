@@ -144,59 +144,60 @@ def elbow_cutoff(
     return ds[best_i - 1]
 
 
-def _quantile(sorted_vals: Sequence[float], q: float) -> float:
-    """Linear-interpolated quantile of an ascending-sorted, non-empty seq."""
-    last = len(sorted_vals) - 1
-    if last <= 0:
-        return sorted_vals[0]
-    pos = q * last
-    lo = math.floor(pos)
-    hi = min(lo + 1, last)
-    frac = pos - lo
-    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
-
-
 def dynamic_ceiling(
     distances: Sequence[float],
     *,
+    reference: float,
     alpha: float = 0.8,
-    quantile: float = 0.9,
     min_candidates: int = 4,
     standout_gap: float = 0.0,
 ) -> float | None:
     """Adaptive *absolute* relevance ceiling, calibrated to the embedding
-    model from the candidate distance distribution — no hardcoded cutoff.
+    model rather than to a hardcoded cutoff.
 
-    The far end of a recall's over-fetched candidates approximates this
-    model's "unrelated" distance. We take the ``quantile`` (default p90) of
-    the per-source distances as that reference ``d_ref`` and keep only hits
-    within ``alpha`` of it (``distance <= alpha * d_ref``). Because d_ref
-    scales with the embedder, one ``alpha`` yields ~0.7 on a normalised
-    sentence-transformer and ~0.8 on a hash stub, with no per-model retuning
-    and no model-specific footgun.
+    ``reference`` is this model's "unrelated" distance for this query —
+    the mean distance to a uniform random sample of the collection, from
+    :mod:`.background`. Hits within ``alpha`` of it are kept
+    (``distance <= alpha * reference``). Because the reference is measured
+    per model and per query, one ``alpha`` transfers across embedders
+    with no retuning and no model-specific footgun.
+
+    The reference must come from documents the query did *not* select.
+    An earlier version took it from the candidates' own p90, which fails:
+    the candidates are the corpus's nearest neighbours, so their p90 is
+    still a good match, the reference lands far too low, and on a model
+    with compressed distances the ceiling drops below even the best hit
+    and every query returns nothing. See :mod:`.background`.
 
     There is no floor by default: when even the nearest hit exceeds
-    ``alpha * d_ref`` (``d_min > alpha * d_ref``), the candidate cloud is
-    packed at the far end with no near-field structure — the off-topic
-    signature — and the query returns empty rather than its least-bad hit.
-    The one exception is a *standout*: when ``standout_gap > 0`` and the
-    nearest hit is separated from the next by at least that gap, it is a real
-    match in an otherwise-far cloud (a relevance cliff right after it), not the
-    least-bad of a uniform cloud, so it is floored back in and kept even above
-    the ceiling. Returns ``None`` (no gate) below ``min_candidates``, where the
-    sample is too small to estimate a reference — which also spares small
-    synthetic corpora from emptying.
+    ``alpha * reference``, nothing in the collection is close to this
+    query — the off-topic signature — and the query returns empty rather
+    than its least-bad hit. The one exception is a *standout*: when
+    ``standout_gap > 0`` and the nearest hit is separated from the next by
+    at least that gap, it is a real match in an otherwise-far cloud (a
+    relevance cliff right after it), not the least-bad of a uniform
+    cloud, so it is floored back in and kept even above the ceiling.
+    Returns ``None`` (no gate) below ``min_candidates``, or for a
+    non-positive/non-finite reference — which also spares small synthetic
+    corpora from emptying.
     """
+    if not math.isfinite(reference) or reference <= 0.0:
+        return None
     finite = sorted(d for d in distances if math.isfinite(d))
     if len(finite) < min_candidates:
         return None
-    ceiling = alpha * _quantile(finite, quantile)
+    ceiling = alpha * reference
     if standout_gap > 0.0 and len(finite) > 1 and finite[1] - finite[0] >= standout_gap:
         return max(ceiling, finite[0])
     return ceiling
 
 
-def gate_relevance(hits: list[dict[str, Any]], cfg: MemoryConfig) -> list[dict[str, Any]]:
+def gate_relevance(
+    hits: list[dict[str, Any]],
+    cfg: MemoryConfig,
+    *,
+    reference: float | None = None,
+) -> list[dict[str, Any]]:
     """Apply the dynamic relevance ceiling, the adaptive elbow gate, and the
     gap cut to a single-source list of recall-hit dicts (each carrying a
     ``distance``). The ceiling drops hits far on the model's own scale; the
@@ -204,14 +205,18 @@ def gate_relevance(hits: list[dict[str, Any]], cfg: MemoryConfig) -> list[dict[s
     large jump. No-op when every knob is off or none finds a defensible cut.
     Used by the semantic-only recall path; the hybrid path uses
     :func:`_gate_merged`.
+
+    ``reference`` is the background "unrelated" distance for this query
+    (see :mod:`.background`). ``None`` skips the absolute ceiling — the
+    relative elbow and gap stages are scale-free and still apply.
     """
     if not cfg.recall_relevance_gate:
         return hits
-    if cfg.recall_max_distance_alpha > 0:
+    if cfg.recall_max_distance_alpha > 0 and reference is not None:
         cut = dynamic_ceiling(
             [h["distance"] for h in hits],
+            reference=reference,
             alpha=cfg.recall_max_distance_alpha,
-            quantile=cfg.recall_max_distance_quantile,
             min_candidates=cfg.recall_max_distance_min_candidates,
             standout_gap=cfg.recall_max_distance_standout_gap,
         )
@@ -260,6 +265,33 @@ def _apply_per_source(
     ]
 
 
+def _apply_per_source_ref(
+    merged: list[_Hit],
+    references: dict[str, float],
+    cutoff_fn: Callable[[list[float], float], float | None],
+) -> list[_Hit]:
+    """:func:`_apply_per_source`, but the cutoff also needs that source's
+    background reference. Sources absent from ``references`` are left
+    untouched rather than gated against another source's scale.
+    """
+    by_source: dict[str, list[float]] = {}
+    for row in merged:
+        if math.isfinite(row[3]) and row[4] in references:
+            by_source.setdefault(row[4], []).append(row[3])
+    cutoffs: dict[str, float] = {}
+    for src, dists in by_source.items():
+        c = cutoff_fn(dists, references[src])
+        if c is not None:
+            cutoffs[src] = c
+    if not cutoffs:
+        return merged
+    return [
+        row
+        for row in merged
+        if row[4] not in cutoffs or (math.isfinite(row[3]) and row[3] <= cutoffs[row[4]] + 1e-9)
+    ]
+
+
 def gap_cutoff(
     distances: Sequence[float], *, min_gap: float, min_candidates: int = 2
 ) -> float | None:
@@ -290,22 +322,34 @@ def _apply_gap_cut(merged: list[_Hit], min_gap: float) -> list[_Hit]:
     return [row for row in merged if not math.isfinite(row[3]) or row[3] <= cut + 1e-9]
 
 
-def _gate_merged(merged: list[_Hit], cfg: MemoryConfig) -> list[_Hit]:
+def _gate_merged(
+    merged: list[_Hit],
+    cfg: MemoryConfig,
+    *,
+    references: dict[str, float] | None = None,
+) -> list[_Hit]:
     """Apply the dynamic relevance ceiling, the per-source elbow gate, and a
     final cross-source gap cut to the merged hybrid rows — each a no-op when
     its knob is off. The ceiling drops far hits on the model's own scale, the
     elbow trims each source's noise plateau, and the gap cut ends the pooled
     ranking at the first large head-vs-tail cliff.
+
+    ``references`` maps source name -> that collection's background
+    "unrelated" distance for this query. A source with no entry keeps its
+    hits through the ceiling stage: the episodic and semantic collections
+    have genuinely different backgrounds, so one must never stand in for
+    the other.
     """
     if not cfg.recall_relevance_gate:
         return merged
-    if cfg.recall_max_distance_alpha > 0:
-        merged = _apply_per_source(
+    if cfg.recall_max_distance_alpha > 0 and references:
+        merged = _apply_per_source_ref(
             merged,
-            lambda dists: dynamic_ceiling(
+            references,
+            lambda dists, ref: dynamic_ceiling(
                 dists,
+                reference=ref,
                 alpha=cfg.recall_max_distance_alpha,
-                quantile=cfg.recall_max_distance_quantile,
                 min_candidates=cfg.recall_max_distance_min_candidates,
                 standout_gap=cfg.recall_max_distance_standout_gap,
             ),
@@ -323,6 +367,34 @@ def _gate_merged(merged: list[_Hit], cfg: MemoryConfig) -> list[_Hit]:
     if cfg.recall_gap_cut > 0:
         merged = _apply_gap_cut(merged, cfg.recall_gap_cut)
     return merged
+
+
+_SOURCE_COLLECTIONS = {"episodic": "episodic", "semantic": "semantic"}
+
+
+async def _background_references(
+    service: MemoryService, query: object, merged: list[_Hit]
+) -> dict[str, float]:
+    """Background "unrelated" distance per source present in ``merged``.
+
+    Computed only for sources that actually contributed rows, so a
+    semantic-empty recall does not pay to characterise the semantic
+    collection. Sources whose reference cannot be established are simply
+    absent, which ``_gate_merged`` reads as "do not apply the ceiling
+    here" — never as zero.
+    """
+    cfg = service.config
+    if not cfg.recall_relevance_gate or cfg.recall_max_distance_alpha <= 0:
+        return {}
+    present = {row[4] for row in merged}
+    references: dict[str, float] = {}
+    for source, attr in _SOURCE_COLLECTIONS.items():
+        if source not in present:
+            continue
+        value = await service.background.reference(getattr(service, attr), query)
+        if value is not None:
+            references[source] = value
+    return references
 
 
 def _filter_candidates(
@@ -428,6 +500,10 @@ async def run(
                 iters=iters,
                 beta=service.config.recall_completion_beta,
                 eta0=service.config.recall_completion_anchor,
+                # CA3 recombines *stored* vectors into the query; the
+                # document-space encoding of the same text is what keeps
+                # that arithmetic inside one space.
+                q0_document=await _document_space(service, query, q),
             )
         # CA3 can collapse to an all-zero query (anchor/pattern
         # cancellation). A zero vector is a degenerate search input
@@ -469,7 +545,9 @@ async def run(
     # to ``k`` with noise (per-source, post-rank — see ``elbow_cutoff``).
     with _trace_span("relevance_gate"):
         before_gate = len(merged)
-        merged = _gate_merged(merged, service.config)
+        merged = _gate_merged(
+            merged, service.config, references=await _background_references(service, q, merged)
+        )
         if diagnostics is not None:
             diagnostics.dropped_by_gate = before_gate - len(merged)
 
@@ -499,6 +577,7 @@ async def run(
         out=out,
         observed_episodic=observed_episodic,
         session_id=session_id,
+        query=query,
         q=q,
         now=t_now,
     )
@@ -642,7 +721,15 @@ async def run_semantic(
     # Adaptive relevance gate over the semantic candidates, then cap to
     # k. Drops the low-relevance plateau so a weak query returns few (or
     # no) schemas instead of k tenuous ones (see ``gate_relevance``).
-    gated = gate_relevance(out, cfg)
+    # Only pay for the background sample when the ceiling will actually
+    # consume it: the first call on a cold cache reads every row id in
+    # the collection, which is pure waste with the gate switched off.
+    reference = (
+        await service.background.reference(service.semantic, q)
+        if cfg.recall_relevance_gate and cfg.recall_max_distance_alpha > 0
+        else None
+    )
+    gated = gate_relevance(out, cfg, reference=reference)
     if diagnostics is not None:
         # Measured before the ``[:k]`` cap: truncating a full result set
         # to k is not a relevance drop and must not read as one.
@@ -773,12 +860,55 @@ def _collapse_groups(merged: list[_Hit]) -> list[_Hit]:
     return kept
 
 
+async def _document_space(
+    service: MemoryService, text: str, q: str | list[float]
+) -> list[float] | None:
+    """``text`` encoded the way *stored* vectors are.
+
+    ``query_arg`` produces the *search-key* encoding. Under a model with
+    asymmetric task prefixes (nomic's ``search_query:`` vs
+    ``search_document:``, e5's ``query:`` vs ``passage:``) that vector
+    sits in a measurably different region from the stored ones -- ~0.10
+    cosine apart for the same sentence. That is exactly what the
+    asymmetry is for and it costs a plain search nothing. But wherever
+    the query vector meets stored vectors as a *peer* rather than as a
+    search key -- CA3's recombination step, the reconsolidation cue --
+    the two are added together, and mixing the spaces there lands the
+    result on neither manifold.
+
+    Returns ``q`` unchanged when the embedder encodes both sides alike,
+    so a symmetric model never pays for a second encode. ``None`` only
+    when there is no query vector at all (no embedder wired, simplevecdb
+    embeds server-side); callers then have nothing to correct.
+    """
+    if not isinstance(q, list):
+        return None
+    if not service.embed_asymmetric:
+        return q
+    try:
+        vectors = await service.vectorise([text])
+    except ValidationError:
+        # The two encoders disagree about the model (a width drift is
+        # the loud case). That is a misconfiguration to fix, but it must
+        # not take recall itself down: fall back to the query vector,
+        # which is what this code did before the correction existed.
+        _LOG.warning("document-space encode failed; recall falls back to the query vector")
+        return q
+    if not vectors:
+        return q
+    candidate = vectors[0]
+    # Same reasoning for a quiet width disagreement — one the dimension
+    # guard did not catch because it had nothing cached to compare to.
+    return candidate if len(candidate) == len(q) else q
+
+
 async def _reinforce_recall_set(
     service: MemoryService,
     *,
     out: list[dict[str, Any]],
     observed_episodic: list[tuple[str, int]],
     session_id: str | None,
+    query: str,
     q: str | list[float],
     now: float,
 ) -> None:
@@ -831,7 +961,12 @@ async def _reinforce_recall_set(
     # and pull the stored vector toward the cue (buffered; flushed to
     # HNSW by the next consolidate pass).
     if service.config.reconsolidation_alpha > 0.0 and anchor_row is not None:
-        cue = q if isinstance(q, list) else None
+        # The cue is blended *into a stored vector*, so it has to be on
+        # the stored side of the task-prefix split -- see
+        # ``_document_space``. Resolved here rather than up in ``run`` so
+        # a recall that never reaches the drift path pays no extra
+        # encode.
+        cue = await _document_space(service, query, q)
         await _accrue_drift(service, anchor_row, t=now, cue=cue)
 
 

@@ -20,7 +20,7 @@
 
 **Give your MCP agent a memory that remembers across sessions — and forgets like a brain.**
 
-Synara MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server that stores episodic and semantic memories in a local vector store, embeds text via a local sentence-transformer or any OpenAI-compatible endpoint, and layers a successor-representation graph on top so recall is ranked by relational structure, not just cosine similarity. Ten tools (`store_episode`, `recall_episodes`, `get_episode`, `remove_episode`, `consolidate_episodes`, `forget_episodes`, `reflect_session`, `store_semantic_memory`, `recall_semantic_memory`, `memory_stats`) and an ambient-recall resource expose it to any MCP-capable agent.
+Synara MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server that stores episodic and semantic memories in a local vector store, embeds text via a local ONNX model or any OpenAI-compatible endpoint, and layers a successor-representation graph on top so recall is ranked by relational structure, not just cosine similarity. Ten tools (`store_episode`, `recall_episodes`, `get_episode`, `remove_episode`, `consolidate_episodes`, `forget_episodes`, `reflect_session`, `store_semantic_memory`, `recall_semantic_memory`, `memory_stats`) and an ambient-recall resource expose it to any MCP-capable agent.
 
 ---
 
@@ -30,7 +30,7 @@ Synara MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server
 
 **2. Memory maintains itself.** Consolidation, forgetting, and replay run automatically in the background. Salient, recent, and frequently-retrieved memories survive; noise fades. You never schedule cleanup.
 
-**3. Storage stays local and swappable.** Memories live in a single local file; embedding runs on-device by default, or against any OpenAI-compatible base URL (Ollama, OpenAI, simplevecdb-server) by setting one env var.
+**3. Storage stays local and swappable.** Memories live in a single local file; embedding runs on-device by default, or against any OpenAI-compatible base URL (Ollama, OpenAI, simplevecdb-server) by setting one env var. The on-device path is ONNX (`embed-anything`), so a default install is ~590 MB with no PyTorch, no CUDA payload, and no model code executed from a Hugging Face repo at load time.
 
 ---
 
@@ -109,7 +109,7 @@ Every variable is optional and read from the process environment at startup — 
 | `SYNARA_TRANSPORT` | `stdio` | `stdio` \| `http` \| `sse` \| `streamable-http` |
 | `SYNARA_LOG_LEVEL` | `INFO` | Log verbosity |
 | `SYNARA_DB_PATH` | `$XDG_DATA_HOME/synara-mcp/synara.db` | Store path; `:memory:` for ephemeral |
-| `SYNARA_EMBEDDING_MODEL` | local HF model | Embedding model id |
+| `SYNARA_EMBEDDING_MODEL` | `nomic-embed-text-v1` | Built-in ONNX name or HF repo id (local), or remote model name. Changing it requires re-embedding the store — see [docs/env_variables.md](docs/env_variables.md#synara_embedding_model) |
 | `SYNARA_EMBEDDING_URL` | _(unset)_ | Set to an OpenAI-compatible base URL for remote embeddings |
 | `SYNARA_EMBEDDING_API_KEY` | _(unset)_ | Bearer token for that endpoint; read from the environment, never logged |
 | `SYNARA_DASHBOARD` | `false` | Enable the parallel web admin console (`[dashboard]` extra) |

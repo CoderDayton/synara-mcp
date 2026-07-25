@@ -251,37 +251,53 @@ def test_elbow_cutoff_sensitivity_gates_shallow_knee() -> None:
 
 
 def test_dynamic_ceiling_keeps_standout_near_hit() -> None:
-    # One near hit then a far cluster (the live episodic "timestamp fields"
-    # case): p90 ~0.728, alpha 0.8 -> ceiling ~0.582, so only the near hit
-    # survives.
+    # One near hit then a far cluster. The reference is the model's
+    # "unrelated" distance measured against a random corpus sample, so
+    # alpha 0.8 of a 0.85 reference keeps only the near hit.
     dists = [0.388, 0.706, 0.726, 0.729]
-    cut = recall_mod.dynamic_ceiling(dists)
+    cut = recall_mod.dynamic_ceiling(dists, reference=0.85)
     assert cut is not None
     assert [d for d in dists if d <= cut + 1e-9] == [0.388]
 
 
 def test_dynamic_ceiling_all_weak_empties() -> None:
     # A uniformly mediocre cluster (the live "weather on mars" case): every
-    # candidate sits beyond alpha * p90, so there is no near-field hit to
-    # keep. With no floor, the off-topic query empties instead of returning
-    # its least-bad hit.
+    # candidate sits beyond alpha * reference, so there is no near-field hit
+    # to keep. With no floor, the off-topic query empties instead of
+    # returning its least-bad hit.
     dists = [0.771, 0.778, 0.781, 0.793, 0.809, 0.810, 0.824, 0.841]
-    cut = recall_mod.dynamic_ceiling(dists)
+    cut = recall_mod.dynamic_ceiling(dists, reference=0.9)
     assert cut is not None
     assert [d for d in dists if d <= cut + 1e-9] == []
 
 
+def test_dynamic_ceiling_survives_compressed_distance_scale() -> None:
+    # Regression: nomic-embed-text-v1 packs a 661-episode corpus into
+    # 0.25-0.60, and the old reference (the candidates' own p90) sat at
+    # ~0.55 -> ceiling ~0.44, *below* several true matches, so every query
+    # returned nothing. Against the background reference the same hits pass.
+    dists = [0.296, 0.352, 0.415, 0.423, 0.470, 0.512]
+    stale_reference = sorted(dists)[int(0.9 * (len(dists) - 1))]
+    stale = recall_mod.dynamic_ceiling(dists, reference=stale_reference)
+    assert stale is not None
+    assert [d for d in dists if d <= stale + 1e-9] == [0.296, 0.352]
+    # Measured background for this store/model.
+    cut = recall_mod.dynamic_ceiling(dists, reference=0.59)
+    assert cut is not None
+    assert [d for d in dists if d <= cut + 1e-9] == [0.296, 0.352, 0.415, 0.423, 0.470]
+
+
 def test_dynamic_ceiling_keeps_lone_standout() -> None:
     # A single genuine match in an otherwise-far cloud: d_min sits just above
-    # alpha * p90 (the bare ceiling would empty it), but it is separated from
-    # the background by more than standout_gap -- a real relevance cliff -- so
-    # it is floored back in and kept.
+    # alpha * reference (the bare ceiling would empty it), but it is separated
+    # from the background by more than standout_gap -- a real relevance cliff
+    # -- so it is floored back in and kept.
     dists = [0.82, 1.0, 1.0, 1.0, 1.0]
-    cut = recall_mod.dynamic_ceiling(dists, standout_gap=0.15)
+    cut = recall_mod.dynamic_ceiling(dists, reference=1.0, standout_gap=0.15)
     assert cut is not None
     assert [d for d in dists if d <= cut + 1e-9] == [0.82]
     # Without the standout exception the same lone hit empties.
-    bare = recall_mod.dynamic_ceiling(dists)
+    bare = recall_mod.dynamic_ceiling(dists, reference=1.0)
     assert bare is not None
     assert [d for d in dists if d <= bare + 1e-9] == []
 
@@ -291,26 +307,37 @@ def test_dynamic_ceiling_standout_gap_still_empties_uniform_cloud() -> None:
     # so there is no cliff to protect -- the query still empties even with the
     # standout exception enabled.
     dists = [0.79, 0.80, 0.81, 0.82, 0.83, 0.84]
-    cut = recall_mod.dynamic_ceiling(dists, standout_gap=0.15)
+    cut = recall_mod.dynamic_ceiling(dists, reference=0.95, standout_gap=0.15)
     assert cut is not None
     assert [d for d in dists if d <= cut + 1e-9] == []
 
 
 def test_dynamic_ceiling_keeps_strong_match_at_any_scale() -> None:
-    # Hash-stub scale: an exact match sits at ~0 and the rest at ~1. The
-    # ceiling (~0.8) tracks the distribution, so the match survives without
-    # any hardcoded 0.7 -- the model-dependence footgun is gone.
+    # Hash-stub scale: an exact match sits at ~0 and unrelated text at ~1.
+    # The ceiling tracks whatever the reference says "unrelated" means for
+    # this model, so the match survives without any hardcoded 0.7 -- the
+    # model-dependence footgun is gone.
     dists = [0.0, 1.0, 1.0, 1.0]
-    cut = recall_mod.dynamic_ceiling(dists)
+    cut = recall_mod.dynamic_ceiling(dists, reference=1.0)
     assert cut is not None
     assert [d for d in dists if d <= cut + 1e-9] == [0.0]
+
+
+def test_dynamic_ceiling_rejects_unusable_reference() -> None:
+    # A missing background must never be papered over with 0: that would
+    # make the ceiling 0 and empty every recall.
+    dists = [0.1, 0.2, 0.3, 0.4]
+    assert recall_mod.dynamic_ceiling(dists, reference=0.0) is None
+    assert recall_mod.dynamic_ceiling(dists, reference=-1.0) is None
+    assert recall_mod.dynamic_ceiling(dists, reference=float("nan")) is None
+    assert recall_mod.dynamic_ceiling(dists, reference=float("inf")) is None
 
 
 def test_dynamic_ceiling_too_few_candidates() -> None:
     # Below min_candidates the sample can't estimate a reference -> no gate
     # (this is what spares small synthetic corpora).
-    assert recall_mod.dynamic_ceiling([0.1, 0.5, 0.9]) is None
-    assert recall_mod.dynamic_ceiling([]) is None
+    assert recall_mod.dynamic_ceiling([0.1, 0.5, 0.9], reference=1.0) is None
+    assert recall_mod.dynamic_ceiling([], reference=1.0) is None
 
 
 def test_gap_cutoff_cuts_at_first_large_jump() -> None:
@@ -349,11 +376,9 @@ def test_gate_relevance_ceiling_disabled_keeps_all() -> None:
     assert [h["distance"] for h in kept] == [0.77, 0.95]
 
 
-def test_gate_merged_dynamic_ceiling_then_elbow_per_source() -> None:
-    # (doc_id, text, md, distance, source). The dynamic ceiling is computed
-    # per source: it drops the far episodic (0.80) and semantic (0.95) hits;
-    # the elbow then trims each remaining plateau to its peak.
-    merged: list[recall_mod._Hit] = [
+def _merged_two_sources() -> list[recall_mod._Hit]:
+    # (doc_id, text, md, distance, source).
+    return [
         (1, "", {}, 0.30, "episodic"),
         (2, "", {}, 0.66, "episodic"),
         (3, "", {}, 0.68, "episodic"),
@@ -364,9 +389,44 @@ def test_gate_merged_dynamic_ceiling_then_elbow_per_source() -> None:
         (8, "", {}, 0.62, "semantic"),
         (9, "", {}, 0.95, "semantic"),
     ]
+
+
+def test_gate_merged_dynamic_ceiling_then_elbow_per_source() -> None:
+    # Each source is gated against its own background reference: the
+    # episodic and semantic collections occupy different regions of the
+    # space, so one's "unrelated" distance never stands in for the other's.
+    # The ceiling drops the far episodic (0.80) and semantic (0.95) hits;
+    # the elbow then trims each remaining plateau to its peak.
     cfg = MemoryConfig()  # dynamic ceiling + elbow both on by default
-    kept = recall_mod._gate_merged(list(merged), cfg)
+    kept = recall_mod._gate_merged(
+        _merged_two_sources(),
+        cfg,
+        references={"episodic": 0.90, "semantic": 0.80},
+    )
     ids = [row[0] for row in kept]
     assert 5 not in ids  # far episodic hit, dropped by the dynamic ceiling
     assert 9 not in ids  # far semantic hit, dropped by the dynamic ceiling
     assert ids == [1, 6]
+
+
+def test_gate_merged_without_references_skips_only_the_ceiling() -> None:
+    # No background available (no embedder, or a collection too small to
+    # sample). The absolute ceiling is skipped rather than guessed, but the
+    # scale-free elbow and gap stages still run.
+    cfg = MemoryConfig()
+    kept = recall_mod._gate_merged(_merged_two_sources(), cfg, references=None)
+    ids = [row[0] for row in kept]
+    # 9 is the far semantic hit the ceiling would have dropped; with no
+    # reference it survives. 5 still goes, but to the elbow, not the
+    # ceiling — the relative stages are unaffected by a missing background.
+    assert 9 in ids
+    assert 1 in ids
+
+
+def test_gate_merged_gates_only_sources_with_a_reference() -> None:
+    # A partial reference map must not gate the source it omits.
+    cfg = MemoryConfig()
+    kept = recall_mod._gate_merged(_merged_two_sources(), cfg, references={"episodic": 0.90})
+    ids = [row[0] for row in kept]
+    assert 5 not in ids  # episodic was gated
+    assert 9 in ids  # semantic had no reference, so it passed the ceiling

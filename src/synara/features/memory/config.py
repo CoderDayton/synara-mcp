@@ -290,28 +290,56 @@ class MemoryConfig:
     recall_elbow_min_candidates: int = 3
     recall_elbow_min_spread: float = 0.05
     # Dynamic relevance ceiling: an absolute distance cutoff *derived per
-    # recall* from the candidate distribution, so it tracks the embedding
-    # model's own distance scale instead of a hardcoded value. The far end
-    # of the over-fetched candidates approximates this model's "unrelated"
-    # distance; we take its ``quantile`` (p90) as a reference ``d_ref`` and
-    # keep hits with ``distance <= alpha * d_ref``. This covers the all-weak /
-    # no-knee case the relative elbow can't, without the model-dependence of a
-    # fixed threshold. There is no floor: an off-topic query whose nearest hit
-    # is itself beyond the ceiling empties rather than returning its least-bad
-    # hit. The one exception is ``standout_gap``: when the nearest hit is
-    # separated from the next by at least that gap, it is a real match in an
-    # otherwise-far cloud (a relevance cliff right after it) and is kept even
-    # above the ceiling — so a lone genuine hit is not lost, while a uniform
-    # off-topic cloud (no such gap) still empties. A gap is scale-robust like
-    # ``recall_gap_cut``, but smaller here since it acts on a single standout.
-    # Per-source (episodic / semantic) like the elbow. ``alpha`` <= 0 disables;
-    # ``min_candidates`` skips small samples (also sparing tiny synthetic
-    # corpora); ``standout_gap`` <= 0 disables the exception (pure
-    # empty-on-far). Applies to both episodic and semantic hits.
+    # recall*, so it tracks the embedding model's own distance scale
+    # instead of a hardcoded value. The reference is this model's
+    # "unrelated" distance for this query — the mean distance to a random
+    # sample of the collection (see hippocampus/background.py) — and hits
+    # with ``distance <= alpha * reference`` are kept. This covers the
+    # all-weak / no-knee case the relative elbow can't, without the
+    # model-dependence of a fixed threshold.
+    #
+    # Measured on a 661-episode store with nomic-embed-text-v1: the
+    # reference sits at ~0.59, true targets at 0.44-0.74 of it, off-topic
+    # queries at 0.76-0.85. alpha=0.8 kept 12/12 known-present targets and
+    # rejected 5/6 off-topic queries; the sixth ("how to train a golden
+    # retriever puppy") collides with real memories about training
+    # datasets, which is the model working, not the gate failing. The
+    # default errs toward recall on purpose: a suppressed memory is
+    # invisible to the caller and gets re-derived, while an extra weak hit
+    # is visible, labelled with its distance, and cheap to ignore.
+    #
+    # There is no floor: an off-topic query whose nearest hit is itself
+    # beyond the ceiling empties rather than returning its least-bad hit.
+    # The one exception is ``standout_gap``: when the nearest hit is
+    # separated from the next by at least that gap, it is a real match in
+    # an otherwise-far cloud (a relevance cliff right after it) and is kept
+    # even above the ceiling — so a lone genuine hit is not lost, while a
+    # uniform off-topic cloud (no such gap) still empties. A gap is
+    # scale-robust like ``recall_gap_cut``, but smaller here since it acts
+    # on a single standout. Per-source (episodic / semantic) like the
+    # elbow, each against its own collection's reference. ``alpha`` <= 0
+    # disables; ``min_candidates`` skips small samples (also sparing tiny
+    # synthetic corpora); ``standout_gap`` <= 0 disables the exception
+    # (pure empty-on-far). Applies to both episodic and semantic hits.
     recall_max_distance_alpha: float = 0.8
-    recall_max_distance_quantile: float = 0.9
     recall_max_distance_min_candidates: int = 4
     recall_max_distance_standout_gap: float = 0.15
+    # Background sample backing the ceiling above. Drawn uniformly from
+    # each collection and cached, so a recall costs one matrix-vector
+    # product against ``sample`` cached rows rather than any extra I/O.
+    # ``sample`` is the target row count (0 disables the ceiling outright);
+    # ``min_sample`` is the floor below which a collection is too small to
+    # characterise and the ceiling is skipped rather than guessed;
+    # ``refresh_ratio`` re-samples once the collection's row count has
+    # moved by that fraction since the last sample, so a young store
+    # tracks its own growth and a large one stops resampling for nothing.
+    # ``seed`` fixes the draw so the same store yields the same reference
+    # within a process — a threshold that jitters between identical
+    # recalls cannot be tested or explained to a user.
+    recall_background_sample: int = 256
+    recall_background_min_sample: int = 32
+    recall_background_refresh_ratio: float = 0.25
+    recall_background_seed: int = 0
     # Cross-source relevance-cliff cut, applied last to the pooled returned
     # rows: walking the distances ascending, the first consecutive jump of at
     # least this size ends the relevant run and the tail is dropped. Catches a

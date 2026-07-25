@@ -179,27 +179,18 @@ def test_embedding_max_seq_length_valid_parsed(
     assert Settings.from_env().embedding.max_seq_length == 2048
 
 
-def test_trust_remote_code_defaults_true() -> None:
-    assert Settings.from_env().embedding.trust_remote_code is True
+def test_trust_remote_code_setting_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ONNX backend cannot execute model-bundled Python at all.
 
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [("true", True), ("1", True), ("yes", True), ("false", False), ("0", False)],
-)
-def test_trust_remote_code_env_parsed(
-    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
-) -> None:
-    monkeypatch.setenv("SYNARA_EMBEDDING_TRUST_REMOTE_CODE", raw)
-    assert Settings.from_env().embedding.trust_remote_code is expected
-
-
-def test_trust_remote_code_bad_value_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SYNARA_EMBEDDING_TRUST_REMOTE_CODE", "maybe")
-    with pytest.raises(ValueError, match="SYNARA_EMBEDDING_TRUST_REMOTE_CODE"):
-        Settings.from_env()
+    The old local backend loaded models with ``trust_remote_code=True``
+    because the default Jina model required it, which meant every load
+    ran arbitrary code from a Hugging Face repo. Nothing reintroduces
+    that knob: setting the old variable must be inert, not silently
+    re-enable anything.
+    """
+    monkeypatch.setenv("SYNARA_EMBEDDING_TRUST_REMOTE_CODE", "true")
+    settings = Settings.from_env()
+    assert not hasattr(settings.embedding, "trust_remote_code")
 
 
 def test_default_db_path_uses_xdg_data_home(

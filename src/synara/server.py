@@ -16,12 +16,10 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
-from simplevecdb import AsyncVectorDB, Quantization
 
 from synara import __version__
 from synara.config import Settings
@@ -29,6 +27,7 @@ from synara.core.argument_normalization import ArgumentNormalizationMiddleware
 from synara.features import memory
 from synara.features.embedding import build_embedder
 from synara.features.memory import ToolMetrics
+from synara.storage import open_database
 
 _logger = logging.getLogger(__name__)
 
@@ -41,9 +40,9 @@ def build_server(settings: Settings) -> FastMCP:
     # the elected leader calls build_server(); followers proxy to it via
     # HTTP and never touch the DB. Do not "helpfully" let followers open
     # the DB read-only without also routing writes through the leader.
-    if settings.db_path != ":memory:":
-        Path(settings.db_path).resolve().parent.mkdir(parents=True, exist_ok=True)
-    db = AsyncVectorDB(settings.db_path, quantization=Quantization.INT8)
+    # Index parameters live in synara.storage so the offline maintenance
+    # scripts open the very same store this server does.
+    db = open_database(settings.db_path)
     embedder = build_embedder(settings.embedding)
 
     backend_kind = "remote" if settings.embedding.url else "local"

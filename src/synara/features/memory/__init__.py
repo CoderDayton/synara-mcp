@@ -80,17 +80,33 @@ def register(
     tests that drive the service with a deterministic in-process embedder
     and don't need progress/log wiring.
     """
-    resolved_embed_fn = embed_fn if embed_fn is not None else (embedder.embed if embedder else None)
+    # Queries and documents take different paths on purpose: retrieval
+    # models are commonly trained with asymmetric task prefixes, so
+    # ``query_arg`` (search) must not embed text the same way
+    # ``vectorise`` (storage) does. ``embed_query``/``embed_documents``
+    # apply the right prefix for the active backend.
+    resolved_embed_fn = (
+        embed_fn if embed_fn is not None else (embedder.embed_query if embedder else None)
+    )
     # Wire the batch hook only when the production embedder is in play.
     # An explicit ``embed_fn`` override (tests) keeps the per-text path —
     # those callers expect to count single-text invocations and would be
-    # surprised by a coalesced batch call.
-    embed_batch_fn = embedder.embed_batch if (embedder is not None and embed_fn is None) else None
+    # surprised by a coalesced batch call. Test embedders are symmetric,
+    # so the shared per-text path is safe for them.
+    embed_batch_fn = (
+        embedder.embed_documents if (embedder is not None and embed_fn is None) else None
+    )
     service = MemoryService(
         db,
         config=config,
         embed_fn=resolved_embed_fn,
         embed_batch_fn=embed_batch_fn,
+        # Only the production embedder can be asymmetric: an ``embed_fn``
+        # override drives both sides through the same callable, so query
+        # and document encodings are identical by construction.
+        embed_asymmetric=embed_batch_fn is not None
+        and embedder is not None
+        and embedder.asymmetric,
     )
     register_tools(mcp, service, embedder=embedder, metrics=metrics)
     register_resources(mcp, service, embedder=embedder, metrics=metrics)

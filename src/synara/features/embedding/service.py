@@ -4,12 +4,21 @@ Internal capability, not an MCP tool surface. Other features (memory
 today, future memory/reasoning modules later) use an ``Embedder`` to
 turn text into vectors without caring where the vectors came from.
 
-``LocalBackend`` loads a SentenceTransformer directly. We don't go
-through the bundled simplevecdb loader because it disables
-``trust_remote_code``, which Jina v5 needs. Encode is sync, so we run
-it on a worker thread to keep the event loop free. Default model is
-``jinaai/jina-embeddings-v5-text-nano``, loaded as bf16 on CUDA with
-SDPA.
+``LocalBackend`` runs ONNX models through ``embed-anything`` (a Rust
+backend). Encode is sync, so we run it on a worker thread to keep the
+event loop free. Default model is ``nomic-embed-text-v1`` (768-d,
+L2-normalised).
+
+This replaced a PyTorch + sentence-transformers stack: ~5.1 GB of
+dependencies became ~194 MB, and ``trust_remote_code`` disappeared
+entirely — the previous default model executed arbitrary Python bundled
+in its Hugging Face repo on every load.
+
+Nomic conditions its embeddings on a task prefix, so storage and search
+are separate calls (``Embedder.embed_documents`` vs ``embed_query``).
+The prefix pair is resolved from the configured model id — see
+``resolve_task_prefixes`` — and is empty for families that train without
+one, which makes the two calls equivalent again.
 
 ``RemoteBackend`` POSTs to ``{base_url}/v1/embeddings``. That shape
 covers ollama, the bundled ``simplevecdb-server``, OpenAI, and most
@@ -23,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -59,6 +69,57 @@ class EmbeddingError(RuntimeError):
     """The backend gave us back something we can't use."""
 
 
+# Retrieval models are trained with *their own* task prefixes, or with
+# none at all. Feeding one family's prefix to another prepends literal
+# noise: measured on ``AllMiniLML6V2Q``, ``"search_document: "`` moves a
+# vector ~0.25 cosine, and the same sentence embedded as query vs
+# document then sits ~0.10 apart -- a large slice of the relevance
+# budget, spent on tokens the model was never trained to strip. So the
+# prefixes come from the model id, and an unrecognised family gets none
+# (symmetric encoding), which is the safe default for BGE / GTE / MiniLM
+# / Mxbai / ModernBERT / Jina. Ordered: the first marker found in the
+# normalised id wins.
+_TASK_PREFIXES: tuple[tuple[str, tuple[str, str]], ...] = (
+    ("nomic", ("search_document: ", "search_query: ")),
+    ("e5", ("passage: ", "query: ")),
+)
+
+
+def _normalise_model_id(model_id: str) -> str:
+    """Model id reduced to comparable letters+digits (``-``/``_``/``.``/``/`` dropped)."""
+    for sep in ("-", "_", ".", "/"):
+        model_id = model_id.replace(sep, "")
+    return model_id.lower()
+
+
+def resolve_task_prefixes(model_id: str) -> tuple[str, str]:
+    """``(document, query)`` task prefixes for ``model_id``.
+
+    ``("", "")`` when the model's family is unknown or trains without
+    prefixes -- see ``_TASK_PREFIXES`` for why guessing is worse than
+    abstaining.
+    """
+    normalised = _normalise_model_id(model_id)
+    for marker, prefixes in _TASK_PREFIXES:
+        if marker in normalised:
+            return prefixes
+    return ("", "")
+
+
+def _truncate_normalise(vector: list[float], dim: int) -> list[float]:
+    """Cut a Matryoshka embedding to ``dim`` and restore unit length.
+
+    Truncation alone leaves the vector shorter than 1.0, which skews
+    every cosine distance computed against it. Models whose native width
+    is already <= ``dim`` are returned untouched.
+    """
+    if dim >= len(vector):
+        return vector
+    head = vector[:dim]
+    norm = math.sqrt(sum(x * x for x in head))
+    return [x / norm for x in head] if norm > 0 else head
+
+
 class _Backend(Protocol):
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]: ...
 
@@ -90,22 +151,20 @@ class EmbeddingConfig:
     model: repo-id when local, server alias when remote.
     api_key: sent as a Bearer token on remote requests.
     timeout_seconds: HTTP timeout.
-    dim: pin the output width. Locally this becomes ``truncate_dim`` on
-        the SentenceTransformer call, which works for Matryoshka models
-        (Jina v3/v5, BGE-M3, Nomic). Remotely it goes in the request as
-        ``dimensions`` (OpenAI text-embedding-3 and friends). Leave it
-        as ``None`` to keep the model's native dimension.
+    dim: pin the output width. Locally the vector is truncated and
+        re-normalised, which is valid only for Matryoshka models
+        (``nomic-embed-text-v1.5``, BGE-M3). The default model,
+        ``nomic-embed-text-v1``, is *not* one of them -- truncating it
+        degrades the vector, so leave this unset unless the configured
+        model documents Matryoshka support. Remotely it goes in the
+        request as ``dimensions`` (OpenAI text-embedding-3 and friends).
+        Leave it as ``None`` to keep the model's native dimension.
     batch_size: encode chunk size locally, per-request size remotely.
     max_seq_length: token cap for the local model. Lower it to trade
         context for throughput. The remote backend ignores this; the
-        server decides truncation.
-    trust_remote_code: pass ``trust_remote_code=True`` to the local
-        SentenceTransformer load. SECURITY: this executes arbitrary
-        Python bundled with the model repo at load time (custom modeling
-        code). It is ``True`` by default because the default Jina v5
-        model *requires* it; set it ``False`` to harden when running a
-        model that does not need custom code. Ignored by the remote
-        backend.
+        server decides truncation. See
+        ``LocalBackend._APPROX_CHARS_PER_TOKEN`` for how the cap is
+        enforced now that there is no tokenizer to count with.
     """
 
     model: str | None = None
@@ -118,40 +177,56 @@ class EmbeddingConfig:
     dim: int | None = None
     batch_size: int = 64
     max_seq_length: int | None = None
-    trust_remote_code: bool = True
 
 
 class LocalBackend:
-    """SentenceTransformer encode, run on a worker thread.
+    """ONNX encode via ``embed-anything``, run on a worker thread.
 
-    We load the model ourselves rather than through simplevecdb because
-    Jina v5 requires ``trust_remote_code=True`` and the bundled loader
-    forces it off. On CUDA we use bf16 with SDPA.
+    The Rust/ONNX runtime replaces the previous PyTorch +
+    sentence-transformers stack: same vectors, ~5.1 GB of dependencies
+    down to ~194 MB, and no ``trust_remote_code`` — the old default model
+    executed arbitrary Python bundled in its repo at load time, which
+    this backend has no mechanism to do.
+
+    Default model is ``nomic-embed-text-v1`` (768-d, L2-normalised).
+    Nomic is trained with asymmetric task prefixes, so callers must go
+    through :meth:`embed_documents` / :meth:`embed_query` rather than
+    embedding raw text — see ``resolve_task_prefixes``.
     """
 
-    DEFAULT_MODEL = "jinaai/jina-embeddings-v5-text-nano"
+    DEFAULT_MODEL = "nomic-embed-text-v1"
     DEFAULT_BATCH_SIZE = 64
+    # Task prefixes for the *configured* model, filled in by ``__init__``
+    # from ``resolve_task_prefixes``. Nomic's training objective
+    # conditions the embedding on one of these; storing a document under
+    # the query prefix (or vice versa) puts it in a subtly different
+    # region of the space and quietly degrades recall, so the two paths
+    # are kept distinct all the way down rather than sharing one "embed
+    # some text" call. Empty for a model family that trains without
+    # prefixes, which makes both paths symmetric again.
+    DOCUMENT_PREFIX: str = ""
+    QUERY_PREFIX: str = ""
+    # ``max_seq_length`` is expressed in tokens, but dropping
+    # sentence-transformers also dropped the tokenizer we would need to
+    # count them. Rather than silently ignore the setting, the cap is
+    # applied in characters using this ratio. Four characters per token
+    # is the usual English average for BPE/WordPiece vocabularies, and
+    # erring long is harmless: the ONNX runtime's own tokenizer still
+    # truncates anything above the model's real limit, so this knob only
+    # ever trades context for throughput -- it is not a safety bound.
+    # Swap in a real tokenizer here if exact counts ever matter.
+    _APPROX_CHARS_PER_TOKEN = 4
 
-    # Process-level cache keyed by model id. Re-instantiating LocalBackend
-    # for an already-loaded model reuses the existing SentenceTransformer.
-    # Two reasons:
-    #
-    # 1. Avoid re-paying the multi-GB VRAM cost on hot reloads / tests.
-    # 2. Side-step a transformers ↔ Jina v5 dynamic-module-registration
-    #    bug. After the first ``trust_remote_code=True`` load, transformers
-    #    registers the dynamic ``JinaEmbeddingsV5Model`` into
-    #    ``MODEL_MAPPING``. The next AutoModel load follows the
-    #    ``has_local_code`` branch (``auto_factory.py:395``) which reads
-    #    ``model_class.config_class`` — an attribute the Jina class never
-    #    exposes — and crashes with ``AttributeError``. Reusing the
-    #    already-loaded instance bypasses the second AutoModel call
-    #    entirely.
+    # Process-level cache keyed by model id, so re-instantiating the
+    # backend for an already-loaded model (hot reload, tests, a second
+    # feature wiring its own embedder) reuses the loaded session instead
+    # of re-reading the weights.
     _CACHE: ClassVar[dict[str, Any]] = {}
-    # Guards the check-then-set on ``_CACHE`` and the model load. ``warmup``
+    # Guards the check-then-set on ``_CACHE`` and the load. ``warmup``
     # runs on a worker thread (``to_thread``), so two concurrent
-    # ``embed_batch`` calls could otherwise both observe ``_model is None``
-    # and both pay the multi-GB load. A ``threading.Lock`` (not asyncio) is
-    # correct here because the contended region is the sync ``warmup`` body.
+    # ``embed_batch`` calls could otherwise both observe ``_model is
+    # None`` and both pay the load. A ``threading.Lock`` (not asyncio) is
+    # correct because the contended region is the sync ``warmup`` body.
     _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(
@@ -161,7 +236,6 @@ class LocalBackend:
         dim: int | None = None,
         batch_size: int | None = None,
         max_seq_length: int | None = None,
-        trust_remote_code: bool = True,
     ) -> None:
         if dim is not None and dim <= 0:
             raise ValueError("dim must be positive when set")
@@ -170,44 +244,34 @@ class LocalBackend:
         if max_seq_length is not None and max_seq_length <= 0:
             raise ValueError("max_seq_length must be positive")
         self._model_id = model or self.DEFAULT_MODEL
-        # ``Any``-typed because sentence_transformers ships no public stubs;
-        # the runtime contract is just ``model.encode(...)``.
+        # ``Any``-typed because embed_anything ships no stubs; the
+        # runtime contract is just ``embed_query(texts, embedder=...)``.
         self._model: Any = None
         self._configured_dim = dim
         self._dim: int | None = dim
         self._batch_size = batch_size or self.DEFAULT_BATCH_SIZE
         self._max_seq_length = max_seq_length
-        self._trust_remote_code = trust_remote_code
+        self.DOCUMENT_PREFIX, self.QUERY_PREFIX = resolve_task_prefixes(self._model_id)
 
     def is_ready(self) -> bool:
         return self._model is not None
 
     async def dim(self) -> int:
-        """Output dimension. Cached once we've found it.
+        """Output dimension, cached once found.
 
-        We try the configured value first, then the model's
-        ``get_sentence_embedding_dimension`` if it has one, then fall
-        back to a one-shot encode probe.
+        The configured value wins; otherwise a one-shot encode probe
+        reports the model's native width. ONNX exposes no cheap
+        dimension getter, so the probe is the only source of truth.
         """
         if self._dim is not None:
             return self._dim
-        if self._model is None:
-            await asyncio.to_thread(self.warmup)
-        getter = getattr(self._model, "get_sentence_embedding_dimension", None)
-        if callable(getter):
-            value = getter()
-            if isinstance(value, int) and value > 0:
-                self._dim = value
-                return self._dim
         self._dim = await _probe_dim(self)
         return self._dim
 
     def warmup(self) -> None:
-        """Load the SentenceTransformer. The first call downloads weights."""
+        """Load the ONNX session. The first call downloads weights."""
         if self._model is not None:
             return
-        # Serialise the cache check-then-set + load so concurrent
-        # ``embed_batch`` calls don't double-load the model.
         with self._CACHE_LOCK:
             if self._model is not None:
                 return
@@ -215,87 +279,82 @@ class LocalBackend:
             if cached is not None:
                 self._model = cached
                 return
-            # Lazy imports keep the module importable on machines without torch
-            # (e.g. lint-only CI); the ImportError surfaces here instead.
-            import torch  # noqa: PLC0415
-            from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+            # Lazy import keeps the module importable without the ONNX
+            # runtime installed (lint-only CI, or a remote-embedding
+            # deployment that never loads a local model).
+            from embed_anything import (  # noqa: PLC0415
+                EmbeddingModel,
+                ONNXModel,
+                WhichModel,
+            )
 
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            # ``default_task='retrieval'`` is required by Jina v5 — the model has
-            # multiple task heads (retrieval / separation / classification /
-            # similarity) and refuses to encode without one. Memory store →
-            # retrieval is the natural fit.
-            model_kwargs: dict[str, object] = {"default_task": "retrieval"}
-            if device.type == "cuda":
-                model_kwargs["dtype"] = torch.bfloat16
-            # SECURITY: ``trust_remote_code`` runs arbitrary Python bundled
-            # with the model repo at load time. On by default because the
-            # default Jina v5 model requires it; set
-            # ``SYNARA_EMBEDDING_TRUST_REMOTE_CODE=false`` to harden when
-            # running a model that does not need custom code.
-            load_kwargs: dict[str, object] = {
-                "trust_remote_code": self._trust_remote_code,
-                "device": device,
-                "model_kwargs": model_kwargs,
-            }
-            if device.type == "cuda":
-                load_kwargs["config_kwargs"] = {"_attn_implementation": "sdpa"}
-            self._model = SentenceTransformer(self._model_id, **load_kwargs)
-            if self._max_seq_length is not None:
-                # Direct attribute write is the public knob (see
-                # SentenceTransformer.max_seq_length).
-                self._model.max_seq_length = self._max_seq_length
+            # A bare name resolves against embed-anything's built-in ONNX
+            # registry; anything containing "/" is treated as a Hugging
+            # Face repo id so a custom or fine-tuned model still works.
+            known = {name.lower(): name for name in dir(ONNXModel) if not name.startswith("_")}
+            key = self._model_id.replace("-", "").replace("_", "").replace(".", "").lower()
+            if "/" in self._model_id:
+                self._model = EmbeddingModel.from_pretrained_onnx(
+                    WhichModel.Bert,
+                    hf_model_id=self._model_id,
+                    path_in_repo="onnx/model.onnx",
+                )
+            elif key in known:
+                self._model = EmbeddingModel.from_pretrained_onnx(
+                    WhichModel.Bert, model_name=getattr(ONNXModel, known[key])
+                )
+            else:
+                raise EmbeddingError(
+                    f"unknown local embedding model {self._model_id!r}; pass a Hugging Face "
+                    f"repo id (with '/') or one of: {', '.join(sorted(known.values()))}"
+                )
             self._CACHE[self._model_id] = self._model
 
     async def aclose(self) -> None:
-        """Nothing to release; the model stays loaded for the process."""
+        """Nothing to release; the session stays loaded for the process."""
 
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
         if self._model is None:
             # warmup() loads (and on first run downloads) the model — a
-            # multi-second, multi-GB blocking call. Off-load it so the
-            # event loop is not frozen on the first embed request.
+            # multi-second blocking call. Off-load it so the event loop
+            # is not frozen on the first embed request.
             await asyncio.to_thread(self.warmup)
         return await asyncio.to_thread(self._encode_to_lists, list(texts))
 
-    def _is_on_cuda(self) -> bool:
-        device = getattr(self._model, "device", None)
-        return getattr(device, "type", None) == "cuda"
+    def _cap(self, texts: list[str]) -> list[str]:
+        """Apply the ``max_seq_length`` budget (see ``_APPROX_CHARS_PER_TOKEN``).
 
-    def _encode(self, texts: list[str]) -> Any:
-        """Encode and return the raw model output.
-
-        On CUDA you get a ``torch.Tensor`` (bf16 preserved). On CPU you
-        get a numpy array. ``_encode_to_lists`` does the materialisation
-        to Python lists; callers that want to stay on the GPU (e.g. to
-        chain another bf16 op) can call this method directly.
+        Truncation happens after any task prefix has been prepended,
+        because the prefix occupies real positions in the model's input.
         """
-        encode_kwargs: dict[str, Any] = {
-            "normalize_embeddings": True,
-            "batch_size": self._batch_size,
-            "show_progress_bar": False,
-        }
-        # Matryoshka truncation: only pass when the user pinned a dim,
-        # so models that don't support it keep their native shape.
-        if self._configured_dim is not None:
-            encode_kwargs["truncate_dim"] = self._configured_dim
-        if self._is_on_cuda():
-            encode_kwargs["convert_to_tensor"] = True
-        else:
-            encode_kwargs["convert_to_numpy"] = True
-        return self._model.encode(texts, **encode_kwargs)
+        if self._max_seq_length is None:
+            return texts
+        limit = self._max_seq_length * self._APPROX_CHARS_PER_TOKEN
+        return [t[:limit] for t in texts]
 
     def _encode_to_lists(self, texts: list[str]) -> list[list[float]]:
-        out = self._encode(texts)
-        # Tensor (CUDA bf16): widen to float32 on CPU before materialising;
-        # Python lists don't support bf16, so f32 is the standard intermediate.
-        # .tolist() runs in C and yields native Python floats — far faster than
-        # a per-element float() comprehension.
-        if hasattr(out, "float") and hasattr(out, "cpu"):
-            out = out.float().cpu()
-        return out.tolist() if hasattr(out, "tolist") else [list(row) for row in out]
+        # Imported here rather than at module scope for the same reason
+        # as in ``warmup``: the ONNX runtime is an optional install.
+        import embed_anything  # noqa: PLC0415
+
+        config = embed_anything.TextEmbedConfig(batch_size=self._batch_size)
+        out = embed_anything.embed_query(self._cap(texts), embedder=self._model, config=config)
+        vectors = [list(item.embedding) for item in out]
+        if len(vectors) != len(texts):
+            raise EmbeddingError(
+                f"backend returned {len(vectors)} embeddings for {len(texts)} inputs; "
+                "cannot guarantee text->vector alignment"
+            )
+        if self._configured_dim is not None:
+            # Matryoshka truncation. Nomic *v1.5* and friends are trained
+            # so a prefix of the vector is itself a valid embedding, but
+            # the prefix must be re-normalised to stay unit-length or
+            # cosine distances shift. Nothing here can verify the model
+            # actually is Matryoshka; see ``EmbeddingConfig.dim``.
+            vectors = [_truncate_normalise(v, self._configured_dim) for v in vectors]
+        return vectors
 
 
 class RemoteBackend:
@@ -501,6 +560,53 @@ class Embedder:
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         return await self._backend.embed_batch(texts)
 
+    def _prefixes(self) -> tuple[str, str]:
+        """``(document, query)`` prefixes for the active backend.
+
+        Empty for the remote backend: the server owns whatever prompt
+        conditioning its model needs, and prepending ours would corrupt
+        it.
+        """
+        doc = getattr(self._backend, "DOCUMENT_PREFIX", "")
+        query = getattr(self._backend, "QUERY_PREFIX", "")
+        return doc, query
+
+    async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed text destined for storage.
+
+        Distinct from :meth:`embed_query` because retrieval models are
+        commonly trained with asymmetric task prefixes; embedding a
+        stored document as though it were a query lands it in a
+        different region of the space and silently degrades recall.
+        """
+        doc, _ = self._prefixes()
+        if not doc:
+            return await self._backend.embed_batch(texts)
+        return await self._backend.embed_batch([doc + t for t in texts])
+
+    @property
+    def asymmetric(self) -> bool:
+        """True when documents and queries land in different regions.
+
+        A model trained with task prefixes encodes the same sentence
+        differently depending on which side of the retrieval it is on --
+        measured ~0.10 cosine apart. That is invisible to a plain search
+        (which is exactly what the asymmetry is *for*), but any code that
+        does arithmetic *between* a query vector and stored vectors has
+        to know, because the two are then not directly combinable. See
+        ``hippocampus/recall._document_space``.
+        """
+        doc, query = self._prefixes()
+        return doc != query
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Embed a search query (see :meth:`embed_documents`)."""
+        _, query = self._prefixes()
+        out = await self._backend.embed_batch([query + text if query else text])
+        if not out:
+            raise EmbeddingError("backend returned no embeddings for non-empty input")
+        return out[0]
+
     async def dim(self) -> int:
         """Output vector width. We detect it on the first call and cache it.
 
@@ -528,6 +634,5 @@ def build_embedder(config: EmbeddingConfig) -> Embedder:
             dim=config.dim,
             batch_size=config.batch_size,
             max_seq_length=config.max_seq_length,
-            trust_remote_code=config.trust_remote_code,
         )
     return Embedder(backend)

@@ -356,14 +356,20 @@ async def _nearest_schema(service: MemoryService, text: str) -> tuple[int, float
     # Caller is responsible for the upfront ``service.semantic.count()``
     # check; skipping it here saves an O(N) DB roundtrip across the
     # _absorb candidate loop.
-    # Route through ``query_arg`` so the configured embed_fn produces the
-    # query vector — using raw text would invoke simplevecdb's bundled
-    # embedder, which can mismatch the stored vector dimension.
+    # Route through the configured embed_fn — using raw text would invoke
+    # simplevecdb's bundled embedder, which can mismatch the stored vector
+    # dimension. ``vectorise`` (document path) rather than ``query_arg``
+    # (query path): this measures how close an episode/summary sits to a
+    # stored schema, document-to-document, and the absorption thresholds
+    # downstream are calibrated on that scale. Under a model with
+    # asymmetric task prefixes a query-side probe lands in a different
+    # region of the space and shifts every distance here.
     # k=2 so the caller can compute the schema margin (d2 - d1) used by
     # the perturbation-amplified replay score. With only one schema we
     # fall back to d2 = d1 -> margin = 0, which makes the score reduce
     # to the legacy ``strength * d1``.
-    q = await service.query_arg(text)
+    embedded = await service.vectorise([text])
+    q: str | list[float] = embedded[0] if embedded else await service.query_arg(text)
     try:
         hits = await service.semantic.similarity_search(q, k=2)
     except (ValueError, RuntimeError):

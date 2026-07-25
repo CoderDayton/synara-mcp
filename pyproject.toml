@@ -11,29 +11,33 @@ dependencies = [
     # Every current dependency happens to pull it in, but relying on a
     # transitive numpy would break the day one of them drops it.
     "numpy>=2.0",
-    # NOT imported anywhere in src/ -- do not "clean up" as unused. The
-    # default local model (``jinaai/jina-embeddings-v5-text-nano``) is
-    # loaded with ``trust_remote_code=True``, and the modeling file
-    # bundled in that repo imports peft at load time. Without it the
-    # local backend dies with "This modeling file requires the following
-    # packages that were not found in your environment: peft" on the
-    # first encode. Only a remote-embedding deployment
-    # (SYNARA_EMBEDDING_URL) never needs it.
-    "peft>=0.19.1",
     # Local on-device embedding is the default mode (a remote endpoint is
     # opt-in via SYNARA_EMBEDDING_URL), so a default install must be able
-    # to embed out of the box. The import stays lazy in
-    # ``features/embedding/service.py`` so the package remains importable
-    # on machines without torch — lint-only CI, or a remote-only
-    # deployment that never loads a model.
-    "sentence-transformers>=5.0",
+    # to embed out of the box. embed-anything is a Rust/ONNX runtime: it
+    # replaced PyTorch + sentence-transformers here, taking site-packages
+    # from ~5.1 GB to ~194 MB and dropping the 2.7 GB CUDA payload that
+    # a CPU-only server never touched. It also retired
+    # ``trust_remote_code`` — the previous default model executed
+    # arbitrary Python from its Hugging Face repo on every load, and this
+    # backend has no mechanism to do that.
+    # The import stays lazy in ``features/embedding/service.py`` so the
+    # package remains importable without the ONNX runtime (lint-only CI,
+    # or a remote-only deployment that never loads a model).
+    "embed-anything>=0.7.1",
+    # Deliberately WITHOUT the [server] extra. That extra bundles the
+    # standalone simplevecdb-server (fastapi + uvicorn +
+    # sentence-transformers), and sentence-transformers is what dragged
+    # PyTorch and the 2.7 GB CUDA payload into every install. We only
+    # import AsyncVectorDB / AsyncVectorCollection / Quantization, all of
+    # which are core. Anyone wanting simplevecdb-server as a remote
+    # embedding endpoint runs it as its own install.
     # Capped below the next major: the memory feature reaches into
     # simplevecdb's private ``_collection`` (edges.upsert,
     # events.append/prune) for operations the async surface doesn't
     # expose. A major release may restructure those internals, which
     # would fail only at runtime, so block it at the dependency level
     # until the coupling is replaced with public API.
-    "simplevecdb[server]>=2.6.0,<3",
+    "simplevecdb>=2.6.0,<3",
 ]
 
 [project.optional-dependencies]
@@ -59,6 +63,12 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "ruff>=0.15.12",
+    # The dashboard tests import FastAPI. Its deps used to arrive by
+    # accident, transitively through simplevecdb's [server] extra; once
+    # that extra went away (it was what pulled in PyTorch) the dashboard
+    # suite stopped collecting. Depend on our own extra explicitly so a
+    # plain `uv sync` still produces a runnable test environment.
+    "synara-mcp[dashboard]",
 ]
 
 [project.scripts]
@@ -95,7 +105,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["simplevecdb", "simplevecdb.*", "flash_attn", "sentence_transformers"]
+module = ["simplevecdb", "embed_anything"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -22,7 +22,7 @@ or an unknown transport raises at startup instead of silently degrading.
 | `SYNARA_TRANSPORT` | `stdio` | `stdio` \| `http` \| `sse` \| `streamable-http` | always |
 | `SYNARA_LOG_LEVEL` | `INFO` | `DEBUG` `INFO` `WARNING` `ERROR` `CRITICAL` | always |
 | `SYNARA_DB_PATH` | `$XDG_DATA_HOME/synara-mcp/synara.db` | filesystem path or `:memory:` | always |
-| `SYNARA_EMBEDDING_MODEL` | `jinaai/jina-embeddings-v5-text-nano` | HF model id (local) or remote model name | always |
+| `SYNARA_EMBEDDING_MODEL` | `nomic-embed-text-v1` | built-in ONNX name or HF repo id (local), or remote model name | always |
 | `SYNARA_EMBEDDING_URL` | _(unset)_ | OpenAI-compatible base URL | switches to remote |
 | `SYNARA_EMBEDDING_API_KEY` | _(unset)_ | bearer token string | remote only |
 | `SYNARA_EMBEDDING_TIMEOUT` | `30` | finite number, `0 < t ≤ 86400` (s) | remote only |
@@ -91,15 +91,42 @@ the other `SYNARA_EMBEDDING_*` variables tune whichever mode is active.
 
 ### `SYNARA_EMBEDDING_MODEL`
 
-The embedding model. In **local mode** this is a Hugging Face model id,
-downloaded automatically on first use and cached thereafter. In **remote
-mode** it is the model name sent in each request. Default:
-`jinaai/jina-embeddings-v5-text-nano` — fast, small, no setup.
+The embedding model. Default: `nomic-embed-text-v1` (768-d) — fast,
+small, no setup.
+
+In **local mode** the model runs through ONNX (`embed-anything`), so
+there is no PyTorch dependency and no model code from the repo is
+executed at load time. Two forms are accepted:
+
+- a **built-in name** from embed-anything's ONNX registry
+  (`nomic-embed-text-v1`, `nomic-embed-text-v1.5`, `bge-small-en-v1.5`,
+  …). An unknown bare name is rejected with the list of valid ones on
+  the first embedding call — the model loads lazily, so the server still
+  starts and the error surfaces on the first `store_episode`/recall.
+- a **Hugging Face repo id** containing a `/`, which must publish
+  `onnx/model.onnx` in the repo.
+
+In **remote mode** it is the model name sent in each request.
 
 ```bash
-SYNARA_EMBEDDING_MODEL=jinaai/jina-embeddings-v5-text-nano   # local
-SYNARA_EMBEDDING_MODEL=text-embedding-3-small                # remote (OpenAI)
+SYNARA_EMBEDDING_MODEL=nomic-embed-text-v1        # local, built-in name
+SYNARA_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5      # local, HF repo with ONNX
+SYNARA_EMBEDDING_MODEL=text-embedding-3-small     # remote (OpenAI)
 ```
+
+> **Changing this invalidates every stored vector.** Vectors produced by
+> one model are meaningless to another, so recall degrades to confident
+> nonsense rather than failing loudly. The stored text is intact, so
+> rewrite the vectors in place:
+>
+> ```bash
+> uv run --frozen python scripts/reembed.py --dry-run   # inspect first
+> uv run --frozen python scripts/reembed.py             # backs up, then applies
+> ```
+>
+> The script keeps document ids stable (the successor-representation and
+> plasticity graphs reference them), rebuilds each index from the
+> rewritten vectors, and verifies the result before exiting.
 
 ### `SYNARA_EMBEDDING_URL`
 
@@ -143,10 +170,18 @@ Output vector dimensionality. Unset (default), Synara probes the
 embedder once and caches the observed dimension. Set it to pin the
 dimension explicitly: the value is validated against the real output on
 first use, so a swapped-out model that no longer matches fails fast
-instead of silently corrupting stored vectors. With OpenAI-compatible
-remotes that support it (e.g. `text-embedding-3-*`), the value is also
-sent as the `dimensions` request field to truncate the vector. Integer,
-`1` to `65536`.
+instead of silently corrupting stored vectors.
+
+Locally the vector is truncated to this width and **re-normalised** to
+unit length. That is only meaningful for Matryoshka-trained models
+(`nomic-embed-text-v1.5`, BGE-M3), where a prefix of the vector is itself
+a valid embedding; truncating any other model's output produces vectors
+that still compare but no longer mean anything. Note the **default**
+model, `nomic-embed-text-v1`, is *not* Matryoshka — nothing validates
+this, so leave the setting unset unless the configured model documents
+the support. With OpenAI-compatible
+remotes that support it (e.g. `text-embedding-3-*`), the value is sent
+as the `dimensions` request field instead. Integer, `1` to `65536`.
 
 ```bash
 SYNARA_EMBEDDING_DIM=768
@@ -168,6 +203,13 @@ Maximum tokens the local model processes per text; longer inputs are
 truncated before embedding. Unset uses the model's own default. Has no
 effect in remote mode (the remote service controls truncation). Integer,
 `1` to `32768`.
+
+**Approximate.** Dropping sentence-transformers also dropped the
+tokenizer needed to count tokens, so the cap is enforced in characters
+at four per token (the usual English average for BPE/WordPiece). Erring
+long is harmless: the ONNX runtime's own tokenizer still truncates
+anything above the model's real limit. Treat this as a throughput knob,
+not a safety bound.
 
 ```bash
 SYNARA_EMBEDDING_MAX_SEQ_LENGTH=8192
@@ -234,7 +276,7 @@ SYNARA_DASHBOARD_TOKEN=$(openssl rand -hex 32)
 ## Recipes
 
 **Default — zero config, fully local.** Set nothing. Synara downloads
-the Jina nano model on first run and stores memory under `~/.local/share`.
+`nomic-embed-text-v1` on first run and stores memory under `~/.local/share`.
 
 **Local Ollama for embeddings:**
 

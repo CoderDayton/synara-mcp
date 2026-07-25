@@ -123,7 +123,6 @@ class Settings:
         max_seq_length = _positive_int_env(
             "SYNARA_EMBEDDING_MAX_SEQ_LENGTH", max_value=_EMBEDDING_MAX_SEQ_LENGTH_MAX
         )
-        trust_remote_code = _bool_env("SYNARA_EMBEDDING_TRUST_REMOTE_CODE", default=True)
 
         return cls(
             log_level=raw_level,
@@ -137,7 +136,6 @@ class Settings:
                 dim=dim,
                 batch_size=batch_size if batch_size is not None else 64,
                 max_seq_length=max_seq_length,
-                trust_remote_code=trust_remote_code,
             ),
             dashboard=DashboardConfig.from_env(),
         )

@@ -130,10 +130,12 @@ async def test_relevance_gate_miss_says_raising_k_will_not_help() -> None:
     # Deterministic geometry rather than a lucky embedding draw: every
     # document is a distinct one-hot vector orthogonal to the query's, so
     # each sits at cosine distance exactly 1.0 while remaining distinct
-    # enough from its neighbours to survive dedup. The dynamic ceiling
-    # then derives d_ref = 1.0 and keeps only distance <= alpha (0.8), so
-    # the whole candidate cloud is cut as off-topic — the exact state the
-    # gate exists to produce.
+    # enough from its neighbours to survive dedup. Sampling the corpus
+    # therefore puts the background reference at exactly 1.0, and the
+    # ceiling keeps only distance <= alpha (0.8) — so the whole candidate
+    # cloud is cut as off-topic, the exact state the gate exists to
+    # produce. ``recall_background_min_sample`` is lowered because six
+    # documents is below the default floor for characterising a corpus.
     dim = 8
     docs = [f"orthogonal subject matter {i}" for i in range(6)]
     basis = {text: i + 1 for i, text in enumerate(docs)}
@@ -144,7 +146,11 @@ async def test_relevance_gate_miss_says_raising_k_will_not_help() -> None:
         return v
 
     db = AsyncVectorDB(":memory:")
-    service = MemoryService(db, config=MemoryConfig(), embed_fn=one_hot)
+    service = MemoryService(
+        db,
+        config=MemoryConfig(recall_background_min_sample=len(docs)),
+        embed_fn=one_hot,
+    )
     mcp: FastMCP = FastMCP("gate-test")
     register_tools(mcp, service)
     try:

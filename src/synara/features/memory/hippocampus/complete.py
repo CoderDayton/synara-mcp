@@ -16,7 +16,7 @@ an anchor strength toward the original query. One step:
     a_t   = X q_t                              # affinities (N,)
     w_t,i = softmax(beta * a_t)_i              # attention weights
     x~_t  = sum_i w_t,i * x_i                  # recombined memory
-    q_{t+1} = normalize((1 - eta_0) q_0 + eta_0 x~_t)
+    q_{t+1} = normalize((1 - eta_0) q_0 + eta_0 (x~_t - c))
 
 The **inner completion score** at iterate ``q_t`` is the log-sum-exp:
 
@@ -27,11 +27,30 @@ iteration and bounded above by ``max_i <q_T, x_i>``. The
 eta_0-anchored variant trades strict monotonicity for robustness
 against drift toward a spurious attractor far from the original
 query — empirically more useful for under-specified queries.
+
+Task-prefix offset
+------------------
+The affinity ``X q_t`` is exactly the comparison a retrieval model is
+trained for: ``q`` carries the query encoding, ``X`` the document one.
+The *recombination* is not — ``x~_t`` is a convex combination of stored
+document vectors, so blending it straight into a query-space anchor
+produces an iterate in neither space. Under a model with asymmetric task
+prefixes the two sit ~0.10 cosine apart, and the fixed point drifts off
+both manifolds; the final search then runs with a hybrid vector, and the
+relevance ceiling (calibrated on document vectors, see :mod:`.background`)
+gates it on a scale it does not belong to.
+
+``c = normalize(q_0^doc) - normalize(q_0^query)`` is that displacement,
+measured on the query text itself by encoding it both ways. Subtracting
+it translates the recombined memory into the query's frame before the
+blend, which keeps every iterate in query space. ``c`` is the zero vector
+for a symmetric model, which makes the whole correction vanish.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -77,6 +96,24 @@ def completion_score(q: np.ndarray, X: np.ndarray, *, beta: float) -> float:
     return m + (1.0 / beta) * float(np.log(np.exp(beta * (sims - m)).sum()))
 
 
+def space_offset(q_query: np.ndarray, q_doc: Sequence[float] | None) -> np.ndarray | None:
+    """Displacement from the query encoding to the document encoding.
+
+    Both arguments are encodings of the *same* text, so their difference
+    isolates what the task prefix did to it -- see the module docstring.
+    ``None`` when there is nothing to correct: no document encoding, a
+    width disagreement, or non-finite values. An all-zero result (a
+    symmetric model) is returned as-is and is a harmless no-op.
+    """
+    if q_doc is None:
+        return None
+    doc = np.asarray(q_doc, dtype=np.float64)
+    if doc.shape != q_query.shape or not np.all(np.isfinite(doc)):
+        return None
+    offset: np.ndarray = _normalize(doc) - _normalize(q_query)
+    return offset
+
+
 def attractor_step(
     q: np.ndarray,
     X: np.ndarray,
@@ -84,10 +121,13 @@ def attractor_step(
     beta: float,
     q0: np.ndarray,
     eta0: float,
+    offset: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float]:
     """One modern-Hopfield update + post-update completion score.
 
     q, q0: unit-normalised (D,). X: (N, D) of unit-normalised vectors.
+    offset: the query->document displacement from :func:`space_offset`,
+    or ``None`` for a model that encodes both sides alike.
     Returns (q_next, score).
     """
     sims = X @ q
@@ -100,6 +140,11 @@ def attractor_step(
     score = m + (1.0 / beta) * float(np.log(total))
     w = exp_shift / total
     x_tilde = w @ X
+    if offset is not None:
+        # ``x_tilde`` is a mixture of *document* vectors; ``q0`` is a
+        # query vector. Translate the former into the latter's frame so
+        # the blend below stays inside one space.
+        x_tilde = x_tilde - offset
     q_next = _normalize((1.0 - eta0) * q0 + eta0 * x_tilde)
     return q_next, score
 
@@ -153,8 +198,15 @@ async def run(
     beta: float,
     eta0: float,
     eps: float = 1e-3,
+    q0_document: list[float] | None = None,
 ) -> CompletionResult:
     """Iterate modern-Hopfield updates; return refined query + score trace.
+
+    ``q0_document`` is the same query text encoded the way stored
+    documents are; supplying it keeps the iteration in query space under
+    a model with asymmetric task prefixes (see the module docstring).
+    Omitting it reproduces the uncorrected iteration exactly, which is
+    the right behaviour for a symmetric embedder.
 
     Stops early if score delta < eps or candidate set is empty.
     iters <= 0 returns q0 unchanged.
@@ -177,13 +229,14 @@ async def run(
         raise ValueError("q0 must contain only finite values")
     q = _normalize(q_in)
     q0_arr = q.copy()
+    offset = space_offset(q0_arr, q0_document)
     scores: list[float] = []
 
     for _ in range(iters):
         X = await _gather_candidates(service, q.tolist(), k=k_inner)
         if X.shape[0] == 0:
             break
-        q_next, score = attractor_step(q, X, beta=beta, q0=q0_arr, eta0=eta0)
+        q_next, score = attractor_step(q, X, beta=beta, q0=q0_arr, eta0=eta0, offset=offset)
         # ``attractor_step`` normalises through ``_normalize``, which
         # returns an all-zero vector if the update collapsed (anchor and
         # retrieved pattern cancelled). A zero query is a degenerate

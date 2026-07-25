@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypedDict, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .config import MemoryConfig
+    from .hippocampus.background import BackgroundReference
     from .hippocampus.complete import CompletionResult  # noqa: F401
     from .hippocampus.plasticity import PlasticityGraph
     from .hippocampus.separate import DGProjector
@@ -129,6 +130,11 @@ class MemoryServicePort(Protocol):
     semantic: _Collection
     memory_types: MemoryTypeRegistry
     schema_candidates: _Collection
+    # Backs the recall relevance ceiling; see hippocampus/background.py.
+    background: BackgroundReference
+    # True when the embedder gives queries and documents different
+    # encodings (task prefixes); see hippocampus/recall._document_space.
+    embed_asymmetric: bool
     # Package-private state that ops read or mutate directly on ``self``.
     # They are single-underscore implementation detail of ``MemoryService``
     # but appear here so in-package ops type-check against the abstract
