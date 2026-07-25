@@ -18,7 +18,7 @@
 
 ---
 
-**Give your MCP agent a memory that remembers across sessions — and forgets like a brain.**
+**Memory for MCP agents that survives across sessions and prunes itself.**
 
 Synara MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server that stores episodic and semantic memories in a local vector store, embeds text via a local ONNX model or any OpenAI-compatible endpoint, and layers a successor-representation graph on top so recall is ranked by relational structure, not just cosine similarity. Ten tools (`store_episode`, `recall_episodes`, `get_episode`, `remove_episode`, `consolidate_episodes`, `forget_episodes`, `reflect_session`, `store_semantic_memory`, `recall_semantic_memory`, `memory_stats`) and an ambient-recall resource expose it to any MCP-capable agent.
 
@@ -26,17 +26,17 @@ Synara MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server
 
 ## Why Synara
 
-**1. Recall is context-aware, not just similar.** Pass a `session_id` and recall returns that session's memories plus anything stored as global, with in-session hits ranked higher. Pass `scope_session=false` and recall spans every prior session — ranked by relational structure, so linked memories surface even when their wording doesn't match the query.
+**Recall is session-scoped and relational.** Pass a `session_id` and recall returns that session's memories plus anything stored as global, with in-session hits ranked higher. Pass `scope_session=false` and recall spans every prior session, ranked by relational structure, so linked memories surface even when their wording doesn't match the query.
 
-**2. Memory maintains itself.** Consolidation, forgetting, and replay run automatically in the background. Salient, recent, and frequently-retrieved memories survive; noise fades. You never schedule cleanup.
+**Memory maintains itself.** Consolidation, forgetting, and replay run automatically in the background. Salient, recent, and frequently-retrieved memories survive; noise fades. You never schedule cleanup.
 
-**3. Storage stays local and swappable.** Memories live in a single local file; embedding runs on-device by default, or against any OpenAI-compatible base URL (Ollama, OpenAI, simplevecdb-server) by setting one env var. The on-device path is ONNX (`embed-anything`), so a default install is ~590 MB with no PyTorch, no CUDA payload, and no model code executed from a Hugging Face repo at load time.
+**Storage stays local and swappable.** Memories live in a single local file; embedding runs on-device by default, or against any OpenAI-compatible base URL (Ollama, OpenAI, simplevecdb-server) by setting one env var. The on-device path is ONNX (`embed-anything`), so a default install is ~590 MB with no PyTorch, no CUDA payload, and no model code executed from a Hugging Face repo at load time.
 
 ---
 
 ## Quick start
 
-Run it with [uvx](https://docs.astral.sh/uv/) — no install step, nothing lands in your global Python:
+Run it with [uvx](https://docs.astral.sh/uv/). No install step, nothing lands in your global Python:
 
 ```bash
 uvx synara-mcp
@@ -57,14 +57,14 @@ Wire it into your MCP client (e.g. Claude Code `~/.claude.json`) and restart the
 
 The first run downloads the local embedding model (once) unless a remote endpoint is configured.
 
-Finally, tell your agent when to reach for memory — most agents won't on their own. Drop this into your `CLAUDE.md` / `AGENTS.md`:
+Finally, tell your agent when to reach for memory; most agents won't on their own. Drop this into your `CLAUDE.md` / `AGENTS.md`:
 
 ```md
 ## Memory (synara-mcp)
 
 - Recall before responding when prior context could matter.
 - Store after a task, decision, or durable fact.
-- Reflect at end of session. Consolidation and forgetting are automatic — don't call them.
+- Reflect at end of session. Consolidation and forgetting are automatic; don't call them.
 ```
 
 ---
@@ -84,32 +84,32 @@ Finally, tell your agent when to reach for memory — most agents won't on their
 | `recall_semantic_memory` | Retrieve semantic facts |
 | `memory_stats` | Store counts and health telemetry |
 
-Beyond the tools, the server exposes one MCP **resource** — `memory://recall/{query}` — so a host can surface relevant memories ambiently, with no explicit tool call. It takes `k`, `session_id`, `mode`, and `scope_session` as query parameters, and reads are non-reinforcing: a host that prefetches, caches, or polls it cannot distort what the memory system learns.
+Beyond the tools, the server exposes one MCP **resource**, `memory://recall/{query}`, so a host can surface relevant memories ambiently, with no explicit tool call. It takes `k`, `session_id`, `mode`, and `scope_session` as query parameters, and reads are non-reinforcing: a host that prefetches, caches, or polls it cannot distort what the memory system learns.
 
 ---
 
 ## Web dashboard
 
-An optional admin console (memory browser, memory graph, maintenance triggers, live stats, per-tool telemetry, and a read-only view of the effective config) runs in the same process as the MCP server — gated behind the `[dashboard]` extra and an env flag, so a default install pulls in no web dependencies.
+An optional admin console (memory browser, memory graph, maintenance triggers, live stats, per-tool telemetry, and a read-only view of the effective config) runs in the same process as the MCP server, gated behind the `[dashboard]` extra and an env flag, so a default install pulls in no web dependencies.
 
 ```bash
 SYNARA_DASHBOARD=true uvx 'synara-mcp[dashboard]'
 ```
 
-It binds `127.0.0.1:8765` by default — open <http://127.0.0.1:8765>. On loopback a token is optional; **any non-loopback bind requires `SYNARA_DASHBOARD_TOKEN`** or startup fails. Works under any transport, including `stdio`.
+It binds `127.0.0.1:8765` by default; open <http://127.0.0.1:8765>. On loopback a token is optional; **any non-loopback bind requires `SYNARA_DASHBOARD_TOKEN`** or startup fails. Works under any transport, including `stdio`.
 
 ---
 
 ## Configuration
 
-Every variable is optional and read from the process environment at startup — Synara runs with none set. Full reference, bounds, and copy-paste recipes: **[docs/env_variables.md](docs/env_variables.md)**. The annotated [`.env.example`](.env.example) is a ready-to-edit template.
+Every variable is optional and read from the process environment at startup; Synara runs with none set. Full reference, bounds, and copy-paste recipes: **[docs/env_variables.md](docs/env_variables.md)**. The annotated [`.env.example`](.env.example) is a ready-to-edit template.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SYNARA_TRANSPORT` | `stdio` | `stdio` \| `http` \| `sse` \| `streamable-http` |
 | `SYNARA_LOG_LEVEL` | `INFO` | Log verbosity |
 | `SYNARA_DB_PATH` | `$XDG_DATA_HOME/synara-mcp/synara.db` | Store path; `:memory:` for ephemeral |
-| `SYNARA_EMBEDDING_MODEL` | `nomic-embed-text-v1` | Built-in ONNX name or HF repo id (local), or remote model name. Changing it requires re-embedding the store — see [docs/env_variables.md](docs/env_variables.md#synara_embedding_model) |
+| `SYNARA_EMBEDDING_MODEL` | `nomic-embed-text-v1` | Built-in ONNX name or HF repo id (local), or remote model name. Changing it requires re-embedding the store (see [docs/env_variables.md](docs/env_variables.md#synara_embedding_model)) |
 | `SYNARA_EMBEDDING_URL` | _(unset)_ | Set to an OpenAI-compatible base URL for remote embeddings |
 | `SYNARA_EMBEDDING_API_KEY` | _(unset)_ | Bearer token for that endpoint; read from the environment, never logged |
 | `SYNARA_DASHBOARD` | `false` | Enable the parallel web admin console (`[dashboard]` extra) |
@@ -123,26 +123,26 @@ Every variable is optional and read from the process environment at startup — 
 
 The memory feature is organised by brain region:
 
-- **Hippocampus** — encoding, pattern separation and completion, ranked recall, and dream replay.
-- **Neocortex** — consolidation into semantic schemas, forgetting, session reflection.
-- **Basal ganglia** — the reactor that decides when consolidation and dream cycles fire. Maintenance runs as background tasks triggered by activity thresholds and idle pauses, so it never blocks a tool call.
-- **Amygdala** — salience tagging that decides what consolidates fastest.
+- **Hippocampus**: encoding, pattern separation and completion, ranked recall, and dream replay.
+- **Neocortex**: consolidation into semantic schemas, forgetting, session reflection.
+- **Basal ganglia**: the reactor that decides when consolidation and dream cycles fire. Maintenance runs as background tasks triggered by activity thresholds and idle pauses, so it never blocks a tool call.
+- **Amygdala**: salience tagging that decides what consolidates fastest.
 
-Recall is ranked by cosine similarity plus a successor representation — a transition graph built from which memories are accessed together — and spreading activation over learned associations. Every record carries a scope, `session` or `global`: episodes always belong to their session, and a semantic memory is session-scoped when written with a `session_id`. Global is opt-in — a global record surfaces in every future session, so it takes an explicit `scope="global"`, and a write with neither a `session_id` nor an explicit scope is rejected rather than quietly becoming global.
+Recall is ranked by cosine similarity plus a successor representation (a transition graph built from which memories are accessed together) and spreading activation over learned associations. Every record carries a scope, `session` or `global`: episodes always belong to their session, and a semantic memory is session-scoped when written with a `session_id`. Global is opt-in: a global record surfaces in every future session, so it takes an explicit `scope="global"`, and a write with neither a `session_id` nor an explicit scope is rejected rather than quietly becoming global.
 
 ---
 
 ## Good to know
 
-**Storage is local.** Memory lives in a `simplevecdb` file under your XDG data directory (not the cache directory — this store is durable and shouldn't be swept by a cache clean) and embeddings run on-device by default. If `SYNARA_EMBEDDING_URL` is set, that endpoint is the only external service that sees your text; the API key is read from the environment and never logged. Set `SYNARA_DB_PATH=:memory:` for an ephemeral store.
+**Storage is local.** Memory lives in a `simplevecdb` file under your XDG data directory (not the cache directory; this store is durable and shouldn't be swept by a cache clean) and embeddings run on-device by default. If `SYNARA_EMBEDDING_URL` is set, that endpoint is the only external service that sees your text; the API key is read from the environment and never logged. Set `SYNARA_DB_PATH=:memory:` for an ephemeral store.
 
 **Defaults are safe.** Invalid configuration fails at startup rather than silently degrading. `forget_episodes` is dry-run by default, so deletions are previewed before they apply. Tool inputs and remote embedding responses are size-capped, and invalid input is rejected with an actionable message the agent can act on.
 
-**Near-miss calls are repaired, not bounced.** Agents routinely pass a comma-separated string where a list is expected, or `limit` where the parameter is `k`. Those are fixed up before validation, so the published schema stays narrow and keeps teaching the correct call while a slip costs a rename instead of a wasted turn. Ambiguity is never guessed at: passing both an alias and the real parameter with different values is an error.
+**Near-miss calls are repaired.** Agents routinely pass a comma-separated string where a list is expected, or `limit` where the parameter is `k`. Those are fixed up before validation, so the published schema stays narrow and keeps teaching the correct call while a slip costs a rename instead of a wasted turn. Ambiguity is never guessed at: passing both an alias and the real parameter with different values is an error.
 
 **Results are bounded.** Recall returns a few snippet-length hits by default so results never blow your context budget; truncated hits say so, and `get_episode` fetches the complete text on demand.
 
-**A miss explains itself.** Hits come back as a JSON array; a recall that finds nothing comes back as an object instead, reporting whether the store is empty, whether session scoping excluded every match, whether a tag or kind filter did, or whether nothing was close enough — four states with four different fixes, each with the retry that addresses it. A semantic miss additionally surfaces any raw episodes matching the query, since schemas only exist once episodes consolidate.
+**A miss explains itself.** Hits come back as a JSON array; a recall that finds nothing comes back as an object instead, reporting whether the store is empty, whether session scoping excluded every match, whether a tag or kind filter did, or whether nothing was close enough: four states with four different fixes, each with the retry that addresses it. A semantic miss additionally surfaces any raw episodes matching the query, since schemas only exist once episodes consolidate.
 
 **Multiple clients coexist.** Concurrent stdio sessions elect a single leader process that owns the store; the others proxy to it transparently and re-elect automatically if the leader dies, so several agents can share one memory without write conflicts.
 
@@ -163,4 +163,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the pre-commit gat
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
