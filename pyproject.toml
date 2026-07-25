@@ -30,12 +30,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=3.2.4",
+    "fastmcp>=3.4.4",
     "httpx>=0.28",
     # Used directly and pervasively by the recall/consolidation maths.
     # Every current dependency happens to pull it in, but relying on a
     # transitive numpy would break the day one of them drops it.
-    "numpy>=2.0",
+    "numpy>=2.5.1",
     # Local on-device embedding is the default mode (a remote endpoint is
     # opt-in via SYNARA_EMBEDDING_URL), so a default install must be able
     # to embed out of the box. embed-anything is a Rust/ONNX runtime: it
@@ -62,7 +62,7 @@ dependencies = [
     # expose. A major release may restructure those internals, which
     # would fail only at runtime, so block it at the dependency level
     # until the coupling is replaced with public API.
-    "simplevecdb>=2.6.0,<3",
+    "simplevecdb>=2.6.2,<3",
 ]
 
 [project.optional-dependencies]
@@ -71,9 +71,9 @@ dependencies = [
 # (stdlib-only __init__, FastAPI imported lazily) so a default install
 # never loads these.
 dashboard = [
-    "fastapi>=0.136",
-    "uvicorn>=0.46",
-    "sse-starlette>=3.4",
+    "fastapi>=0.140.0",
+    "uvicorn>=0.51.0",
+    "sse-starlette>=3.4.6",
 ]
 
 [dependency-groups]
