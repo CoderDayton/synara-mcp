@@ -20,7 +20,7 @@
 
 **Give your MCP agent a memory that remembers across sessions — and forgets like a brain.**
 
-Synara MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server that stores episodic and semantic memories in a local vector store, embeds text via a local sentence-transformer or any OpenAI-compatible endpoint, and layers a successor-representation graph on top so recall is ranked by relational structure, not just cosine similarity. Ten tools (`store_episode`, `recall_episodes`, `get_episode`, `remove_episode`, `consolidate_episodes`, `forget_episodes`, `reflect_session`, `store_semantic_memory`, `recall_semantic_memory`, `memory_stats`) expose it to any MCP-capable agent.
+Synara MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server that stores episodic and semantic memories in a local vector store, embeds text via a local sentence-transformer or any OpenAI-compatible endpoint, and layers a successor-representation graph on top so recall is ranked by relational structure, not just cosine similarity. Ten tools (`store_episode`, `recall_episodes`, `get_episode`, `remove_episode`, `consolidate_episodes`, `forget_episodes`, `reflect_session`, `store_semantic_memory`, `recall_semantic_memory`, `memory_stats`) and an ambient-recall resource expose it to any MCP-capable agent.
 
 ---
 
@@ -79,16 +79,18 @@ Finally, tell your agent when to reach for memory — most agents won't on their
 | `remove_episode` | Delete one episode by id (dry-run by default) |
 | `consolidate_episodes` | Cluster episodes into semantic schemas |
 | `forget_episodes` | Prune weak memories (dry-run by default) |
-| `reflect_session` | Summarise a session's episodes |
+| `reflect_session` | Session summary: most relevant schemas plus recently-accessed episodes |
 | `store_semantic_memory` | Store a durable fact (session-scoped or global; `supersedes` retires a stale entry) |
 | `recall_semantic_memory` | Retrieve semantic facts |
 | `memory_stats` | Store counts and health telemetry |
+
+Beyond the tools, the server exposes one MCP **resource** — `memory://recall/{query}` — so a host can surface relevant memories ambiently, with no explicit tool call. It takes `k`, `session_id`, `mode`, and `scope_session` as query parameters, and reads are non-reinforcing: a host that prefetches, caches, or polls it cannot distort what the memory system learns.
 
 ---
 
 ## Web dashboard
 
-An optional admin console (memory browser, memory graph, maintenance triggers, live stats, per-tool telemetry) runs in the same process as the MCP server — gated behind the `[dashboard]` extra and an env flag, so a default install pulls in no web dependencies.
+An optional admin console (memory browser, memory graph, maintenance triggers, live stats, per-tool telemetry, and a read-only view of the effective config) runs in the same process as the MCP server — gated behind the `[dashboard]` extra and an env flag, so a default install pulls in no web dependencies.
 
 ```bash
 SYNARA_DASHBOARD=true uvx 'synara-mcp[dashboard]'
@@ -109,6 +111,7 @@ Every variable is optional and read from the process environment at startup — 
 | `SYNARA_DB_PATH` | `$XDG_DATA_HOME/synara-mcp/synara.db` | Store path; `:memory:` for ephemeral |
 | `SYNARA_EMBEDDING_MODEL` | local HF model | Embedding model id |
 | `SYNARA_EMBEDDING_URL` | _(unset)_ | Set to an OpenAI-compatible base URL for remote embeddings |
+| `SYNARA_EMBEDDING_API_KEY` | _(unset)_ | Bearer token for that endpoint; read from the environment, never logged |
 | `SYNARA_DASHBOARD` | `false` | Enable the parallel web admin console (`[dashboard]` extra) |
 | `SYNARA_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address (loopback-only by default) |
 | `SYNARA_DASHBOARD_PORT` | `8765` | Dashboard bind port |
@@ -125,7 +128,7 @@ The memory feature is organised by brain region:
 - **Basal ganglia** — the reactor that decides when consolidation and dream cycles fire. Maintenance runs as background tasks triggered by activity thresholds and idle pauses, so it never blocks a tool call.
 - **Amygdala** — salience tagging that decides what consolidates fastest.
 
-Recall is ranked by cosine similarity plus a successor representation — a transition graph built from which memories are accessed together — and spreading activation over learned associations. Every record carries a scope, `session` or `global`: episodes always belong to their session, while semantic memories are session-scoped when stored with a `session_id` and global otherwise.
+Recall is ranked by cosine similarity plus a successor representation — a transition graph built from which memories are accessed together — and spreading activation over learned associations. Every record carries a scope, `session` or `global`: episodes always belong to their session, and a semantic memory is session-scoped when written with a `session_id`. Global is opt-in — a global record surfaces in every future session, so it takes an explicit `scope="global"`, and a write with neither a `session_id` nor an explicit scope is rejected rather than quietly becoming global.
 
 ---
 
@@ -135,7 +138,11 @@ Recall is ranked by cosine similarity plus a successor representation — a tran
 
 **Defaults are safe.** Invalid configuration fails at startup rather than silently degrading. `forget_episodes` is dry-run by default, so deletions are previewed before they apply. Tool inputs and remote embedding responses are size-capped, and invalid input is rejected with an actionable message the agent can act on.
 
+**Near-miss calls are repaired, not bounced.** Agents routinely pass a comma-separated string where a list is expected, or `limit` where the parameter is `k`. Those are fixed up before validation, so the published schema stays narrow and keeps teaching the correct call while a slip costs a rename instead of a wasted turn. Ambiguity is never guessed at: passing both an alias and the real parameter with different values is an error.
+
 **Results are bounded.** Recall returns a few snippet-length hits by default so results never blow your context budget; truncated hits say so, and `get_episode` fetches the complete text on demand.
+
+**A miss explains itself.** Hits come back as a JSON array; a recall that finds nothing comes back as an object instead, reporting whether the store is empty, whether session scoping excluded every match, whether a tag or kind filter did, or whether nothing was close enough — four states with four different fixes, each with the retry that addresses it. A semantic miss additionally surfaces any raw episodes matching the query, since schemas only exist once episodes consolidate.
 
 **Multiple clients coexist.** Concurrent stdio sessions elect a single leader process that owns the store; the others proxy to it transparently and re-elect automatically if the leader dies, so several agents can share one memory without write conflicts.
 

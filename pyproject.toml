@@ -1,7 +1,7 @@
 [project]
 name = "synara-mcp"
 version = "0.1.0"
-description = "MCP server exposing simplevecdb vector storage and semantic search."
+description = "Persistent episodic and semantic memory for MCP agents, with relational recall and automatic forgetting."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
