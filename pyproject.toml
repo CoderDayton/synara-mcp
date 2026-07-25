@@ -4,6 +4,31 @@ version = "0.1.0"
 description = "Persistent episodic and semantic memory for MCP agents, with relational recall and automatic forgetting."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "memory",
+    "embeddings",
+    "llm",
+    "agent",
+    "vector-search",
+    "fastmcp",
+    "successor-representation",
+]
+# No ``License ::`` classifier: PyPI rejects those alongside the PEP 639
+# ``license`` expression above.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "fastmcp>=3.2.4",
     "httpx>=0.28",
@@ -71,6 +96,12 @@ dev = [
     "synara-mcp[dashboard]",
 ]
 
+[project.urls]
+Homepage = "https://github.com/CoderDayton/synara-mcp"
+Repository = "https://github.com/CoderDayton/synara-mcp"
+Issues = "https://github.com/CoderDayton/synara-mcp/issues"
+Changelog = "https://github.com/CoderDayton/synara-mcp/blob/main/CHANGELOG.md"
+
 [project.scripts]
 synara-mcp = "synara.main:main"
 
@@ -80,6 +111,48 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/synara"]
+
+# The sdist contents are listed explicitly. Hatchling only reads the
+# *root* ``.gitignore``, so ``dashboard/.gitignore`` is invisible to it:
+# on any machine that has run `bun install`, an implicit sdist swept in
+# ``dashboard/node_modules`` (13k files, 48 MB) plus untracked local
+# junk like ``.claude/``. CI happened to build clean only because it
+# never installs the JS deps — the tarball was a function of whose
+# machine built it. Enumerate the inputs instead.
+#
+# Every pattern is anchored with a leading ``/``. These are gitignore-style
+# globs: an unanchored ``README.md`` or ``docs`` matches that name at *any*
+# depth, which pulled 1,060 files back out of ``node_modules`` (every
+# vendored README and LICENSE) even with the directory itself unlisted.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/synara",
+    "/tests",
+    "/docs",
+    "/scripts",
+    "/assets",
+    # Dashboard *sources* only, so the committed bundle stays
+    # reproducible from the sdist; node_modules never ships.
+    "/dashboard/src",
+    "/dashboard/index.html",
+    "/dashboard/package.json",
+    "/dashboard/bun.lock",
+    "/dashboard/components.json",
+    "/dashboard/eslint.config.js",
+    "/dashboard/vite.config.ts",
+    "/dashboard/tsconfig*.json",
+    "/dashboard/README.md",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/uv.lock",
+    "/lefthook.yml",
+    "/.env.example",
+]
+exclude = ["**/node_modules"]
 
 [tool.ruff]
 line-length = 100

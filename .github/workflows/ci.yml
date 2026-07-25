@@ -23,12 +23,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
+          python-version: "3.13"
           cache-dependency-glob: |
             uv.lock
             pyproject.toml
@@ -37,7 +38,7 @@ jobs:
         run: uv sync --locked
 
       - name: Cache mypy
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .mypy_cache
           key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}-${{ hashFiles('src/**/*.py') }}
@@ -64,10 +65,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
           python-version: "3.13"
@@ -96,7 +97,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up bun
         uses: oven-sh/setup-bun@v2
@@ -104,16 +105,17 @@ jobs:
           bun-version: latest
 
       - name: Cache bun install cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('dashboard/bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
 
       - name: Set up uv (build-freshness check is a Python script)
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
+          python-version: "3.13"
           cache-dependency-glob: |
             uv.lock
             pyproject.toml
@@ -140,6 +142,68 @@ jobs:
       - name: Verify committed static bundle is fresh
         run: uv run --frozen python scripts/check_dashboard_build.py
 
+  package:
+    name: Package · build + install smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Build sdist + wheel
+        run: uv build --no-sources
+
+      - name: Check distribution metadata
+        run: uvx twine check --strict dist/*
+
+      # Guards the two ways the artifacts silently rot: the wheel losing
+      # the committed dashboard bundle, and the sdist picking up whatever
+      # untracked files happen to sit in the tree (see the explicit
+      # include list in pyproject.toml).
+      - name: Verify artifact contents
+        run: |
+          set -euo pipefail
+          static_files="$(unzip -l dist/*.whl | grep -c 'synara/features/dashboard/static/' || true)"
+          if [ "$static_files" -lt 2 ]; then
+            echo "::error::wheel is missing the dashboard static bundle"
+            exit 1
+          fi
+          echo "wheel ships $static_files dashboard static files"
+
+          if tar tzf dist/*.tar.gz | grep -q 'node_modules/'; then
+            echo "::error::sdist contains node_modules"
+            exit 1
+          fi
+          sdist_files="$(tar tzf dist/*.tar.gz | wc -l)"
+          echo "sdist ships $sdist_files files"
+
+      - name: Install the wheel into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+
+      - name: Import the installed package
+        run: |
+          /tmp/smoke/bin/python -c "
+          from importlib.metadata import entry_points, version
+          import synara.main, synara.server
+          print('installed synara-mcp', version('synara-mcp'))
+          (ep,) = entry_points(group='console_scripts', name='synara-mcp')
+          ep.load()
+          print('entry point resolves:', ep.value)
+          "
+
   dependency-review:
     name: Dependency review
     if: github.event_name == 'pull_request'
@@ -149,8 +213,8 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
           comment-summary-in-pr: on-failure

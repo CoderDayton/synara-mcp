@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# One release at a time, and never cancel a half-published one.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Create Release
@@ -17,10 +22,14 @@ jobs:
     outputs:
       is_prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          # The published-commit check below needs history, not just the
+          # tagged commit.
+          fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           version: "latest"
 
@@ -29,6 +38,18 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked
+
+      # A tag can be pushed from any branch, including one CI never saw.
+      # Anything that reaches PyPI has to be a commit that landed on main.
+      - name: Verify tag is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tagged commit $GITHUB_SHA is not on origin/main. Merge it to main before tagging."
+            exit 1
+          fi
+          echo "Tagged commit is on main"
 
       - name: Verify tag matches package version
         run: |
@@ -48,7 +69,10 @@ jobs:
         run: uv run pytest -q
 
       - name: Build package
-        run: uv build
+        run: uv build --no-sources
+
+      - name: Check distribution metadata
+        run: uvx twine check --strict dist/*
 
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v7
