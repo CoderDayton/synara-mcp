@@ -84,10 +84,10 @@ dashboard = [
 # ``uv run --frozen ruff|mypy|bandit|pytest`` relies on.
 dev = [
     "bandit>=1.9.4",
-    "mypy>=2.0.0",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.2.0",
-    "ruff>=0.15.12",
+    "mypy>=2.3.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.0",
     # The dashboard tests import FastAPI. Its deps used to arrive by
     # accident, transitively through simplevecdb's [server] extra; once
     # that extra went away (it was what pulled in PyTorch) the dashboard
