@@ -19,7 +19,11 @@ jobs:
   python-check:
     name: Python · lint + types + security
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    # embed-anything publishes no cp313 manylinux wheel (0.6.6 onwards ships
+    # cp310-312 and cp314 only), so a cold uv cache compiles it from its Rust
+    # sdist — ~8 minutes. Every job that installs the locked environment has
+    # to budget for that on the first run after uv.lock changes.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -61,7 +65,8 @@ jobs:
   python-test:
     name: Python · test
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # See the note on python-check: cold installs pay for a Rust build.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -93,7 +98,7 @@ jobs:
   dashboard:
     name: Dashboard · typecheck + lint + test + build
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -111,18 +116,6 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('dashboard/bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
 
-      - name: Set up uv (build-freshness check is a Python script)
-        uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
-          python-version: "3.13"
-          cache-dependency-glob: |
-            uv.lock
-            pyproject.toml
-
-      - name: Install Python deps
-        run: uv sync --locked
-
       - name: Install JS deps
         working-directory: dashboard
         run: bun install --frozen-lockfile
@@ -139,13 +132,17 @@ jobs:
         working-directory: dashboard
         run: bun run test
 
+      # Stdlib-only script (see its module docstring), so it runs on the
+      # runner's own interpreter — this job has no reason to install the
+      # project's Python environment.
       - name: Verify committed static bundle is fresh
-        run: uv run --frozen python scripts/check_dashboard_build.py
+        run: python3 scripts/check_dashboard_build.py
 
   package:
     name: Package · build + install smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # See the note on python-check: cold installs pay for a Rust build.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
