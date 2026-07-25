@@ -37,9 +37,12 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # No update-types filter: a filtered group only collects the types it
+      # names, so majors fell outside it and arrived as their own PRs — five
+      # open at once, each needing its own lockfile and bundle rebuild. Every
+      # dashboard bump belongs in the one weekly PR, majors included.
       dashboard:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
     ignore:
       # TypeScript 7 (the native port) is ahead of its linter: every
       # released typescript-eslint still declares `typescript <6.1.0` as
