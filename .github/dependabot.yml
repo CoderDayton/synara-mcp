@@ -26,7 +26,12 @@ updates:
         # see pyproject.toml); a major bump needs a human.
         update-types: ["minor", "patch"]
 
-  - package-ecosystem: npm
+  # bun, not npm: the dashboard's lockfile is `bun.lock` and CI installs
+  # it with `bun install --frozen-lockfile`. Under the npm ecosystem
+  # dependabot maintained `package-lock.json` instead, so every bump
+  # landed with a lockfile CI never reads and a `bun.lock` that no longer
+  # matched `package.json`.
+  - package-ecosystem: bun
     directory: /dashboard
     schedule:
       interval: weekly
