@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=3.4.4",
+    "fastmcp>=3.4.6",
     "httpx>=0.28",
     # Used directly and pervasively by the recall/consolidation maths.
     # Every current dependency happens to pull it in, but relying on a
@@ -62,7 +62,7 @@ dependencies = [
     # expose. A major release may restructure those internals, which
     # would fail only at runtime, so block it at the dependency level
     # until the coupling is replaced with public API.
-    "simplevecdb>=2.6.2,<3",
+    "simplevecdb>=2.7.0,<3",
 ]
 
 [project.optional-dependencies]
@@ -71,9 +71,9 @@ dependencies = [
 # (stdlib-only __init__, FastAPI imported lazily) so a default install
 # never loads these.
 dashboard = [
-    "fastapi>=0.140.0",
-    "uvicorn>=0.51.0",
-    "sse-starlette>=3.4.6",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.1",
+    "sse-starlette>=3.4.8",
 ]
 
 [dependency-groups]
