@@ -87,7 +87,7 @@ dev = [
     "mypy>=2.3.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.16.0",
+    "ruff>=0.16.1",
     # The dashboard tests import FastAPI. Its deps used to arrive by
     # accident, transitively through simplevecdb's [server] extra; once
     # that extra went away (it was what pulled in PyTorch) the dashboard
